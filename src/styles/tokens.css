@@ -1,0 +1,58 @@
+/*
+ * JARVIS design tokens.
+ * The island is hardware-like and always dark, independent of the Windows
+ * theme. Amber belongs to JARVIS's presence (eyes, live states) only —
+ * never decoration.
+ */
+:root {
+  /* Surfaces */
+  --obsidian: #08080a;
+  --graphite-1: #101013;
+  --graphite-2: #17171b;
+  --graphite-3: #202026;
+  --graphite-4: #2a2a31;
+
+  /* Lines */
+  --line: rgba(255, 255, 255, 0.065);
+  --line-strong: rgba(255, 255, 255, 0.12);
+  --rim: rgba(255, 255, 255, 0.14);
+
+  /* Text */
+  --text-1: #f2f2f0;
+  --text-2: #a4a4aa;
+  --text-3: #6c6c74;
+  --text-4: #4a4a52;
+
+  /* Presence */
+  --amber: #ffb23f;
+  --amber-hi: #ffd88f;
+  --amber-lo: #e2861c;
+  --amber-glow: rgba(255, 178, 63, 0.5);
+
+  /* Outcomes */
+  --ok: #7cd992;
+  --warn: #ffcf5a;
+  --danger: #ff6b5a;
+
+  /* Type */
+  --font-ui: "Onest Variable", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "Cascadia Mono", Consolas, monospace;
+
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-16: 16px;
+
+  /* Radii: the island owns the large radii; inner elements step down. */
+  --r-xs: 6px;
+  --r-sm: 9px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-pill: 999px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 120ms;
+  --dur-med: 220ms;
+}

@@ -1,0 +1,65 @@
+.slider {
+  display: grid;
+  grid-template-columns: 22px 1fr 26px;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+}
+
+.slider-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-xs);
+  color: var(--text-2);
+  transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+.slider-icon:not(:disabled):hover {
+  color: var(--text-1);
+  background: var(--graphite-3);
+}
+.slider-icon:disabled {
+  cursor: default;
+}
+.slider-icon.is-active {
+  color: var(--danger);
+}
+
+.slider-track {
+  position: relative;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--graphite-3);
+  overflow: hidden;
+  cursor: pointer;
+  touch-action: none;
+  transition: height var(--dur-fast) var(--ease-out);
+}
+.slider-track:hover,
+.slider-track:focus-visible {
+  height: 8px;
+}
+
+.slider-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #d9d9d6, #ffffff);
+}
+
+.slider-value {
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  text-align: right;
+}
+
+.slider.is-disabled .slider-track {
+  cursor: not-allowed;
+  background: var(--graphite-2);
+}
+.slider.is-disabled .slider-fill {
+  background: var(--graphite-4);
+}
