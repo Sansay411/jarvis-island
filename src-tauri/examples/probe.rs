@@ -103,6 +103,12 @@ mic chunks={chunks} samples={samples} (expect ~15 x 1600) max_in_level={max_in:.
 tone max_out_level={max_out:.2} still_queued_after_500ms={playing_after}", io.input_device, io.output_device, devs.inputs)
             })
         }
+        "fg" => {
+            let f = winmgr::foreground_window().unwrap();
+            let (mon, cx) = (display::primary_monitor().unwrap(), 0);
+            let _ = cx;
+            format!("{} state={} rect={:?} monitor={} | shape={:?}", f.process, f.state, f.rect, f.monitor, display::foreground_shape(0, mon.id, mon.bounds.x + mon.bounds.width / 2, 43))
+        }
         "monitors" => serde_json::to_string_pretty(&display::list_monitors()).unwrap(),
         "apps" => {
             let idx = apps::AppIndex::default();

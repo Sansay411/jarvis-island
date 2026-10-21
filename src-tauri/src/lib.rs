@@ -107,6 +107,17 @@ pub fn run() {
                 }
                 return;
             }
+            // `--command toggle-workspace|open-workspace|toggle-voice` lets
+            // launchers, Stream Deck buttons and scripts drive the island.
+            if let Some(pos) = argv.iter().position(|a| a == "--command") {
+                if let Some(cmd) = argv.get(pos + 1) {
+                    if matches!(cmd.as_str(), "toggle-workspace" | "open-workspace" | "toggle-voice") {
+                        app.state::<AppState>().island.set_user_hidden(false);
+                        emit_command(app, cmd);
+                    }
+                }
+                return;
+            }
             if argv.iter().any(|a| a == "--settings") {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
@@ -179,6 +190,7 @@ pub fn run() {
             ipc::island_begin_input,
             ipc::island_end_input,
             ipc::island_set_hidden,
+            ipc::island_context,
             ipc::audio_get,
             ipc::audio_set_volume,
             ipc::audio_set_mute,

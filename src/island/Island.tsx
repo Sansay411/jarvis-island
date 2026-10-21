@@ -12,7 +12,7 @@ import { hasActiveMedia, useSystem } from "../store/system";
 import { useRunningJobs } from "../store/jobs";
 import { useAgentMood } from "../store/agent";
 import { usePrefs } from "../store/prefs";
-import { BROW_H, CANVAS_W, SHOULDER, bottomRadius, dimsFor, notchPath, shapeRect, type IslandMode } from "./geometry";
+import { BROW_H, CANVAS_W, bottomRadius, dimsFor, notchPath, shapeRect, shoulderFor, type IslandMode } from "./geometry";
 import { Eyes, type EyeMood } from "./Eyes";
 import { CompactView } from "./views/CompactView";
 import { PeekView } from "./views/PeekView";
@@ -41,13 +41,18 @@ function useIslandController() {
         if (inside) {
           // A short dwell avoids expanding when the cursor merely passes by
           // on its way to a title bar.
-          enterTimer.current = window.setTimeout(() => set({ hovered: true }), 70);
+          // Over a maximised window the lip waits longer, so reaching for the
+          // app's own title-bar controls doesn't pop the island open.
+          const dwell = useIsland.getState().topCovered ? 260 : 70;
+          enterTimer.current = window.setTimeout(() => set({ hovered: true }), dwell);
         } else {
           leaveTimer.current = window.setTimeout(() => set({ hovered: false }), 320);
         }
       }),
     );
     unsubs.push(on("island:presence", ({ visible }) => set({ visible })));
+    unsubs.push(on("island:context", ({ topCovered }) => set({ topCovered })));
+    void invoke<{ topCovered: boolean }>("island_context").then(({ topCovered }) => set({ topCovered }));
     unsubs.push(on("island:blur", () => set({ workspaceOpen: false, hovered: false })));
     unsubs.push(
       on("island:command", (cmd) => {
@@ -118,10 +123,11 @@ export function Island() {
   const withMedia = hasActiveMedia(media);
   const jobRows = Math.min(2, useRunningJobs().length);
   const dims = useMemo(
-    () => dimsFor(mode, { hasMedia: withMedia, hasActivity: jobRows > 0, jobRows }),
-    [mode, withMedia, jobRows],
+    () => dimsFor(mode, { hasMedia: withMedia, hasActivity: jobRows > 0, jobRows, lip: st.topCovered }),
+    [mode, withMedia, jobRows, st.topCovered],
   );
 
+  const lip = mode === "compact" && st.topCovered;
   const spring = reduced ? REDUCED : SHAPE_SPRING;
   const w = useSpring(dims.w, spring);
   const h = useSpring(dims.h, spring);
@@ -137,8 +143,9 @@ export function Island() {
   }, [mode, refreshControls]);
 
   const r = useTransform(h, (hv) => bottomRadius(hv));
-  const d = useTransform(() => notchPath(w.get(), h.get(), r.get(), SHOULDER));
-  const svgW = useTransform(w, (v) => v + SHOULDER * 2);
+  const d = useTransform(() => notchPath(w.get(), h.get(), r.get(), shoulderFor(h.get())));
+  const svgW = useTransform(() => w.get() + shoulderFor(h.get()) * 2);
+  const svgLeft = useTransform(h, (hv) => -shoulderFor(hv));
 
   // Gaze follows the pointer while it is over the island.
   const lookX = useSpring(0, { stiffness: 200, damping: 24 });
@@ -151,7 +158,7 @@ export function Island() {
   return (
     <div className={`stage${st.visible ? "" : " is-hidden"}`}>
       <motion.div className="island" style={{ width: w, height: h }} onPointerMove={onPointerMove} onPointerLeave={() => lookX.set(0)}>
-        <motion.svg className="island-shape" style={{ width: svgW, height: h, left: -SHOULDER }} aria-hidden="true">
+        <motion.svg className="island-shape" style={{ width: svgW, height: h, left: svgLeft }} aria-hidden="true">
           <defs>
             <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0" stopColor="#ffffff" stopOpacity="0" />
@@ -186,8 +193,13 @@ export function Island() {
           </AnimatePresence>
         </motion.div>
 
-        <div className={`island-eyes${mode === "voice" ? " is-hidden" : ""}`} style={{ height: BROW_H }}>
-          <Eyes mood={moodFor(mode, agentMood, st.hovered)} lookX={mode === "compact" ? zero : lookX} lookY={mode === "drop" ? 2 : 0} />
+        <div className={`island-eyes${mode === "voice" ? " is-hidden" : ""}`} style={{ height: lip ? dims.h : BROW_H }}>
+          <Eyes
+            mood={moodFor(mode, agentMood, st.hovered)}
+            lookX={mode === "compact" ? zero : lookX}
+            lookY={mode === "drop" ? 2 : 0}
+            scale={lip ? 0.36 : 1}
+          />
         </div>
       </motion.div>
     </div>

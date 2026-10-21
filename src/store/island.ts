@@ -16,6 +16,7 @@ interface IslandStore {
   workspaceOpen: boolean;
   voiceOpen: boolean;
   visible: boolean;
+  topCovered: boolean;
   pendingAttachments: DroppedFile[];
   set: (patch: Partial<Omit<IslandStore, "set" | "addAttachments">>) => void;
   addAttachments: (files: DroppedFile[]) => void;
@@ -28,6 +29,7 @@ export const useIsland = create<IslandStore>((set) => ({
   workspaceOpen: false,
   voiceOpen: false,
   visible: true,
+  topCovered: false,
   pendingAttachments: [],
   set: (patch) => set(patch),
   addAttachments: (files) =>

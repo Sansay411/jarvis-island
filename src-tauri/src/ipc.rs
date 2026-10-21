@@ -188,3 +188,8 @@ pub async fn audio_devices() -> AppResult<crate::voice::audio::AudioDevices> {
         .await
         .map_err(|e| crate::error::AppError::internal(e.to_string()))
 }
+
+#[tauri::command]
+pub fn island_context(state: State<'_, AppState>) -> serde_json::Value {
+    serde_json::json!({ "topCovered": state.island.top_covered() })
+}

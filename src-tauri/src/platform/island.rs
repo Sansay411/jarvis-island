@@ -41,6 +41,7 @@ pub const CANVAS_H: f64 = 600.0;
 pub const EVT_POINTER: &str = "island:pointer";
 pub const EVT_PRESENCE: &str = "island:presence";
 pub const EVT_BLUR: &str = "island:blur";
+pub const EVT_CONTEXT: &str = "island:context";
 
 /// Island shape in logical pixels relative to the canvas window's client area.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
@@ -86,6 +87,7 @@ struct Placement {
     x: i32,
     y: i32,
     scale: f64,
+    monitor: isize,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +116,7 @@ pub struct Island {
     /// Hidden by the user (tray / shortcut).
     hidden_by_user: AtomicBool,
     input_mode: AtomicBool,
+    top_covered: AtomicBool,
     /// While the agent drives the mouse, the island stays click-through so a
     /// synthetic click near the top centre reaches the app underneath.
     pointer_suppressed: AtomicBool,
@@ -135,6 +138,7 @@ impl Island {
             hidden_for_fullscreen: AtomicBool::new(false),
             hidden_by_user: AtomicBool::new(false),
             input_mode: AtomicBool::new(false),
+            top_covered: AtomicBool::new(false),
             pointer_suppressed: AtomicBool::new(false),
             prev_foreground: AtomicIsize::new(0),
             tracker_ticks: std::sync::atomic::AtomicU64::new(0),
@@ -192,7 +196,7 @@ impl Island {
         self.window.set_position(PhysicalPosition::new(x, y))?;
         self.window.set_size(LogicalSize::new(CANVAS_W, CANVAS_H))?;
         self.window.set_position(PhysicalPosition::new(x, y))?;
-        *self.placement.lock() = Placement { x, y, scale };
+        *self.placement.lock() = Placement { x, y, scale, monitor: mon.id };
         self.recompute_screen_rect();
         tracing::info!(x, y, scale, "island placed on {}", mon.name);
         Ok(())
@@ -229,6 +233,24 @@ impl Island {
             tracing::warn!("island visibility change failed: {e}");
         }
         let _ = self.app.emit_to(LABEL, EVT_PRESENCE, PresenceEvent { visible, reason });
+    }
+
+    /// (monitor, centre x, bottom y of the resting island) in physical px.
+    pub fn monitor_and_center(&self) -> (isize, i32, i32) {
+        let p = *self.placement.lock();
+        (p.monitor, p.x + (CANVAS_W * p.scale / 2.0) as i32, p.y + (34.0 * p.scale).round() as i32)
+    }
+
+    /// A maximised window's title bar sits under the island: the frontend
+    /// shrinks the resting island to a thin lip so it doesn't cover controls.
+    pub fn set_top_covered(&self, covered: bool) {
+        if self.top_covered.swap(covered, Ordering::Relaxed) != covered {
+            let _ = self.app.emit_to(LABEL, EVT_CONTEXT, serde_json::json!({ "topCovered": covered }));
+        }
+    }
+
+    pub fn top_covered(&self) -> bool {
+        self.top_covered.load(Ordering::Relaxed)
     }
 
     pub fn set_fullscreen_hidden(&self, hidden: bool) {

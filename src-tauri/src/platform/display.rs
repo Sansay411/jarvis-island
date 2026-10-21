@@ -97,32 +97,41 @@ fn class_name(hwnd: HWND) -> String {
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
 
-/// True when the foreground window covers its whole monitor (games, video
-/// players, presentations), or the shell reports a fullscreen/presentation
-/// state. The desktop and the shell itself never count.
-pub fn foreground_is_fullscreen(own_hwnd: isize) -> bool {
+/// How the foreground window relates to the island's monitor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ForegroundShape {
+    /// Covers the whole island monitor (games, video, presentations).
+    pub fullscreen: bool,
+    /// Touches the top of the work area under the island (maximised or
+    /// snapped windows whose title bar sits where the island hangs).
+    pub top_covered: bool,
+}
+
+pub fn foreground_shape(own_hwnd: isize, island_monitor: isize, island_center_x: i32, island_bottom_y: i32) -> ForegroundShape {
     unsafe {
-        if let Ok(state) = SHQueryUserNotificationState() {
-            if state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_PRESENTATION_MODE {
-                return true;
-            }
-            // QUNS_BUSY ("a fullscreen app is running") is also reported for
-            // some borderless windows, so it is confirmed by the rect check below.
-        }
         let fg = GetForegroundWindow();
         if fg.is_invalid() || fg.0 as isize == own_hwnd {
-            return false;
+            return ForegroundShape::default();
         }
         let class = class_name(fg);
         if matches!(class.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") {
-            return false;
+            return ForegroundShape::default();
+        }
+        let Some(mon) = monitor_for_window(fg) else { return ForegroundShape::default() };
+        if mon.id != island_monitor {
+            return ForegroundShape::default();
         }
         let mut r = RECT::default();
         if GetWindowRect(fg, &mut r).is_err() {
-            return false;
+            return ForegroundShape::default();
         }
-        let Some(mon) = monitor_for_window(fg) else { return false };
         let b = mon.bounds;
-        r.left <= b.x && r.top <= b.y && r.right >= b.x + b.width && r.bottom >= b.y + b.height
+        let quns_fullscreen = SHQueryUserNotificationState()
+            .is_ok_and(|s| s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE);
+        let covers = r.left <= b.x && r.top <= b.y && r.right >= b.x + b.width && r.bottom >= b.y + b.height;
+        // The window's top edge (its title bar) reaches up under the resting
+        // island; maximised windows even extend a few pixels above the work area.
+        let top_covered = r.top < island_bottom_y && r.bottom > island_bottom_y && r.left <= island_center_x && r.right >= island_center_x;
+        ForegroundShape { fullscreen: covers || quns_fullscreen, top_covered }
     }
 }

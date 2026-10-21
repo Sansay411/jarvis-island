@@ -8,6 +8,13 @@ export const CANVAS_H = 600;
 export const SHOULDER = 10;
 /** Height of the persistent top row (the "brow") that holds the eyes. */
 export const BROW_H = 34;
+/** Height of the resting island over maximised windows. */
+export const LIP_H = 10;
+
+/** Shoulders shrink with very short shapes so the lip stays a clean tab. */
+export function shoulderFor(h: number): number {
+  return Math.min(SHOULDER, Math.max(4, h * 0.6));
+}
 
 export type IslandMode = "compact" | "peek" | "workspace" | "voice" | "drop";
 
@@ -21,11 +28,14 @@ export interface DimsContext {
   hasActivity: boolean;
   /** Running background jobs shown as rows in the peek view (max 2). */
   jobRows: number;
+  /** A maximised window's title bar is under the island: rest as a thin lip. */
+  lip: boolean;
 }
 
 export function dimsFor(mode: IslandMode, ctx: DimsContext): Dims {
   switch (mode) {
     case "compact":
+      if (ctx.lip) return { w: 132, h: LIP_H };
       return { w: ctx.hasMedia || ctx.hasActivity ? 212 : 168, h: BROW_H };
     case "peek":
       return ctx.hasMedia ? { w: 452, h: 136 + ctx.jobRows * 30 } : { w: 412, h: 104 + ctx.jobRows * 30 };

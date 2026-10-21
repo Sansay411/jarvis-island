@@ -34,8 +34,10 @@ const TIMER_FULLSCREEN: usize = 1;
 const TIMER_REPLACE: usize = 2;
 
 fn check_fullscreen(ctx: &Ctx) {
-    let fs = display::foreground_is_fullscreen(ctx.island.hwnd());
-    ctx.island.set_fullscreen_hidden(fs);
+    let (monitor, center_x, bottom_y) = ctx.island.monitor_and_center();
+    let shape = display::foreground_shape(ctx.island.hwnd(), monitor, center_x, bottom_y);
+    ctx.island.set_fullscreen_hidden(shape.fullscreen);
+    ctx.island.set_top_covered(shape.top_covered);
 }
 
 unsafe extern "system" fn on_win_event(

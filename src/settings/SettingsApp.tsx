@@ -49,6 +49,18 @@ interface Memory {
   createdAt: string;
 }
 
+interface AudioDevices {
+  inputs: string[];
+  outputs: string[];
+  defaultInput: string | null;
+  defaultOutput: string | null;
+}
+
+interface VoiceStatus {
+  state: string;
+  metrics: { lastTimeToFirstAudioMs: number | null; lastBargeInMs: number | null; connectMs: number | null };
+}
+
 interface TaskRecord {
   id: string;
   request: string;
@@ -170,6 +182,8 @@ export default function SettingsApp() {
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [diag, setDiag] = useState<Diagnostics | null>(null);
   const [shortcutProblems, setShortcutProblems] = useState<string[]>([]);
+  const [devices, setDevices] = useState<AudioDevices | null>(null);
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null);
 
   const load = async () => {
     const v = await invoke<SettingsView>("settings_get");
@@ -185,7 +199,11 @@ export default function SettingsApp() {
       void invoke<Memory[]>("memories_list").then(setMemories);
       void invoke<TaskRecord[]>("tasks_recent").then(setTasks);
     }
-    if (section === "diagnostics") void invoke<Diagnostics>("diagnostics_get").then(setDiag);
+    if (section === "diagnostics") {
+      void invoke<Diagnostics>("diagnostics_get").then(setDiag);
+      void invoke<VoiceStatus>("voice_status").then(setVoiceStatus);
+    }
+    if (section === "voice") void invoke<AudioDevices>("audio_devices").then(setDevices);
   }, [section]);
 
   const dirty = useMemo(() => JSON.stringify(view?.settings) !== JSON.stringify(draft), [view, draft]);
@@ -313,6 +331,29 @@ export default function SettingsApp() {
               hint="Один аккаунт Model Studio для текста и голоса"
             />
             {!draft.voice.reuseLlmKey && <KeyField kind="voice" has={view.hasVoiceKey} onChanged={() => void load()} />}
+            <div className="grid2">
+              <Field label="Микрофон">
+                <select value={draft.voice.inputDevice} onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, inputDevice: e.target.value } }))}>
+                  <option value="">По умолчанию{devices?.defaultInput ? ` — ` : ""}</option>
+                  {devices?.inputs.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Вывод звука">
+                <select value={draft.voice.outputDevice} onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, outputDevice: e.target.value } }))}>
+                  <option value="">По умолчанию{devices?.defaultOutput ? ` — ` : ""}</option>
+                  {devices?.outputs.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            <p className="field-hint">С колонками без наушников Джарвис приглушает микрофон, пока говорит сам, — перебивать можно, говоря громче.</p>
           </section>
         )}
 
@@ -461,6 +502,10 @@ export default function SettingsApp() {
                     .map((m) => `${m.name.replace("\\\\.\\", "")} ${m.bounds.width}×${m.bounds.height} @${Math.round(m.scale * 100)}%${m.primary ? " (основной)" : ""}`)
                     .join(", ")}
                 </dd>
+                <dt>Голос: время до первого звука</dt>
+                <dd>{voiceStatus?.metrics.lastTimeToFirstAudioMs != null ? `${voiceStatus.metrics.lastTimeToFirstAudioMs} мс` : "ещё не измерено"}</dd>
+                <dt>Голос: подключение</dt>
+                <dd>{voiceStatus?.metrics.connectMs != null ? `${voiceStatus.metrics.connectMs} мс` : "ещё не измерено"}</dd>
                 <dt>Журнал</dt>
                 <dd className="mono">{view.logPath}</dd>
                 <dt>Данные</dt>
