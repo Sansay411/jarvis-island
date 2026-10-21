@@ -58,6 +58,9 @@ export function ToolRow({ item }: { item: ToolItem }) {
         {item.summary && item.status !== "running" && <span className="tool-summary">{item.error ?? item.summary}</span>}
         <StatusGlyph status={item.status} />
       </button>
+      {item.status === "running" && item.progress && item.progress.length > 0 && (
+        <pre className="tool-progress">{item.progress.join("\n")}</pre>
+      )}
       {open && hasDetails && (
         <div className="tool-details">
           {item.args !== null && item.args !== undefined && (

@@ -8,6 +8,7 @@ export type AgentEvent =
   | { type: "phase"; turnId: string; phase: AgentPhase }
   | { type: "textDelta"; turnId: string; text: string }
   | { type: "toolStarted"; turnId: string; callId: string; tool: string; title: string; args: unknown }
+  | { type: "toolProgress"; turnId: string; callId: string; line: string }
   | {
       type: "toolFinished";
       turnId: string;

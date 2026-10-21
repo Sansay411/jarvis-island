@@ -6,11 +6,13 @@
 pub mod apps;
 pub mod audio;
 pub mod brightness;
+pub mod clipboard;
 pub mod com;
 pub mod display;
 pub mod island;
 pub mod media;
 pub mod process;
+pub mod supervisor;
 pub mod watcher;
 pub mod winmgr;
 

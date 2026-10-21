@@ -218,6 +218,11 @@ impl AppIndex {
     }
 
     pub fn search(&self, query: &str, limit: usize) -> AppResult<Vec<AppEntry>> {
+        Ok(self.search_scored(query, limit)?.into_iter().map(|(_, a)| a).collect())
+    }
+
+    /// Search returning relevance scores (100 = exact name match).
+    pub fn search_scored(&self, query: &str, limit: usize) -> AppResult<Vec<(u32, AppEntry)>> {
         self.ensure_fresh(Duration::from_secs(600))?;
         let mut scored: Vec<(u32, AppEntry)> = self
             .entries
@@ -229,7 +234,8 @@ impl AppIndex {
             })
             .collect();
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.len().cmp(&b.1.name.len())));
-        Ok(scored.into_iter().take(limit).map(|(_, a)| a).collect())
+        scored.truncate(limit);
+        Ok(scored)
     }
 
     pub fn all(&self) -> AppResult<Vec<AppEntry>> {

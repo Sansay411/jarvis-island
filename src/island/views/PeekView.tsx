@@ -1,6 +1,7 @@
 import { Icon } from "../../ui/Icon";
 import { hasActiveMedia, useSystem } from "../../store/system";
 import { useIsland } from "../../store/island";
+import { usePrefs } from "../../store/prefs";
 import { MediaCard } from "./MediaCard";
 import { QuickControls } from "./QuickControls";
 
@@ -8,6 +9,7 @@ export function PeekView() {
   const media = useSystem((s) => s.media);
   const set = useIsland((s) => s.set);
   const withMedia = hasActiveMedia(media);
+  const shortcut = usePrefs((p) => p.workspaceShortcut);
 
   return (
     <div className="view view-peek">
@@ -28,7 +30,7 @@ export function PeekView() {
         <div className="peek-grid peek-grid-solo">
           <button className="ask-pill" onClick={() => set({ workspaceOpen: true })}>
             Спросить Джарвиса
-            <kbd>Ctrl Alt J</kbd>
+            {shortcut && <kbd>{shortcut.replaceAll("+", " ")}</kbd>}
           </button>
           <QuickControls />
         </div>

@@ -24,6 +24,8 @@ export type ChatItem =
       error?: string | null;
       risk?: RiskLevel;
       details?: string;
+      /** Last lines of live output while running. */
+      progress?: string[];
     }
   | { kind: "notice"; id: string; tone: "error" | "info"; text: string };
 
@@ -154,6 +156,13 @@ function apply(ev: AgentEvent) {
         };
       });
       break;
+    case "toolProgress":
+      set((s) => ({
+        items: s.items.map((it) =>
+          it.kind === "tool" && it.id === ev.callId ? { ...it, progress: [...(it.progress ?? []), ev.line].slice(-4) } : it,
+        ),
+      }));
+      break;
     case "confirmationRequired":
       set((s) => {
         const items = s.items.map((it) => (it.kind === "assistant" && it.turnId === ev.turnId ? { ...it, streaming: false } : it));
@@ -208,6 +217,7 @@ function apply(ev: AgentEvent) {
 
 export async function startAgentFeed() {
   await listen<AgentEvent>("agent:event", (e) => apply(e.payload));
+  await listen("settings:changed", () => void useAgent.getState().loadStatus());
   await useAgent.getState().loadStatus();
   await useAgent.getState().loadHistory();
 }

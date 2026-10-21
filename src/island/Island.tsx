@@ -9,6 +9,7 @@ import { ipc, on } from "../lib/ipc";
 import { resolveMode, useIsland } from "../store/island";
 import { hasActiveMedia, useSystem } from "../store/system";
 import { useAgentMood } from "../store/agent";
+import { usePrefs } from "../store/prefs";
 import { BROW_H, CANVAS_W, SHOULDER, bottomRadius, dimsFor, notchPath, shapeRect, type IslandMode } from "./geometry";
 import { Eyes, type EyeMood } from "./Eyes";
 import { CompactView } from "./views/CompactView";
@@ -106,7 +107,7 @@ export function Island() {
   const media = useSystem((s) => s.media);
   const refreshControls = useSystem((s) => s.refreshControls);
   const agentMood = useAgentMood();
-  const reduced = useReducedMotion();
+  const reduced = useReducedMotion() || usePrefs((p) => p.reduceMotion);
 
   const mode = resolveMode(st);
   const withMedia = hasActiveMedia(media);

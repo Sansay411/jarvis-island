@@ -109,6 +109,11 @@ pub async fn app_launch(state: State<'_, AppState>, id: String) -> AppResult<app
     .await
 }
 
+#[tauri::command]
+pub fn shortcut_problems() -> Vec<String> {
+    crate::shortcuts::problems()
+}
+
 // ---------- diagnostics ----------
 
 #[derive(Serialize)]

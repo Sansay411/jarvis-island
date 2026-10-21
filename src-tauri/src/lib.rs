@@ -2,13 +2,23 @@
 //!
 //! Layering (see docs/ARCHITECTURE.md):
 //!   platform  → Win32/COM/WinRT integrations, no UI knowledge
-//!   ipc       → Tauri commands/events, thin adapters over platform
+//!   store     → SQLite settings/history/audit, Credential Manager secrets
+//!   ai        → provider adapters (OpenAI-compatible)
+//!   tools     → registry of verified agent capabilities
+//!   agent     → the Observe → Reason → Act → Verify loop
+//!   ipc*      → Tauri commands/events, thin adapters
 //!   state     → shared handles managed by Tauri
 
+pub mod agent;
+pub mod ai;
 pub mod error;
 mod ipc;
+mod ipc_agent;
 pub mod platform;
+mod shortcuts;
 mod state;
+pub mod store;
+pub mod tools;
 pub mod util;
 
 use std::sync::Arc;
@@ -16,13 +26,11 @@ use std::time::{Duration, Instant};
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, Manager, WindowEvent};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri::{Manager, WindowEvent};
 
 use platform::island::{self, Island};
+use shortcuts::emit_command;
 use state::AppState;
-
-pub const EVT_COMMAND: &str = "island:command";
 
 fn init_logging() {
     use tracing_subscriber::{fmt, EnvFilter};
@@ -38,15 +46,15 @@ fn init_logging() {
     }
 }
 
-fn emit_command(app: &tauri::AppHandle, action: &str) {
-    let _ = app.emit_to(island::LABEL, EVT_COMMAND, action);
-}
-
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-    let toggle = MenuItem::with_id(app, "toggle", "Показать или скрыть остров", true, None::<&str>)?;
     let chat = MenuItem::with_id(app, "chat", "Открыть чат", true, None::<&str>)?;
+    let toggle = MenuItem::with_id(app, "toggle", "Показать или скрыть остров", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Настройки", true, None::<&str>)?;
+    let cancel = MenuItem::with_id(app, "cancel", "Остановить текущую задачу", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Выйти из JARVIS", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&chat, &toggle, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(app, &[&chat, &toggle, &sep, &cancel, &settings, &sep2, &quit])?;
     TrayIconBuilder::with_id("jarvis")
         .icon(app.default_window_icon().cloned().expect("bundled icon"))
         .tooltip("JARVIS")
@@ -58,11 +66,18 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                 app.state::<AppState>().island.set_user_hidden(false);
                 emit_command(app, "open-workspace");
             }
+            "cancel" => app.state::<Arc<agent::Agent>>().cancel(),
+            "settings" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = ipc_agent::settings_open(app).await;
+                });
+            }
             "quit" => app.exit(0),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            if let tauri::tray::TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, .. } = event {
+            if let tauri::tray::TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, button_state: tauri::tray::MouseButtonState::Up, .. } = event {
                 let app = tray.app_handle();
                 app.state::<AppState>().island.set_user_hidden(false);
                 emit_command(app, "open-workspace");
@@ -72,45 +87,31 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-fn setup_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let workspace = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyJ);
-    let voice = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
-    app.handle().plugin(
-        tauri_plugin_global_shortcut::Builder::new()
-            .with_handler(move |app, shortcut, event| {
-                if event.state() != ShortcutState::Pressed {
-                    return;
-                }
-                app.state::<AppState>().island.set_user_hidden(false);
-                if shortcut == &workspace {
-                    emit_command(app, "toggle-workspace");
-                } else if shortcut == &voice {
-                    emit_command(app, "toggle-voice");
-                }
-            })
-            .build(),
-    )?;
-    for sc in [workspace, voice] {
-        if let Err(e) = app.global_shortcut().register(sc) {
-            // Another app owns the combination; JARVIS stays usable via the
-            // island and tray, and the conflict is visible in the log.
-            tracing::warn!("global shortcut {sc:?} unavailable: {e}");
-        }
-    }
-    Ok(())
-}
-
 pub fn run() {
     init_logging();
     tracing::info!("JARVIS {} starting", env!("CARGO_PKG_VERSION"));
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // A second launch (Start menu, shortcut, `jarvis.exe --settings`)
+            // surfaces the running instance instead of starting another.
+            if argv.iter().any(|a| a == "--settings") {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = ipc_agent::settings_open(app).await;
+                });
+                return;
+            }
             app.state::<AppState>().island.set_user_hidden(false);
             emit_command(app, "open-workspace");
         }))
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+        .plugin(shortcuts::plugin())
         .setup(|app| {
+            let data_dir = app.path().app_local_data_dir()?;
+            let store = Arc::new(store::Store::open(&data_dir.join("jarvis.db"))?);
+            let settings = store.settings();
+
             let window = app
                 .get_webview_window(island::LABEL)
                 .ok_or("island window missing from configuration")?;
@@ -122,8 +123,11 @@ pub fn run() {
                 island: island.clone(),
                 history: history.clone(),
                 apps: apps.clone(),
+                store,
                 started_at: Instant::now(),
             });
+            let registry = Arc::new(tools::Registry::new());
+            app.manage(agent::Agent::new(app.handle().clone(), registry));
 
             window.show()?;
             island.spawn_tracker();
@@ -139,7 +143,9 @@ pub fn run() {
             });
 
             setup_tray(app)?;
-            setup_shortcuts(app)?;
+            for p in shortcuts::apply(app.handle(), &settings.shortcuts) {
+                tracing::warn!("{p}");
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -172,6 +178,23 @@ pub fn run() {
             ipc::apps_search,
             ipc::app_launch,
             ipc::diagnostics_get,
+            ipc::shortcut_problems,
+            ipc_agent::agent_status,
+            ipc_agent::agent_send,
+            ipc_agent::agent_cancel,
+            ipc_agent::agent_confirm,
+            ipc_agent::agent_new_conversation,
+            ipc_agent::agent_history,
+            ipc_agent::settings_get,
+            ipc_agent::settings_save,
+            ipc_agent::secret_set,
+            ipc_agent::secret_clear,
+            ipc_agent::provider_test,
+            ipc_agent::memories_list,
+            ipc_agent::memory_delete,
+            ipc_agent::history_clear,
+            ipc_agent::tasks_recent,
+            ipc_agent::settings_open,
         ])
         .run(tauri::generate_context!())
         .expect("error while running JARVIS");
