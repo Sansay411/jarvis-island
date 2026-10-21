@@ -6,6 +6,7 @@
 //! input schema + structured output).
 
 mod apps;
+mod dev;
 mod files;
 mod memory;
 mod screen;
@@ -14,6 +15,7 @@ mod system;
 
 pub use files::image_data_url;
 pub use screen::sensitive_text;
+pub use dev::{claude_exe, codex_entry, vscode_exe, vscode_recent};
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -143,6 +145,7 @@ impl Registry {
             .chain(shell::tools())
             .chain(memory::tools())
             .chain(screen::tools())
+            .chain(dev::tools())
         {
             tools.insert(t.name, t);
         }

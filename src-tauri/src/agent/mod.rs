@@ -74,6 +74,9 @@ struct Inner {
     confirms: HashMap<String, oneshot::Sender<bool>>,
     /// Moderate-risk tools the user already approved in this conversation.
     approved_tools: HashSet<String>,
+    /// Background reports that arrived mid-turn; appended after it ends so
+    /// they never split a tool call from its results.
+    pending_reports: Vec<(String, bool)>,
 }
 
 pub struct Agent {
@@ -117,6 +120,7 @@ impl Agent {
                 active: None,
                 confirms: HashMap::new(),
                 approved_tools: HashSet::new(),
+                pending_reports: Vec::new(),
             }),
         })
     }
@@ -196,6 +200,26 @@ impl Agent {
         i.loaded = true;
         i.approved_tools.clear();
         Ok(())
+    }
+
+    /// Post a report that did not come from a model turn (e.g. a coding agent
+    /// finished in the background). It becomes part of the conversation so
+    /// later turns know about it.
+    pub fn post_report(&self, text: String, ok: bool) {
+        {
+            let mut i = self.inner.lock();
+            if i.active.is_some() {
+                i.pending_reports.push((text, ok));
+                return;
+            }
+        }
+        self.ensure_loaded();
+        let (conv, persist) = (self.inner.lock().conversation_id.clone(), self.state().store.settings().privacy.store_history);
+        if persist {
+            let _ = self.state().store.create_conversation(&conv);
+        }
+        self.push_history(&conv, ChatMessage::text(Role::Assistant, text.clone()), None, None, persist);
+        self.emit(AgentEvent::Report { text, tone: if ok { "ok" } else { "error" } });
     }
 
     pub fn cancel(&self) {
@@ -336,12 +360,16 @@ impl Agent {
             let _ = store.task_finished(&turn.id, status, steps, error.as_deref());
         }
         tracing::info!(turn = %turn.id, status, steps, ms = started.elapsed().as_millis() as u64, "turn finished");
-        {
+        let pending = {
             let mut i = self.inner.lock();
             i.active = None;
             i.confirms.clear();
-        }
+            std::mem::take(&mut i.pending_reports)
+        };
         self.emit(AgentEvent::TurnFinished { turn_id: turn.id.clone(), status, error });
+        for (text, ok) in pending {
+            self.post_report(text, ok);
+        }
     }
 
     async fn turn_loop(&self, turn: &Turn, conversation_id: &str, client: &OpenAiCompatible, steps: &mut u32) -> AppResult<()> {

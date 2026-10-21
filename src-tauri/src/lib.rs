@@ -13,6 +13,7 @@ pub mod agent;
 pub mod ai;
 pub mod error;
 mod ipc;
+pub mod jobs;
 mod ipc_agent;
 pub mod platform;
 mod shortcuts;
@@ -138,6 +139,7 @@ pub fn run() {
             });
             let registry = Arc::new(tools::Registry::new());
             app.manage(agent::Agent::new(app.handle().clone(), registry));
+            app.manage(jobs::JobManager::new(app.handle().clone()));
 
             window.show()?;
             island.spawn_tracker();
@@ -189,6 +191,8 @@ pub fn run() {
             ipc::app_launch,
             ipc::diagnostics_get,
             ipc::shortcut_problems,
+            ipc::jobs_list,
+            ipc::job_cancel,
             ipc_agent::agent_status,
             ipc_agent::agent_send,
             ipc_agent::agent_cancel,

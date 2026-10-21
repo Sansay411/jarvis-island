@@ -17,4 +17,6 @@ pub enum AgentEvent {
     ToolFinished { turn_id: String, call_id: String, ok: bool, summary: String, error: Option<String> },
     ConfirmationRequired { turn_id: String, call_id: String, tool: String, title: String, risk: &'static str, details: String },
     TurnFinished { turn_id: String, status: &'static str, error: Option<String> },
+    /// A message that did not come from a model turn (background job results).
+    Report { text: String, tone: &'static str },
 }

@@ -24,6 +24,31 @@ fn main() {
             let w = winmgr::find_windows(&args[1]).into_iter().next().expect("window");
             serde_json::to_string_pretty(&winmgr::close(w.hwnd)).unwrap()
         }
+        "devtools" => format!(
+            "code={:?}
+codex={:?}
+claude={:?}
+recent={:?}",
+            jarvis_lib::tools::vscode_exe(),
+            jarvis_lib::tools::codex_entry(),
+            jarvis_lib::tools::claude_exe(),
+            jarvis_lib::tools::vscode_recent().into_iter().take(5).collect::<Vec<_>>()
+        ),
+        "codex-run" => {
+            let (node, script) = jarvis_lib::tools::codex_entry().expect("codex");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let spec = jarvis_lib::platform::supervisor::Spec {
+                program: node.display().to_string(),
+                args: vec![script.display().to_string(), "exec".into(), "--json".into(), "--skip-git-repo-check".into(), "-C".into(), args[1].clone(), "-s".into(), "read-only".into(), "-".into()],
+                cwd: Some(args[1].clone().into()),
+                env: vec![],
+                timeout: std::time::Duration::from_secs(180),
+                stdin: Some(args[2].clone()),
+            };
+            let sink: jarvis_lib::platform::supervisor::LineSink = std::sync::Arc::new(|l: &str| { if l.starts_with('{') { println!("  | {}", l.chars().take(160).collect::<String>()) } });
+            let r = rt.block_on(jarvis_lib::platform::supervisor::run(spec, tokio_util::sync::CancellationToken::new(), Some(sink))).unwrap();
+            format!("exit={:?} success={} ms={}", r.exit_code, r.success, r.duration_ms)
+        }
         "monitors" => serde_json::to_string_pretty(&display::list_monitors()).unwrap(),
         "apps" => {
             let idx = apps::AppIndex::default();

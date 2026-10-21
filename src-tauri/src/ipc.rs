@@ -139,3 +139,15 @@ pub async fn diagnostics_get(state: State<'_, AppState>) -> AppResult<Diagnostic
         working_set_mb: crate::util::working_set_mb(),
     })
 }
+
+// ---------- background jobs ----------
+
+#[tauri::command]
+pub fn jobs_list(jobs: State<'_, std::sync::Arc<crate::jobs::JobManager>>) -> Vec<crate::jobs::JobView> {
+    jobs.list()
+}
+
+#[tauri::command]
+pub fn job_cancel(jobs: State<'_, std::sync::Arc<crate::jobs::JobManager>>, id: String) -> AppResult<()> {
+    jobs.cancel(&id)
+}
