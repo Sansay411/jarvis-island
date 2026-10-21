@@ -7,6 +7,7 @@ import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../../ui/Icon";
 import { inputLevel, outputLevel, useVoice, type VoiceState } from "../../store/voice";
+import { useAgent } from "../../store/agent";
 
 const BARS = 8;
 const LABEL: Record<VoiceState, string> = {
@@ -62,6 +63,23 @@ function Visualizer({ state }: { state: VoiceState }) {
   );
 }
 
+function VoiceConfirm() {
+  const pending = useAgent((s) => s.items.find((it) => it.kind === "tool" && it.status === "awaiting"));
+  const confirm = useAgent((s) => s.confirm);
+  if (!pending || pending.kind !== "tool") return null;
+  return (
+    <div className={`voice-confirm risk-${pending.risk ?? "moderate"}`} role="group" aria-label="Нужно подтверждение">
+      <span className="voice-confirm-title">{pending.title}</span>
+      <button className="btn btn-quiet" onClick={() => void confirm(pending.id, false)}>
+        Отклонить
+      </button>
+      <button className="btn btn-solid" onClick={() => void confirm(pending.id, true)}>
+        Разрешить
+      </button>
+    </div>
+  );
+}
+
 export function VoiceView() {
   const { state, error, userLine, assistantLine } = useVoice();
   const line = state === "error" ? error : state === "speaking" || (state === "listening" && assistantLine) ? assistantLine : userLine;
@@ -78,6 +96,7 @@ export function VoiceView() {
         </div>
       </div>
       <Visualizer state={state} />
+      <VoiceConfirm />
       <p className="voice-line" aria-live="polite">
         {words.map((w, i) => (
           <span key={`${words.length}-${i}`} className={i === words.length - 1 && state !== "error" ? "word is-new" : "word"}>

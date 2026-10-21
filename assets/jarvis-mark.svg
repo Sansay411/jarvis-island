@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="surface" x1="32" y1="0" x2="32" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1B1B20"/>
+      <stop offset="1" stop-color="#060607"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="32" y1="0" x2="32" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.08"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="32" y1="23" x2="32" y2="41" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD88F"/>
+      <stop offset="0.5" stop-color="#FFB23F"/>
+      <stop offset="1" stop-color="#E2861C"/>
+    </linearGradient>
+    <filter id="glow" x="12" y="14" width="40" height="36" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="2.2"/>
+    </filter>
+  </defs>
+  <path d="M32 .5 C46 .5 53 .5 58.25 5.75 C63.5 11 63.5 18 63.5 32 C63.5 46 63.5 53 58.25 58.25 C53 63.5 46 63.5 32 63.5 C18 63.5 11 63.5 5.75 58.25 C.5 53 .5 46 .5 32 C.5 18 .5 11 5.75 5.75 C11 .5 18 .5 32 .5 Z" fill="url(#surface)" stroke="url(#rim)" stroke-width="1"/>
+  <g fill="#FFB23F" opacity="0.55" filter="url(#glow)">
+    <rect x="21.5" y="23" width="7" height="18" rx="3.5"/>
+    <rect x="35.5" y="23" width="7" height="18" rx="3.5"/>
+  </g>
+  <rect x="21.5" y="23" width="7" height="18" rx="3.5" fill="url(#amber)"/>
+  <rect x="35.5" y="23" width="7" height="18" rx="3.5" fill="url(#amber)"/>
+</svg>

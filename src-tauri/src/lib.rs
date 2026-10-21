@@ -101,8 +101,10 @@ pub fn run() {
                 if let Some(text) = argv.get(pos + 1).cloned() {
                     app.state::<AppState>().island.set_user_hidden(false);
                     emit_command(app, "open-workspace");
-                    if let Err(e) = app.state::<Arc<agent::Agent>>().send(text, Vec::new()) {
+                    let agent = app.state::<Arc<agent::Agent>>();
+                    if let Err(e) = agent.send(text, Vec::new()) {
                         tracing::warn!("--ask rejected: {e}");
+                        agent.post_report(format!("Не удалось начать задачу: {e}"), false);
                     }
                 }
                 return;

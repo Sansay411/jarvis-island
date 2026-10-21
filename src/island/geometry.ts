@@ -30,6 +30,8 @@ export interface DimsContext {
   jobRows: number;
   /** A maximised window's title bar is under the island: rest as a thin lip. */
   lip: boolean;
+  /** A confirmation is waiting (shown inline in the voice view). */
+  confirm: boolean;
 }
 
 export function dimsFor(mode: IslandMode, ctx: DimsContext): Dims {
@@ -40,7 +42,7 @@ export function dimsFor(mode: IslandMode, ctx: DimsContext): Dims {
     case "peek":
       return ctx.hasMedia ? { w: 452, h: 136 + ctx.jobRows * 30 } : { w: 412, h: 104 + ctx.jobRows * 30 };
     case "voice":
-      return { w: 380, h: 132 };
+      return { w: 380, h: ctx.confirm ? 178 : 132 };
     case "drop":
       return { w: 440, h: 132 };
     case "workspace":

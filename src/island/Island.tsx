@@ -10,7 +10,7 @@ import { ipc, on } from "../lib/ipc";
 import { resolveMode, useIsland } from "../store/island";
 import { hasActiveMedia, useSystem } from "../store/system";
 import { useRunningJobs } from "../store/jobs";
-import { useAgentMood } from "../store/agent";
+import { useAgent, useAgentMood } from "../store/agent";
 import { usePrefs } from "../store/prefs";
 import { BROW_H, CANVAS_W, bottomRadius, dimsFor, notchPath, shapeRect, shoulderFor, type IslandMode } from "./geometry";
 import { Eyes, type EyeMood } from "./Eyes";
@@ -122,9 +122,10 @@ export function Island() {
   const mode = resolveMode(st);
   const withMedia = hasActiveMedia(media);
   const jobRows = Math.min(2, useRunningJobs().length);
+  const confirmPending = useAgent((s) => s.items.some((it) => it.kind === "tool" && it.status === "awaiting"));
   const dims = useMemo(
-    () => dimsFor(mode, { hasMedia: withMedia, hasActivity: jobRows > 0, jobRows, lip: st.topCovered }),
-    [mode, withMedia, jobRows, st.topCovered],
+    () => dimsFor(mode, { hasMedia: withMedia, hasActivity: jobRows > 0, jobRows, lip: st.topCovered, confirm: confirmPending }),
+    [mode, withMedia, jobRows, st.topCovered, confirmPending],
   );
 
   const lip = mode === "compact" && st.topCovered;

@@ -416,3 +416,24 @@
     filter: blur(0);
   }
 }
+
+.voice-confirm {
+  margin: 2px 14px 4px;
+  padding: 6px 6px 6px 12px;
+  border-radius: var(--r-md);
+  background: var(--graphite-2);
+  box-shadow: inset 0 0 0 1px rgba(255, 178, 63, 0.35);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.voice-confirm.risk-high {
+  box-shadow: inset 0 0 0 1px rgba(255, 107, 90, 0.5);
+}
+.voice-confirm-title {
+  flex: 1;
+  font-size: var(--fs-12);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
