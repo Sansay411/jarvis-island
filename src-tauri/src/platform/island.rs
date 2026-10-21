@@ -114,6 +114,9 @@ pub struct Island {
     /// Hidden by the user (tray / shortcut).
     hidden_by_user: AtomicBool,
     input_mode: AtomicBool,
+    /// While the agent drives the mouse, the island stays click-through so a
+    /// synthetic click near the top centre reaches the app underneath.
+    pointer_suppressed: AtomicBool,
     prev_foreground: AtomicIsize,
     /// Counters for diagnostics: tracker iterations and wall time spent.
     pub tracker_ticks: std::sync::atomic::AtomicU64,
@@ -132,6 +135,7 @@ impl Island {
             hidden_for_fullscreen: AtomicBool::new(false),
             hidden_by_user: AtomicBool::new(false),
             input_mode: AtomicBool::new(false),
+            pointer_suppressed: AtomicBool::new(false),
             prev_foreground: AtomicIsize::new(0),
             tracker_ticks: std::sync::atomic::AtomicU64::new(0),
         });
@@ -279,6 +283,13 @@ impl Island {
         Ok(())
     }
 
+    pub fn suppress_pointer(&self, on: bool) {
+        self.pointer_suppressed.store(on, Ordering::Relaxed);
+        if on {
+            let _ = self.window.set_ignore_cursor_events(true);
+        }
+    }
+
     pub fn on_focus_lost(&self) {
         if self.input_mode.load(Ordering::Relaxed) {
             // Focus already moved elsewhere by the user: don't steal it back.
@@ -308,12 +319,12 @@ impl Island {
         let mut press_inside = false;
         loop {
             self.tracker_ticks.fetch_add(1, Ordering::Relaxed);
-            if !self.is_visible() {
+            if !self.is_visible() || self.pointer_suppressed.load(Ordering::Relaxed) {
                 if interactive {
                     let _ = self.window.set_ignore_cursor_events(true);
                     interactive = false;
                 }
-                std::thread::sleep(Duration::from_millis(250));
+                std::thread::sleep(Duration::from_millis(if self.is_visible() { 30 } else { 250 }));
                 continue;
             }
 

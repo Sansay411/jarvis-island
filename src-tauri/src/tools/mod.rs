@@ -8,10 +8,12 @@
 mod apps;
 mod files;
 mod memory;
+mod screen;
 mod shell;
 mod system;
 
 pub use files::image_data_url;
+pub use screen::sensitive_text;
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -140,6 +142,7 @@ impl Registry {
             .chain(files::tools())
             .chain(shell::tools())
             .chain(memory::tools())
+            .chain(screen::tools())
         {
             tools.insert(t.name, t);
         }

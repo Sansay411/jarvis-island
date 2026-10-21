@@ -9,7 +9,7 @@ pub const EVT_AGENT: &str = "agent:event";
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AgentEvent {
-    TurnStarted { turn_id: String, conversation_id: String },
+    TurnStarted { turn_id: String, conversation_id: String, user_text: String },
     Phase { turn_id: String, phase: &'static str },
     TextDelta { turn_id: String, text: String },
     ToolStarted { turn_id: String, call_id: String, tool: String, title: String, args: Value },

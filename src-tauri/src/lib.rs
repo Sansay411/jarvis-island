@@ -95,6 +95,16 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // A second launch (Start menu, shortcut, `jarvis.exe --settings`)
             // surfaces the running instance instead of starting another.
+            if let Some(pos) = argv.iter().position(|a| a == "--ask") {
+                if let Some(text) = argv.get(pos + 1).cloned() {
+                    app.state::<AppState>().island.set_user_hidden(false);
+                    emit_command(app, "open-workspace");
+                    if let Err(e) = app.state::<Arc<agent::Agent>>().send(text, Vec::new()) {
+                        tracing::warn!("--ask rejected: {e}");
+                    }
+                }
+                return;
+            }
             if argv.iter().any(|a| a == "--settings") {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {

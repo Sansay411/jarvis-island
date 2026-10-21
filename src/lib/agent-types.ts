@@ -4,7 +4,7 @@ export type AgentPhase = "thinking" | "acting" | "verifying";
 export type RiskLevel = "low" | "moderate" | "high";
 
 export type AgentEvent =
-  | { type: "turnStarted"; turnId: string; conversationId: string }
+  | { type: "turnStarted"; turnId: string; conversationId: string; userText: string }
   | { type: "phase"; turnId: string; phase: AgentPhase }
   | { type: "textDelta"; turnId: string; text: string }
   | { type: "toolStarted"; turnId: string; callId: string; tool: string; title: string; args: unknown }

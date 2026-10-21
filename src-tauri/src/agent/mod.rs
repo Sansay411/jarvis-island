@@ -314,7 +314,7 @@ impl Agent {
 
     async fn run_turn(self: Arc<Self>, turn: Turn, conversation_id: String, text: String, client: OpenAiCompatible) {
         let started = Instant::now();
-        self.emit(AgentEvent::TurnStarted { turn_id: turn.id.clone(), conversation_id: conversation_id.clone() });
+        self.emit(AgentEvent::TurnStarted { turn_id: turn.id.clone(), conversation_id: conversation_id.clone(), user_text: text.clone() });
         let persist = turn.settings.privacy.store_history;
         let store = self.state().store.clone();
         if persist {
@@ -452,6 +452,14 @@ impl Agent {
                 if attached { Risk::Low } else { base }
             }
             "clipboard_read" if turn.settings.privacy.allow_clipboard_read => Risk::Low,
+            "ui_act" => {
+                // Pressing a control whose name says "Send", "Delete", "Buy"…
+                let name = args.get("snapshot_id").and_then(Value::as_u64).zip(args.get("element_id").and_then(Value::as_u64))
+                    .and_then(|(s, e)| crate::platform::uia::element_name(s, e as usize))
+                    .unwrap_or_default();
+                let act = args.get("action").and_then(Value::as_str).unwrap_or("");
+                if act != "focus" && act != "scroll_into_view" && crate::tools::sensitive_text(&name) { Risk::High } else { base }
+            }
             _ => base,
         }
     }

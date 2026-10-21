@@ -126,7 +126,16 @@ function apply(ev: AgentEvent) {
   const set = useAgent.setState;
   switch (ev.type) {
     case "turnStarted":
-      set({ activeTurn: ev.turnId, phase: "thinking" });
+      set((s) => {
+        // Requests started outside the composer (CLI, voice) still appear in the chat.
+        const last = [...s.items].reverse().find((it) => it.kind === "user");
+        const known = last && last.kind === "user" && last.text === ev.userText;
+        return {
+          activeTurn: ev.turnId,
+          phase: "thinking",
+          items: known ? s.items : [...s.items, { kind: "user", id: uid(), text: ev.userText, attachments: [] }],
+        };
+      });
       break;
     case "phase":
       set({ phase: ev.phase });
