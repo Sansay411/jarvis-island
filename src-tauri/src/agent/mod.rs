@@ -77,6 +77,10 @@ struct Inner {
     /// Background reports that arrived mid-turn; appended after it ends so
     /// they never split a tool call from its results.
     pending_reports: Vec<(String, bool)>,
+    /// Voice transcripts recorded mid-turn, appended after it.
+    pending_messages: Vec<ChatMessage>,
+    /// Callers waiting for a turn's final answer (voice delegation).
+    waiters: HashMap<String, oneshot::Sender<AppResult<String>>>,
 }
 
 pub struct Agent {
@@ -121,6 +125,8 @@ impl Agent {
                 confirms: HashMap::new(),
                 approved_tools: HashSet::new(),
                 pending_reports: Vec::new(),
+                pending_messages: Vec::new(),
+                waiters: HashMap::new(),
             }),
         })
     }
@@ -222,6 +228,63 @@ impl Agent {
         self.emit(AgentEvent::Report { text, tone: if ok { "ok" } else { "error" } });
     }
 
+    pub fn tool_specs(&self) -> Vec<crate::ai::types::ToolSpec> {
+        self.registry.specs()
+    }
+
+    /// Record a voice-conversation line in the current conversation.
+    pub fn record_voice(&self, role: &str, text: &str) {
+        let msg = ChatMessage::text(if role == "user" { Role::User } else { Role::Assistant }, text.to_string());
+        {
+            let mut i = self.inner.lock();
+            if i.active.is_some() {
+                i.pending_messages.push(msg);
+                return;
+            }
+        }
+        self.ensure_loaded();
+        let conv = self.inner.lock().conversation_id.clone();
+        let persist = self.state().store.settings().privacy.store_history;
+        if persist {
+            let _ = self.state().store.create_conversation(&conv);
+        }
+        self.push_history(&conv, msg, None, None, persist);
+    }
+
+    /// Run a full agent turn for a task and wait for its verified final answer
+    /// (used by the voice session for multi-step work).
+    pub async fn delegate(self: &Arc<Self>, task: String) -> AppResult<String> {
+        let (tx, rx) = oneshot::channel();
+        self.start_turn(task, Vec::new(), Some(tx))?;
+        rx.await.map_err(|_| AppError::internal("Задача агента прервалась"))?
+    }
+
+    /// Execute one tool call on behalf of the realtime voice model with the
+    /// same risk policy, confirmations and audit as text turns. Returns the
+    /// JSON result the model reads.
+    pub async fn run_tool_external(&self, name: &str, arguments: &str, cancel: CancellationToken) -> String {
+        let settings = self.state().store.settings();
+        let turn = Turn {
+            id: format!("voice-{}", uuid::Uuid::new_v4().simple()),
+            cancel,
+            attachments: Arc::new(Vec::new()),
+            settings,
+        };
+        let call = ToolCall { id: uuid::Uuid::new_v4().to_string(), name: name.to_string(), arguments: arguments.to_string() };
+        let args: Value = match serde_json::from_str(arguments) {
+            Ok(v) => v,
+            Err(e) => return json!({ "ok": false, "error": format!("invalid JSON arguments: {e}") }).to_string(),
+        };
+        let risk = match self.registry.get(name) {
+            Some(t) => self.effective_risk(&turn, t.name, (t.risk)(&args), &args),
+            None => return json!({ "ok": false, "error": format!("unknown tool {name}") }).to_string(),
+        };
+        match self.execute_one(&turn, &call, args, risk).await {
+            Ok(out) => truncate_chars(&json!({ "ok": out.ok, "summary": out.summary, "data": out.data }).to_string(), 6000),
+            Err(e) => json!({ "ok": false, "error": e.to_string() }).to_string(),
+        }
+    }
+
     pub fn cancel(&self) {
         let mut i = self.inner.lock();
         if let Some(t) = &i.active {
@@ -245,6 +308,15 @@ impl Agent {
     }
 
     pub fn send(self: &Arc<Self>, text: String, attachments: Vec<String>) -> AppResult<SendResult> {
+        self.start_turn(text, attachments, None)
+    }
+
+    fn start_turn(
+        self: &Arc<Self>,
+        text: String,
+        attachments: Vec<String>,
+        waiter: Option<oneshot::Sender<AppResult<String>>>,
+    ) -> AppResult<SendResult> {
         let text = text.trim().to_string();
         if text.is_empty() {
             return Err(AppError::invalid("Пустое сообщение"));
@@ -265,6 +337,9 @@ impl Agent {
                 settings,
             };
             i.active = Some(ActiveTurn { turn_id: t.id.clone(), cancel: t.cancel.clone() });
+            if let Some(w) = waiter {
+                i.waiters.insert(t.id.clone(), w);
+            }
             t
         };
         let conversation_id = self.inner.lock().conversation_id.clone();
@@ -360,13 +435,26 @@ impl Agent {
             let _ = store.task_finished(&turn.id, status, steps, error.as_deref());
         }
         tracing::info!(turn = %turn.id, status, steps, ms = started.elapsed().as_millis() as u64, "turn finished");
-        let pending = {
+        let final_text = {
+            let i = self.inner.lock();
+            i.history.iter().rev().find(|m| m.role == Role::Assistant && !m.joined_text().trim().is_empty()).map(ChatMessage::joined_text)
+        };
+        let (pending, pending_msgs, waiter) = {
             let mut i = self.inner.lock();
             i.active = None;
             i.confirms.clear();
-            std::mem::take(&mut i.pending_reports)
+            (std::mem::take(&mut i.pending_reports), std::mem::take(&mut i.pending_messages), i.waiters.remove(&turn.id))
         };
+        if let Some(w) = waiter {
+            let _ = w.send(match &outcome {
+                Ok(()) => Ok(final_text.unwrap_or_default()),
+                Err(e) => Err(AppError::internal(e.to_string())),
+            });
+        }
         self.emit(AgentEvent::TurnFinished { turn_id: turn.id.clone(), status, error });
+        for m in pending_msgs {
+            self.push_history(&conversation_id, m, None, None, persist);
+        }
         for (text, ok) in pending {
             self.post_report(text, ok);
         }

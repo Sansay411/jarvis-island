@@ -5,6 +5,7 @@ import { usePrefs } from "../../store/prefs";
 import { MediaCard } from "./MediaCard";
 import { QuickControls } from "./QuickControls";
 import { JobsStrip } from "./JobsStrip";
+import { toggleVoice } from "../../store/voice";
 
 export function PeekView() {
   const media = useSystem((s) => s.media);
@@ -17,6 +18,9 @@ export function PeekView() {
       <div className="brow">
         <span className="brow-name">Джарвис</span>
         <div className="brow-actions">
+          <button className="icon-btn" aria-label="Голосовой режим" onClick={() => void toggleVoice()}>
+            <Icon name="mic" size={16} />
+          </button>
           <button className="icon-btn" aria-label="Открыть чат" onClick={() => set({ workspaceOpen: true })}>
             <Icon name="chat" size={16} />
           </button>

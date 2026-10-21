@@ -37,13 +37,11 @@ export const useIsland = create<IslandStore>((set) => ({
     }),
 }));
 
-/** Flipped on by the voice engine once it is available (see voice milestone). */
-export const VOICE_ENABLED = false;
-
 export function resolveMode(s: Pick<IslandStore, "hovered" | "dragOver" | "workspaceOpen" | "voiceOpen">): IslandMode {
   if (s.dragOver) return "drop";
+  // A live voice session takes over; the workspace returns when it ends.
+  if (s.voiceOpen) return "voice";
   if (s.workspaceOpen) return "workspace";
-  if (VOICE_ENABLED && s.voiceOpen) return "voice";
   if (s.hovered) return "peek";
   return "compact";
 }

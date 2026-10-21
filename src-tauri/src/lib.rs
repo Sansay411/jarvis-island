@@ -21,6 +21,7 @@ mod state;
 pub mod store;
 pub mod tools;
 pub mod util;
+pub mod voice;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -140,6 +141,7 @@ pub fn run() {
             let registry = Arc::new(tools::Registry::new());
             app.manage(agent::Agent::new(app.handle().clone(), registry));
             app.manage(jobs::JobManager::new(app.handle().clone()));
+            app.manage(voice::VoiceManager::new(app.handle().clone()));
 
             window.show()?;
             island.spawn_tracker();
@@ -192,6 +194,10 @@ pub fn run() {
             ipc::diagnostics_get,
             ipc::shortcut_problems,
             ipc::jobs_list,
+            ipc::voice_toggle,
+            ipc::voice_stop,
+            ipc::voice_status,
+            ipc::audio_devices,
             ipc::job_cancel,
             ipc_agent::agent_status,
             ipc_agent::agent_send,

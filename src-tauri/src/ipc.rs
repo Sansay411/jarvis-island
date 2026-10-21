@@ -151,3 +151,40 @@ pub fn jobs_list(jobs: State<'_, std::sync::Arc<crate::jobs::JobManager>>) -> Ve
 pub fn job_cancel(jobs: State<'_, std::sync::Arc<crate::jobs::JobManager>>, id: String) -> AppResult<()> {
     jobs.cancel(&id)
 }
+
+// ---------- voice ----------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceStatus {
+    pub state: crate::voice::VoiceState,
+    pub metrics: crate::voice::VoiceMetrics,
+}
+
+#[tauri::command]
+pub fn voice_toggle(voice: State<'_, std::sync::Arc<crate::voice::VoiceManager>>) -> AppResult<bool> {
+    if voice.is_active() {
+        voice.stop();
+        Ok(false)
+    } else {
+        voice.start()?;
+        Ok(true)
+    }
+}
+
+#[tauri::command]
+pub fn voice_stop(voice: State<'_, std::sync::Arc<crate::voice::VoiceManager>>) {
+    voice.stop();
+}
+
+#[tauri::command]
+pub fn voice_status(voice: State<'_, std::sync::Arc<crate::voice::VoiceManager>>) -> VoiceStatus {
+    VoiceStatus { state: voice.state(), metrics: voice.metrics.lock().clone() }
+}
+
+#[tauri::command]
+pub async fn audio_devices() -> AppResult<crate::voice::audio::AudioDevices> {
+    tokio::task::spawn_blocking(crate::voice::audio::list_devices)
+        .await
+        .map_err(|e| crate::error::AppError::internal(e.to_string()))
+}

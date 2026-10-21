@@ -36,7 +36,13 @@ pub fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             if b.workspace.as_ref() == Some(shortcut) {
                 emit_command(app, "toggle-workspace");
             } else if b.voice.as_ref() == Some(shortcut) {
-                emit_command(app, "toggle-voice");
+                let voice = app.state::<std::sync::Arc<crate::voice::VoiceManager>>();
+                if voice.is_active() {
+                    voice.stop();
+                } else if let Err(e) = voice.start() {
+                    tracing::warn!("voice start failed: {e}");
+                    let _ = app.emit(crate::voice::EVT_STATE, serde_json::json!({ "state": "error", "error": e.to_string() }));
+                }
             }
         })
         .build()

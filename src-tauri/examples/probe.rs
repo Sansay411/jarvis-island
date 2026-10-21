@@ -79,6 +79,30 @@ recent={:?}",
         "switch" => serde_json::to_string(&jarvis_lib::platform::browser::switch_tab(jarvis_lib::platform::browser::browser_windows(Some(&args[1]))[0].hwnd, Some(&args[2]), None).map(|s| s.tabs.into_iter().filter(|t| t.selected).collect::<Vec<_>>())).unwrap(),
         "page" => jarvis_lib::platform::browser::page_text(jarvis_lib::platform::browser::browser_windows(Some(&args[1]))[0].hwnd, 400).unwrap_or_else(|e| e.to_string()),
         "closetab" => format!("{:?}", jarvis_lib::platform::browser::close_tab(jarvis_lib::platform::browser::browser_windows(Some(&args[1]))[0].hwnd, Some(&args[2]), None).map(|(n, s)| (n, s.tabs.len()))),
+        "audio-test" => {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let devs = jarvis_lib::voice::audio::list_devices();
+                let (io, mut mic) = jarvis_lib::voice::audio::AudioIo::start("", "").unwrap();
+                let t0 = std::time::Instant::now();
+                let mut chunks = 0; let mut samples = 0; let mut max_in = 0f32;
+                while t0.elapsed() < std::time::Duration::from_millis(1500) {
+                    if let Ok(Some(c)) = tokio::time::timeout(std::time::Duration::from_millis(200), mic.rx.recv()).await { chunks += 1; samples += c.len(); }
+                    max_in = max_in.max(io.levels.input());
+                }
+                let tone: Vec<i16> = (0..9600).map(|i| ((i as f32 * 440.0 * 2.0 * std::f32::consts::PI / 24000.0).sin() * 0.05 * 32767.0) as i16).collect();
+                io.play_pcm16(&tone);
+                let mut max_out = 0f32;
+                let t1 = std::time::Instant::now();
+                while t1.elapsed() < std::time::Duration::from_millis(500) { max_out = max_out.max(io.levels.output()); tokio::time::sleep(std::time::Duration::from_millis(20)).await; }
+                let playing_after = io.is_playing();
+                io.stop();
+                format!("in={} out={}
+inputs={:?}
+mic chunks={chunks} samples={samples} (expect ~15 x 1600) max_in_level={max_in:.2}
+tone max_out_level={max_out:.2} still_queued_after_500ms={playing_after}", io.input_device, io.output_device, devs.inputs)
+            })
+        }
         "monitors" => serde_json::to_string_pretty(&display::list_monitors()).unwrap(),
         "apps" => {
             let idx = apps::AppIndex::default();

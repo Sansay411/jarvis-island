@@ -362,3 +362,18 @@
   max-height: 72px;
   overflow: hidden;
 }
+
+.mic-btn {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--text-2);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.mic-btn:hover {
+  background: var(--graphite-3);
+  color: var(--text-1);
+}

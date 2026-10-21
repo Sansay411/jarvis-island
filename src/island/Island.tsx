@@ -5,6 +5,7 @@
 import { AnimatePresence, motion, useMotionValue, useReducedMotion, useSpring, useTransform } from "motion/react";
 import { useEffect, useMemo, useRef, type PointerEvent as ReactPointerEvent } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { invoke } from "@tauri-apps/api/core";
 import { ipc, on } from "../lib/ipc";
 import { resolveMode, useIsland } from "../store/island";
 import { hasActiveMedia, useSystem } from "../store/system";
@@ -16,6 +17,8 @@ import { Eyes, type EyeMood } from "./Eyes";
 import { CompactView } from "./views/CompactView";
 import { PeekView } from "./views/PeekView";
 import { DropView } from "./views/DropView";
+import { VoiceView } from "./views/VoiceView";
+import { toggleVoice } from "../store/voice";
 import { WorkspaceView } from "../workspace/WorkspaceView";
 import "./island.css";
 
@@ -51,6 +54,7 @@ function useIslandController() {
         const s = useIsland.getState();
         if (cmd === "toggle-workspace") set({ workspaceOpen: !s.workspaceOpen });
         else if (cmd === "open-workspace") set({ workspaceOpen: true });
+        else if (cmd === "toggle-voice") void toggleVoice();
       }),
     );
     unsubs.push(
@@ -70,7 +74,7 @@ function useIslandController() {
       if (e.key === "Escape") {
         const s = useIsland.getState();
         if (s.workspaceOpen) set({ workspaceOpen: false });
-        else if (s.voiceOpen) set({ voiceOpen: false });
+        else if (s.voiceOpen) void invoke("voice_stop");
         else if (s.hovered) set({ hovered: false });
       }
     };
@@ -176,12 +180,13 @@ export function Island() {
               {mode === "compact" && <CompactView />}
               {mode === "peek" && <PeekView />}
               {mode === "drop" && <DropView />}
+              {mode === "voice" && <VoiceView />}
               {mode === "workspace" && <WorkspaceView />}
             </motion.div>
           </AnimatePresence>
         </motion.div>
 
-        <div className="island-eyes" style={{ height: BROW_H }}>
+        <div className={`island-eyes${mode === "voice" ? " is-hidden" : ""}`} style={{ height: BROW_H }}>
           <Eyes mood={moodFor(mode, agentMood, st.hovered)} lookX={mode === "compact" ? zero : lookX} lookY={mode === "drop" ? 2 : 0} />
         </div>
       </motion.div>

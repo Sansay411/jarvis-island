@@ -6,6 +6,7 @@ import { useIsland } from "../store/island";
 import { Markdown } from "./Markdown";
 import { ToolRow } from "./ToolRow";
 import { JobsStrip } from "../island/views/JobsStrip";
+import { toggleVoice } from "../store/voice";
 import "./workspace.css";
 
 const PHASE_LABEL = { thinking: "Думает", acting: "Выполняет", verifying: "Проверяет" } as const;
@@ -75,6 +76,9 @@ function Composer() {
           onKeyDown={onKey}
           spellCheck
         />
+        <button className="mic-btn" onClick={() => void toggleVoice()} aria-label="Голосовой режим">
+          <Icon name="mic" size={16} />
+        </button>
         {active ? (
           <button className="send-btn is-stop" onClick={() => void cancel()} aria-label="Остановить">
             <Icon name="stop" size={14} />
