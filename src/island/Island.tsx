@@ -8,6 +8,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ipc, on } from "../lib/ipc";
 import { resolveMode, useIsland } from "../store/island";
 import { hasActiveMedia, useSystem } from "../store/system";
+import { useRunningJobs } from "../store/jobs";
 import { useAgentMood } from "../store/agent";
 import { usePrefs } from "../store/prefs";
 import { BROW_H, CANVAS_W, SHOULDER, bottomRadius, dimsFor, notchPath, shapeRect, type IslandMode } from "./geometry";
@@ -111,7 +112,11 @@ export function Island() {
 
   const mode = resolveMode(st);
   const withMedia = hasActiveMedia(media);
-  const dims = useMemo(() => dimsFor(mode, { hasMedia: withMedia, hasActivity: false }), [mode, withMedia]);
+  const jobRows = Math.min(2, useRunningJobs().length);
+  const dims = useMemo(
+    () => dimsFor(mode, { hasMedia: withMedia, hasActivity: jobRows > 0, jobRows }),
+    [mode, withMedia, jobRows],
+  );
 
   const spring = reduced ? REDUCED : SHAPE_SPRING;
   const w = useSpring(dims.w, spring);

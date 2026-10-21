@@ -268,3 +268,49 @@
   font-size: var(--fs-13);
   background: rgba(255, 255, 255, 0.02);
 }
+
+/* ---------- background jobs ---------- */
+
+.job-ring {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.6px solid rgba(255, 178, 63, 0.22);
+  border-top-color: var(--amber);
+  animation: spin 1.1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.jobs-strip {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 12px 6px 18px;
+}
+.job-row {
+  height: 28px;
+  display: grid;
+  grid-template-columns: 12px auto 1fr 28px;
+  align-items: center;
+  gap: 9px;
+  font-size: var(--fs-12);
+}
+.job-title {
+  color: var(--text-1);
+  font-weight: 560;
+  white-space: nowrap;
+}
+.job-line {
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}

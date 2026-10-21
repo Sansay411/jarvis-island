@@ -4,6 +4,7 @@ import { useIsland } from "../../store/island";
 import { usePrefs } from "../../store/prefs";
 import { MediaCard } from "./MediaCard";
 import { QuickControls } from "./QuickControls";
+import { JobsStrip } from "./JobsStrip";
 
 export function PeekView() {
   const media = useSystem((s) => s.media);
@@ -21,6 +22,7 @@ export function PeekView() {
           </button>
         </div>
       </div>
+      <JobsStrip />
       {withMedia ? (
         <div className="peek-grid">
           <MediaCard media={media} />

@@ -49,6 +49,36 @@ recent={:?}",
             let r = rt.block_on(jarvis_lib::platform::supervisor::run(spec, tokio_util::sync::CancellationToken::new(), Some(sink))).unwrap();
             format!("exit={:?} success={} ms={}", r.exit_code, r.success, r.duration_ms)
         }
+        "browser" => {
+            let wins = jarvis_lib::platform::browser::browser_windows(None);
+            let mut s = String::new();
+            for w in wins.iter().take(2) {
+                match jarvis_lib::platform::browser::state(w.hwnd) {
+                    Ok(st) => s.push_str(&format!("{} tabs={} url={:?} active={:?}
+", st.browser, st.tabs.len(), st.url.is_some(), st.tabs.iter().position(|t| t.selected))),
+                    Err(e) => s.push_str(&format!("{}: {e}
+", w.process)),
+                }
+            }
+            s
+        }
+        "uia-roles" => {
+            let w = winmgr::find_windows(&args[1]).into_iter().next().expect("window");
+            let s = uia::snapshot(winmgr::to_hwnd(w.hwnd), 2000).unwrap();
+            let mut h = std::collections::BTreeMap::new();
+            for e in &s.elements { *h.entry(e.role).or_insert(0) += 1; }
+            format!("{} elements of {} total: {:?}", s.elements.len(), s.total_found, h)
+        }
+        "tabs" => {
+            let w = jarvis_lib::platform::browser::browser_windows(Some(&args[1])).into_iter().next().expect("browser");
+            let st = jarvis_lib::platform::browser::state(w.hwnd).unwrap();
+            format!("url={:?}
+{}", st.url, st.tabs.iter().map(|t| format!("[{}]{} {}", t.index, if t.selected {"*"} else {" "}, t.title)).collect::<Vec<_>>().join("
+"))
+        }
+        "switch" => serde_json::to_string(&jarvis_lib::platform::browser::switch_tab(jarvis_lib::platform::browser::browser_windows(Some(&args[1]))[0].hwnd, Some(&args[2]), None).map(|s| s.tabs.into_iter().filter(|t| t.selected).collect::<Vec<_>>())).unwrap(),
+        "page" => jarvis_lib::platform::browser::page_text(jarvis_lib::platform::browser::browser_windows(Some(&args[1]))[0].hwnd, 400).unwrap_or_else(|e| e.to_string()),
+        "closetab" => format!("{:?}", jarvis_lib::platform::browser::close_tab(jarvis_lib::platform::browser::browser_windows(Some(&args[1]))[0].hwnd, Some(&args[2]), None).map(|(n, s)| (n, s.tabs.len()))),
         "monitors" => serde_json::to_string_pretty(&display::list_monitors()).unwrap(),
         "apps" => {
             let idx = apps::AppIndex::default();

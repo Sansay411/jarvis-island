@@ -19,6 +19,8 @@ export interface Dims {
 export interface DimsContext {
   hasMedia: boolean;
   hasActivity: boolean;
+  /** Running background jobs shown as rows in the peek view (max 2). */
+  jobRows: number;
 }
 
 export function dimsFor(mode: IslandMode, ctx: DimsContext): Dims {
@@ -26,7 +28,7 @@ export function dimsFor(mode: IslandMode, ctx: DimsContext): Dims {
     case "compact":
       return { w: ctx.hasMedia || ctx.hasActivity ? 212 : 168, h: BROW_H };
     case "peek":
-      return ctx.hasMedia ? { w: 452, h: 136 } : { w: 412, h: 104 };
+      return ctx.hasMedia ? { w: 452, h: 136 + ctx.jobRows * 30 } : { w: 412, h: 104 + ctx.jobRows * 30 };
     case "voice":
       return { w: 380, h: 132 };
     case "drop":

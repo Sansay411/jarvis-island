@@ -6,6 +6,7 @@
 pub mod apps;
 pub mod audio;
 pub mod brightness;
+pub mod browser;
 pub mod capture;
 pub mod clipboard;
 pub mod com;

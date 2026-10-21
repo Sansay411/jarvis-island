@@ -202,6 +202,13 @@ function apply(ev: AgentEvent) {
         ),
       }));
       break;
+    case "report": {
+      window.clearTimeout(flashTimer);
+      const flash = ev.tone === "ok" ? "happy" : "error";
+      set((s) => ({ flash, items: [...s.items, { kind: "assistant", id: uid(), turnId: "", text: ev.text, streaming: false }] }));
+      flashTimer = window.setTimeout(() => set({ flash: null }), 2200);
+      break;
+    }
     case "turnFinished": {
       window.clearTimeout(flashTimer);
       const flash = ev.status === "completed" ? "happy" : ev.status === "failed" ? "error" : null;

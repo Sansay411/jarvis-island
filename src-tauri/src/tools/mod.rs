@@ -6,6 +6,7 @@
 //! input schema + structured output).
 
 mod apps;
+mod browser;
 mod dev;
 mod files;
 mod memory;
@@ -146,6 +147,7 @@ impl Registry {
             .chain(memory::tools())
             .chain(screen::tools())
             .chain(dev::tools())
+            .chain(browser::tools())
         {
             tools.insert(t.name, t);
         }

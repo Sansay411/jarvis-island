@@ -5,6 +5,7 @@ import { useAgent } from "../store/agent";
 import { useIsland } from "../store/island";
 import { Markdown } from "./Markdown";
 import { ToolRow } from "./ToolRow";
+import { JobsStrip } from "../island/views/JobsStrip";
 import "./workspace.css";
 
 const PHASE_LABEL = { thinking: "Думает", acting: "Выполняет", verifying: "Проверяет" } as const;
@@ -194,6 +195,7 @@ export function WorkspaceView() {
         )}
       </div>
 
+      <JobsStrip />
       <Composer />
     </div>
   );

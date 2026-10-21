@@ -21,14 +21,15 @@ if (label === "settings") {
   );
 } else {
   document.body.classList.add("island-window");
-  void Promise.all([import("./island/Island"), import("./store/system"), import("./store/agent"), import("./store/prefs")]).then(
-    async ([{ Island }, system, agent, prefs]) => {
+  void Promise.all([import("./island/Island"), import("./store/system"), import("./store/agent"), import("./store/prefs"), import("./store/jobs")]).then(
+    async ([{ Island }, system, agent, prefs, jobs]) => {
       root.render(
         <StrictMode>
           <Island />
         </StrictMode>,
       );
       await prefs.startPrefsFeed();
+      await jobs.startJobsFeed();
       await system.startSystemFeeds();
       await agent.startAgentFeed().catch(() => undefined);
     },
