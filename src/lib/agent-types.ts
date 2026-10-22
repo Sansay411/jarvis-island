@@ -27,7 +27,8 @@ export type AgentEvent =
       details: string;
     }
   | { type: "turnFinished"; turnId: string; status: "completed" | "cancelled" | "failed"; error: string | null }
-  | { type: "report"; text: string; tone: "ok" | "error" };
+  | { type: "report"; text: string; tone: "ok" | "error" }
+  | { type: "waiting"; turnId: string; seconds: number };
 
 export interface AgentStatus {
   configured: boolean;

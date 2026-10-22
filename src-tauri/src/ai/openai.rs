@@ -82,6 +82,58 @@ fn wire_message(m: &ChatMessage) -> Value {
     }
 }
 
+/// Removes inline `<think>…</think>` blocks (servers without a reasoning
+/// parser) and the blank lines some models emit before the answer.
+#[derive(Default)]
+struct ThinkFilter {
+    inside: bool,
+    pending: String,
+}
+
+impl ThinkFilter {
+    fn feed(&mut self, chunk: &str, at_start: bool) -> String {
+        self.pending.push_str(chunk);
+        let mut out = String::new();
+        loop {
+            if self.inside {
+                match self.pending.find("</think>") {
+                    Some(i) => {
+                        self.pending.drain(..i + "</think>".len());
+                        self.inside = false;
+                    }
+                    None => return out,
+                }
+            } else {
+                match self.pending.find("<think>") {
+                    Some(i) => {
+                        out.push_str(&self.pending[..i]);
+                        self.pending.drain(..i + "<think>".len());
+                        self.inside = true;
+                    }
+                    None => {
+                        // Hold back a possible partial "<think" at the end.
+                        let keep = (1..7).rev().find(|n| self.pending.len() >= *n && self.pending.is_char_boundary(self.pending.len() - n) && "<think>".starts_with(&self.pending[self.pending.len() - n..])).unwrap_or(0);
+                        let cut = self.pending.len() - keep;
+                        out.push_str(&self.pending[..cut]);
+                        self.pending.drain(..cut);
+                        break;
+                    }
+                }
+            }
+        }
+        if at_start {
+            out.trim_start().to_string()
+        } else {
+            out
+        }
+    }
+
+    /// Text held back at the end of the stream (never an open think block).
+    fn finish(&mut self) -> String {
+        if self.inside { String::new() } else { std::mem::take(&mut self.pending) }
+    }
+}
+
 #[derive(Default)]
 struct PartialCall {
     id: String,
@@ -104,7 +156,6 @@ fn error_from_response(status: reqwest::StatusCode, body: &str, model: &str) -> 
             "Модель «{model}» или адрес API не найдены{}",
             detail.map(|d| format!(": {d}")).unwrap_or_default()
         )),
-        429 => AppError::Provider("Превышен лимит запросов провайдера. Повторите чуть позже.".into()),
         s if s >= 500 => AppError::Provider(format!("Провайдер временно недоступен (HTTP {s})")),
         s => AppError::Provider(format!("Запрос отклонён (HTTP {s}){}", detail.map(|d| format!(": {d}")).unwrap_or_default())),
     }
@@ -113,7 +164,7 @@ fn error_from_response(status: reqwest::StatusCode, body: &str, model: &str) -> 
 fn retryable(e: &AppError) -> bool {
     match e {
         AppError::Network(_) | AppError::Timeout(_) => true,
-        AppError::Provider(m) => m.contains("лимит") || m.contains("временно"),
+        AppError::Provider(m) => m.contains("временно"),
         _ => false,
     }
 }
@@ -166,7 +217,19 @@ impl OpenAiCompatible {
     ) -> AppResult<Completion> {
         let body = self.body(messages, tools, max_tokens);
         let mut attempt = 0;
+        let mut limited = 0;
         loop {
+            // Pace requests under a learned per-minute limit instead of
+            // hitting 429 again.
+            let pace = rate::wait_before(&self.base_url);
+            if !pace.is_zero() {
+                on_delta(StreamDelta::Waiting(pace.as_secs().max(1)));
+                tokio::select! {
+                    _ = cancel.cancelled() => return Err(AppError::Cancelled),
+                    _ = tokio::time::sleep(pace) => {}
+                }
+            }
+            rate::record(&self.base_url);
             let mut produced = false;
             let res = self.stream_once(&body, cancel, &mut |d| {
                 produced = true;
@@ -174,6 +237,16 @@ impl OpenAiCompatible {
             })
             .await;
             match res {
+                Err(AppError::RateLimited(secs)) if !produced && limited < 3 && !cancel.is_cancelled() => {
+                    limited += 1;
+                    rate::learn(&self.base_url);
+                    tracing::warn!(secs, limited, "provider rate limit, waiting");
+                    on_delta(StreamDelta::Waiting(secs));
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Err(AppError::Cancelled),
+                        _ = tokio::time::sleep(Duration::from_secs(secs)) => {}
+                    }
+                }
                 Err(e) if !produced && attempt < 2 && retryable(&e) && !cancel.is_cancelled() => {
                     attempt += 1;
                     let wait = Duration::from_millis(if attempt == 1 { 900 } else { 2800 });
@@ -205,6 +278,15 @@ impl OpenAiCompatible {
                 .map_err(|_| AppError::Timeout("Провайдер не ответил за 60 секунд".into()))??,
         };
         let status = resp.status();
+        if status.as_u16() == 429 {
+            let secs = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(20);
+            return Err(AppError::RateLimited(secs.clamp(1, 120)));
+        }
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             return Err(error_from_response(status, &text, &self.model));
@@ -216,6 +298,7 @@ impl OpenAiCompatible {
         let mut usage = None;
         let mut finish_reason = None;
         let mut first_token_ms = None;
+        let mut think = ThinkFilter::default();
 
         loop {
             let next = tokio::select! {
@@ -249,10 +332,11 @@ impl OpenAiCompatible {
             let Some(delta) = choice.get("delta") else { continue };
 
             if let Some(t) = delta.get("content").and_then(Value::as_str) {
-                if !t.is_empty() {
+                let visible = think.feed(t, text.is_empty());
+                if !visible.is_empty() {
                     first_token_ms.get_or_insert(started.elapsed().as_millis() as u64);
-                    text.push_str(t);
-                    on_delta(StreamDelta::Text(t.to_string()));
+                    text.push_str(&visible);
+                    on_delta(StreamDelta::Text(visible));
                 }
             }
             if delta.get("reasoning_content").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
@@ -287,6 +371,12 @@ impl OpenAiCompatible {
                     }
                 }
             }
+        }
+
+        let tail = think.finish();
+        if !tail.is_empty() {
+            text.push_str(&tail);
+            on_delta(StreamDelta::Text(tail));
         }
 
         let tool_calls: Vec<ToolCall> = calls
@@ -454,10 +544,99 @@ mod tests {
     }
 
     #[test]
+    fn think_filter_strips_blocks_and_leading_blank_lines() {
+        let mut f = ThinkFilter::default();
+        let mut out = String::new();
+        for (i, c) in ["
+
+", "<thi", "nk>plan the", " call</thi", "nk>
+Готов", "о"].iter().enumerate() {
+            out += &f.feed(c, out.is_empty() && i < 10);
+        }
+        out += &f.finish();
+        assert_eq!(out, "Готово");
+        let mut f = ThinkFilter::default();
+        assert_eq!(f.feed("a < b", false), "a < b");
+    }
+
+    #[test]
+    fn learns_rate_limit_and_paces() {
+        let key = "test://rate";
+        rate::reset(key);
+        for _ in 0..5 {
+            assert!(rate::wait_before(key).is_zero());
+            rate::record(key);
+        }
+        // The 5th request was rejected with 429: the limit becomes 4/min.
+        rate::learn(key);
+        let wait = rate::wait_before(key);
+        assert!(wait > Duration::from_secs(55) && wait <= Duration::from_secs(60), "{wait:?}");
+        rate::reset(key);
+    }
+
+    #[test]
     fn errors_are_user_readable_and_keyless() {
         let e = error_from_response(reqwest::StatusCode::UNAUTHORIZED, "{\"error\":{\"message\":\"Incorrect API key sk-123\"}}", "m");
         assert!(!e.to_string().contains("sk-123"));
         let e = error_from_response(reqwest::StatusCode::NOT_FOUND, "{\"error\":{\"message\":\"model not found\"}}", "qwen-x");
         assert!(e.to_string().contains("qwen-x"));
+    }
+}
+
+/// Client-side pacing per endpoint. After a 429, the number of requests sent
+/// in the last minute becomes the learned limit, and later requests wait for
+/// a free slot instead of failing.
+mod rate {
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::LazyLock;
+    use std::time::{Duration, Instant};
+
+    use parking_lot::Mutex;
+
+    const WINDOW: Duration = Duration::from_secs(60);
+
+    #[derive(Default)]
+    struct Gate {
+        recent: VecDeque<Instant>,
+        limit: Option<usize>,
+    }
+
+    static GATES: LazyLock<Mutex<HashMap<String, Gate>>> = LazyLock::new(Default::default);
+
+    fn purge(g: &mut Gate, now: Instant) {
+        while g.recent.front().is_some_and(|t| now.duration_since(*t) >= WINDOW) {
+            g.recent.pop_front();
+        }
+    }
+
+    pub fn wait_before(key: &str) -> Duration {
+        let now = Instant::now();
+        let mut gates = GATES.lock();
+        let g = gates.entry(key.to_string()).or_default();
+        purge(g, now);
+        match (g.limit, g.recent.front()) {
+            (Some(limit), Some(oldest)) if g.recent.len() >= limit => (*oldest + WINDOW).saturating_duration_since(now),
+            _ => Duration::ZERO,
+        }
+    }
+
+    pub fn record(key: &str) {
+        GATES.lock().entry(key.to_string()).or_default().recent.push_back(Instant::now());
+    }
+
+    pub fn learn(key: &str) {
+        let now = Instant::now();
+        let mut gates = GATES.lock();
+        let g = gates.entry(key.to_string()).or_default();
+        purge(g, now);
+        // The rejected request is in `recent`; the server allowed one fewer.
+        let allowed = g.recent.len().saturating_sub(1).max(1);
+        g.limit = Some(g.limit.map_or(allowed, |l| l.min(allowed)));
+        tracing::info!(key, limit = g.limit, "learned provider request limit per minute");
+    }
+
+    #[cfg(test)]
+    pub fn reset(key: &str) {
+        GATES.lock().remove(key);
     }
 }

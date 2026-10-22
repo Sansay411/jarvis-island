@@ -11,6 +11,17 @@ import "./workspace.css";
 
 const PHASE_LABEL = { thinking: "Думает", acting: "Выполняет", verifying: "Проверяет" } as const;
 
+/** Seconds left until `until` (epoch ms), ticking once a second. */
+function useSecondsLeft(until: number | null): number {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!until) return;
+    const id = window.setInterval(() => tick((n) => n + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [until]);
+  return until ? Math.max(0, Math.ceil((until - Date.now()) / 1000)) : 0;
+}
+
 function Composer() {
   const [text, setText] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -121,6 +132,7 @@ export function WorkspaceView() {
   const phase = useAgent((s) => s.phase);
   const active = useAgent((s) => s.activeTurn);
   const status = useAgent((s) => s.status);
+  const waitLeft = useSecondsLeft(useAgent((s) => s.waitUntil));
   const newConversation = useAgent((s) => s.newConversation);
   const set = useIsland((s) => s.set);
   const body = useRef<HTMLDivElement>(null);
@@ -135,7 +147,13 @@ export function WorkspaceView() {
     <div className="view view-workspace">
       <div className="brow">
         <span className="brow-name">
-          {active && phase ? `${PHASE_LABEL[phase]}…` : status?.configured ? status.model : "Джарвис"}
+          {active && waitLeft > 0
+            ? `Жду лимит провайдера · ${waitLeft} с`
+            : active && phase
+              ? `${PHASE_LABEL[phase]}…`
+              : status?.configured
+                ? status.model
+                : "Джарвис"}
         </span>
         <div className="brow-actions">
           <button className="icon-btn" aria-label="Новый разговор" onClick={() => void newConversation()} disabled={!!active || items.length === 0}>

@@ -145,7 +145,6 @@ pub fn tools() -> Vec<Tool> {
             format!("PowerShell: {short}{}", if c.chars().count() > 60 { "…" } else { "" })
         },
         timeout: Duration::from_secs(620),
-        fast_path: false,
         parallel_safe: false,
         handler: handler(shell_run),
     }]

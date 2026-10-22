@@ -109,6 +109,21 @@ tone max_out_level={max_out:.2} still_queued_after_500ms={playing_after}", io.in
             let _ = cx;
             format!("{} state={} rect={:?} monitor={} | shape={:?}", f.process, f.state, f.rect, f.monitor, display::foreground_shape(0, mon.id, mon.bounds.x + mon.bounds.width / 2, 43))
         }
+        "configure-provider" => {
+            // Reads the API key from stdin so it never appears in process arguments.
+            let mut key = String::new();
+            std::io::stdin().read_line(&mut key).unwrap();
+            jarvis_lib::store::secrets::set(jarvis_lib::store::secrets::LLM_API_KEY, key.trim()).unwrap();
+            let db = dirs::data_local_dir().unwrap().join("dev.jarvis.desktop").join("jarvis.db");
+            let store = jarvis_lib::store::Store::open(&db).unwrap();
+            let mut s = store.settings();
+            let p = jarvis_lib::store::settings::preset(&args[1]);
+            s.provider.preset = p.id.into();
+            s.provider.base_url = String::new();
+            s.provider.model = p.default_model.into();
+            store.save_settings(&s).unwrap();
+            format!("provider={} model={} key_saved={}", s.provider.preset, s.provider.model, jarvis_lib::store::secrets::exists(jarvis_lib::store::secrets::LLM_API_KEY))
+        }
         "monitors" => serde_json::to_string_pretty(&display::list_monitors()).unwrap(),
         "apps" => {
             let idx = apps::AppIndex::default();

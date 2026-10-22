@@ -296,7 +296,7 @@ mod tests {
     fn settings_roundtrip_and_defaults() {
         let s = Store::in_memory().unwrap();
         let mut cfg = s.settings();
-        assert_eq!(cfg.provider.model, "qwen3.8-flash");
+        assert_eq!(cfg.provider.model, "qwen3-8");
         cfg.provider.model = "qwen3.8-max".into();
         s.save_settings(&cfg).unwrap();
         assert_eq!(s.settings().provider.model, "qwen3.8-max");

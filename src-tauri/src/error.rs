@@ -23,6 +23,9 @@ pub enum AppError {
     Provider(String),
     #[error("Задача отменена")]
     Cancelled,
+    /// Provider rate limit; seconds the server asked us to wait.
+    #[error("Превышен лимит запросов провайдера — повторите через {0} с")]
+    RateLimited(u64),
     #[error("{0}")]
     Timeout(String),
     #[error("{0}")]
@@ -42,6 +45,7 @@ impl AppError {
             AppError::Network(_) => "network",
             AppError::Provider(_) => "provider",
             AppError::Cancelled => "cancelled",
+            AppError::RateLimited(_) => "rate_limited",
             AppError::Timeout(_) => "timeout",
             AppError::Storage(_) => "storage",
             AppError::Internal(_) => "internal",

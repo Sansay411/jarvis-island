@@ -103,9 +103,6 @@ pub struct Tool {
     pub risk: fn(&Value) -> Risk,
     pub title: fn(&Value) -> String,
     pub timeout: Duration,
-    /// Its summary fully answers a simple request, so a successful call can
-    /// end the turn without another model round-trip.
-    pub fast_path: bool,
     /// Safe to run concurrently with other parallel-safe calls.
     pub parallel_safe: bool,
     pub handler: Handler,

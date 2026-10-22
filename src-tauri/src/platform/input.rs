@@ -11,7 +11,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
     VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_HOME, VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT,
-    VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
+    VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP, VK_ADD, VK_DECIMAL, VK_DIVIDE, VK_MULTIPLY,
+    VK_SUBTRACT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
@@ -132,6 +133,11 @@ fn vk_for(name: &str) -> Option<(VIRTUAL_KEY, bool)> {
         "win" | "meta" | "super" => (VK_LWIN, true),
         "enter" | "return" => (VK_RETURN, false),
         "esc" | "escape" => (VK_ESCAPE, false),
+        "multiply" => (VK_MULTIPLY, false),
+        "add" | "plus" => (VK_ADD, false),
+        "subtract" | "minus" => (VK_SUBTRACT, false),
+        "divide" => (VK_DIVIDE, false),
+        "decimal" => (VK_DECIMAL, false),
         "tab" => (VK_TAB, false),
         "space" => (VK_SPACE, false),
         "backspace" => (VK_BACK, false),
@@ -161,6 +167,12 @@ fn vk_for(name: &str) -> Option<(VIRTUAL_KEY, bool)> {
 
 /// Press a chord like "ctrl+shift+t", "alt+tab", "enter", "f5".
 pub fn key_chord(chord: &str) -> AppResult<()> {
+    // A lone symbol ("*", "+", "=", "%") is typed as that character, which
+    // works on every keyboard layout.
+    let trimmed = chord.trim();
+    if trimmed.chars().count() == 1 && !trimmed.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()) {
+        return type_text(trimmed);
+    }
     let parts: Vec<&str> = chord.split('+').map(str::trim).filter(|s| !s.is_empty()).collect();
     if parts.is_empty() {
         return Err(AppError::invalid("Пустое сочетание клавиш"));
@@ -199,5 +211,6 @@ mod tests {
         assert_eq!(vk_for("F5").unwrap().0 .0, VK_F1.0 + 4);
         assert_eq!(vk_for("a").unwrap().0 .0, 'A' as u16);
         assert!(vk_for("ctrlx").is_none());
+        assert_eq!(vk_for("multiply").unwrap().0, VK_MULTIPLY);
     }
 }

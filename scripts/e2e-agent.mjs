@@ -51,14 +51,14 @@ function check(name, cond, detail) {
 try {
   await sleep(600);
 
-  // 1. Simple request → one fast-path tool → no second model call.
+  // 1. Simple request → one native tool → the model reports from the verified result.
   let r = await ask("какая сейчас громкость");
   let tools = r.msgs.filter((m) => m.role === "tool");
   let final = r.msgs.filter((m) => m.role === "assistant").pop();
-  check("fast path: status", r.task.status === "completed", r.task.status);
-  check("fast path: tool ran and verified", tools.length === 1 && tools[0].toolOk === 1, tools.map((t) => t.toolTitle));
-  check("fast path: answer built from verified summary", /^Готово: Громкость \d+%/.test(text(final)), text(final));
-  check("fast path: steps", r.task.steps === 1, r.task.steps);
+  check("single tool: status", r.task.status === "completed", r.task.status);
+  check("single tool: ran and verified", tools.length === 1 && tools[0].toolOk === 1, tools.map((t) => t.toolTitle));
+  check("single tool: answer from verified result", text(final).startsWith("Проверил: Громкость"), text(final));
+  check("single tool: two model calls", r.task.steps === 2, r.task.steps);
 
   // 2. Parallel independent tools in one step.
   r = await ask("покажи громкость и яркость");

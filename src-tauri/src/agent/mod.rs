@@ -3,8 +3,8 @@
 //! One turn = Observe (context block) → Reason (model) → Act (tools, with
 //! permission checks) → Verify (tools return read-back state; the model sees
 //! ok/summary/data) → Recover (failures go back to the model, bounded by
-//! `max_steps`) → Report (final text). Simple requests whose tool calls are
-//! all fast-path and succeed end without a second model round-trip.
+//! `max_steps`) → Report (final text written by the model from verified
+//! results — never assumed before the model says the request is done).
 
 pub mod events;
 mod prompt;
@@ -487,10 +487,14 @@ impl Agent {
             let turn_id = turn.id.clone();
             let app = self.app.clone();
             let completion = model
-                .complete(&messages, &specs, &turn.cancel, None, move |d| {
-                    if let StreamDelta::Text(t) = d {
+                .complete(&messages, &specs, &turn.cancel, None, move |d| match d {
+                    StreamDelta::Text(t) => {
                         let _ = app.emit(EVT_AGENT, AgentEvent::TextDelta { turn_id: turn_id.clone(), text: t });
                     }
+                    StreamDelta::Waiting(seconds) => {
+                        let _ = app.emit(EVT_AGENT, AgentEvent::Waiting { turn_id: turn_id.clone(), seconds });
+                    }
+                    StreamDelta::ToolCallStarted { .. } => {}
                 })
                 .await?;
             let msg = completion.message;
@@ -504,19 +508,14 @@ impl Agent {
 
             let results = self.execute_calls(turn, &calls).await?;
             let mut images = Vec::new();
-            let mut all_fast_ok = true;
-            let mut summaries = Vec::new();
-            for (call, fast, res) in &results {
+            for (call, res) in &results {
                 let (content, title, ok) = match res {
                     Ok(out) => {
                         images.extend(out.images.iter().cloned().map(|u| (call.name.clone(), u)));
-                        summaries.push(out.summary.clone());
-                        all_fast_ok &= *fast && out.ok;
                         let body = json!({ "ok": out.ok, "summary": out.summary, "data": out.data });
                         (truncate_chars(&body.to_string(), MAX_TOOL_RESULT), self.title_for(call), out.ok)
                     }
                     Err(e) => {
-                        all_fast_ok = false;
                         let body = json!({ "ok": false, "error": e.to_string(), "code": e.code() });
                         (body.to_string(), self.title_for(call), false)
                     }
@@ -537,17 +536,10 @@ impl Agent {
                     None,
                     persist,
                 );
-                all_fast_ok = false;
             }
-
-            // Fast path: a simple request whose actions all succeeded and
-            // whose verified summaries already answer it.
-            if *steps == 1 && all_fast_ok {
-                let text = format!("Готово: {}.", summaries.join("; ").trim_end_matches('.'));
-                self.emit(AgentEvent::TextDelta { turn_id: turn.id.clone(), text: text.clone() });
-                self.push_history(conversation_id, ChatMessage::text(Role::Assistant, text), None, None, persist);
-                return Ok(());
-            }
+            // No early exit after successful actions: only the model knows
+            // whether the request needs more steps ("open X *and* compute Y").
+            // The UI already shows each verified result the moment it lands.
         }
     }
 
@@ -570,34 +562,46 @@ impl Agent {
             "clipboard_read" if turn.settings.privacy.allow_clipboard_read => Risk::Low,
             "ui_act" => {
                 // Pressing a control whose name says "Send", "Delete", "Buy"…
-                let name = args.get("snapshot_id").and_then(Value::as_u64).zip(args.get("element_id").and_then(Value::as_u64))
-                    .and_then(|(s, e)| crate::platform::uia::element_name(s, e as usize))
-                    .unwrap_or_default();
-                let act = args.get("action").and_then(Value::as_str).unwrap_or("");
-                if act != "focus" && act != "scroll_into_view" && crate::tools::sensitive_text(&name) { Risk::High } else { base }
+                // in the single action or anywhere in a batch of steps.
+                let snapshot = args.get("snapshot_id").and_then(Value::as_u64).unwrap_or(0);
+                let mut actions: Vec<(u64, &str)> = Vec::new();
+                if let Some(e) = args.get("element_id").and_then(Value::as_u64) {
+                    actions.push((e, args.get("action").and_then(Value::as_str).unwrap_or("")));
+                }
+                for s in args.get("steps").and_then(Value::as_array).into_iter().flatten() {
+                    if let Some(e) = s.get("element_id").and_then(Value::as_u64) {
+                        actions.push((e, s.get("action").and_then(Value::as_str).unwrap_or("")));
+                    }
+                }
+                let sensitive = actions.iter().any(|(e, act)| {
+                    *act != "focus"
+                        && *act != "scroll_into_view"
+                        && crate::platform::uia::element_name(snapshot, *e as usize).is_some_and(|n| crate::tools::sensitive_text(&n))
+                });
+                if sensitive { Risk::High } else { base }
             }
             _ => base,
         }
     }
 
-    async fn execute_calls(&self, turn: &Turn, calls: &[ToolCall]) -> AppResult<Vec<(ToolCall, bool, AppResult<ToolOutput>)>> {
+    async fn execute_calls(&self, turn: &Turn, calls: &[ToolCall]) -> AppResult<Vec<(ToolCall, AppResult<ToolOutput>)>> {
         // Parse and assess everything first.
         let mut prepared = Vec::new();
         for call in calls {
             let args: Result<Value, _> = serde_json::from_str(&call.arguments);
             let tool = self.registry.get(&call.name);
-            let (risk, parallel, fast) = match (&tool, &args) {
-                (Some(t), Ok(a)) => (self.effective_risk(turn, t.name, (t.risk)(a), a), t.parallel_safe, t.fast_path),
-                _ => (Risk::Low, false, false),
+            let (risk, parallel) = match (&tool, &args) {
+                (Some(t), Ok(a)) => (self.effective_risk(turn, t.name, (t.risk)(a), a), t.parallel_safe),
+                _ => (Risk::Low, false),
             };
-            prepared.push((call.clone(), args, risk, parallel, fast));
+            prepared.push((call.clone(), args, risk, parallel));
         }
 
-        let all_parallel = prepared.len() > 1 && prepared.iter().all(|(_, a, r, p, _)| a.is_ok() && *p && *r == Risk::Low);
+        let all_parallel = prepared.len() > 1 && prepared.iter().all(|(_, a, r, p)| a.is_ok() && *p && *r == Risk::Low);
         if all_parallel {
-            let futs = prepared.into_iter().map(|(call, args, risk, _, fast)| async move {
+            let futs = prepared.into_iter().map(|(call, args, risk, _)| async move {
                 let res = self.execute_one(turn, &call, args.unwrap(), risk).await;
-                (call, fast, res)
+                (call, res)
             });
             let out = futures_util::future::join_all(futs).await;
             if turn.cancel.is_cancelled() {
@@ -607,7 +611,7 @@ impl Agent {
         }
 
         let mut out = Vec::new();
-        for (call, args, risk, _, fast) in prepared {
+        for (call, args, risk, _) in prepared {
             let res = match args {
                 Ok(a) => self.execute_one(turn, &call, a, risk).await,
                 Err(e) => Err(AppError::invalid(format!("Аргументы не являются корректным JSON: {e}"))),
@@ -615,7 +619,7 @@ impl Agent {
             if matches!(res, Err(AppError::Cancelled)) || turn.cancel.is_cancelled() {
                 return Err(AppError::Cancelled);
             }
-            out.push((call, fast, res));
+            out.push((call, res));
         }
         Ok(out)
     }

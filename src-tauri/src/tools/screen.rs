@@ -127,10 +127,13 @@ struct InspectArgs {
     hwnd: Option<i64>,
     query: Option<String>,
     max_elements: Option<usize>,
+    /// Keep only elements whose name or value contains any of these words.
+    filter: Option<String>,
 }
 
 async fn ui_inspect(_: ToolCtx, args: Value) -> AppResult<ToolOutput> {
     let a: InspectArgs = parse(args)?;
+    let a_filter = a.filter.clone();
     let snap = platform::blocking(move || {
         let hwnd = match (a.hwnd, a.query.as_deref()) {
             (Some(h), _) => h,
@@ -140,6 +143,14 @@ async fn ui_inspect(_: ToolCtx, args: Value) -> AppResult<ToolOutput> {
         uia::snapshot(winmgr::to_hwnd(hwnd), a.max_elements.unwrap_or(220).clamp(20, 600))
     })
     .await?;
+    let mut snap = snap;
+    if let Some(f) = a_filter.as_deref().map(str::to_lowercase).filter(|f| !f.trim().is_empty()) {
+        let words: Vec<&str> = f.split_whitespace().collect();
+        snap.elements.retain(|e| {
+            let hay = format!("{} {}", e.name, e.value.as_deref().unwrap_or("")).to_lowercase();
+            words.iter().any(|w| hay.contains(w))
+        });
+    }
     let text = uia::render(&snap);
     Ok(ToolOutput::ok(
         format!("«{}»: {} элементов ({} мс)", snap.window_title, snap.elements.len(), snap.elapsed_ms),
@@ -154,35 +165,71 @@ async fn ui_inspect(_: ToolCtx, args: Value) -> AppResult<ToolOutput> {
     ))
 }
 
+#[derive(Deserialize, Clone)]
+pub struct ActStep {
+    pub element_id: usize,
+    pub action: String,
+    pub value: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct ActArgs {
     snapshot_id: u64,
-    element_id: usize,
-    action: String,
+    element_id: Option<usize>,
+    action: Option<String>,
     value: Option<String>,
+    /// Several actions in order (e.g. pressing a sequence of buttons).
+    #[serde(default)]
+    steps: Vec<ActStep>,
 }
 
 async fn ui_act(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
     let a: ActArgs = parse(args)?;
+    let mut steps = a.steps.clone();
+    if let (Some(id), Some(action)) = (a.element_id, a.action.clone()) {
+        steps.insert(0, ActStep { element_id: id, action, value: a.value.clone() });
+    }
+    if steps.is_empty() {
+        return Err(AppError::invalid("Нужны element_id + action или steps"));
+    }
     let island = ctx.state().island.clone();
     island.suppress_pointer(true);
+    let snapshot = a.snapshot_id;
     let res = platform::blocking(move || {
-        let out = uia::act(a.snapshot_id, a.element_id, &a.action, a.value.as_deref())?;
-        std::thread::sleep(Duration::from_millis(250));
-        Ok((out, winmgr::foreground_window()))
+        let mut done = Vec::new();
+        let mut failure = None;
+        for s in &steps {
+            match uia::act(snapshot, s.element_id, &s.action, s.value.as_deref()) {
+                Ok(o) => done.push(o),
+                Err(e) => {
+                    failure = Some(format!("[{}] {}: {e}", s.element_id, s.action));
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(120));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        Ok((done, failure, winmgr::foreground_window(), steps.len()))
     })
     .await;
     island.suppress_pointer(false);
-    let (out, fg) = res?;
-    let mut summary = format!("{}: {}", out.action, out.element);
-    if let Some(after) = &out.after {
-        summary.push_str(&format!(" → {after}"));
-    }
-    Ok(ToolOutput::ok(
+    let (done, failure, fg, total) = res?;
+    let last = done.last().map(|o| match &o.after {
+        Some(after) => format!("{}: {} → {after}", o.action, o.element),
+        None => format!("{}: {}", o.action, o.element),
+    });
+    let summary = match (&failure, total) {
+        (None, 1) => last.unwrap_or_default(),
+        (None, n) => format!("Выполнено действий: {n}; последнее — {}", last.unwrap_or_default()),
+        (Some(f), _) => format!("Выполнено {} из {total}, остановился: {f}", done.len()),
+    };
+    Ok(ToolOutput {
+        ok: failure.is_none(),
         summary,
-        json!({ "outcome": out, "foreground": fg.map(|w| json!({ "title": w.title, "process": w.process })),
-                "hint": "Verify the effect with ui_inspect or screen_capture when it matters." }),
-    ))
+        data: json!({ "outcomes": done, "failure": failure, "foreground": fg.map(|w| json!({ "title": w.title, "process": w.process })),
+                      "hint": "Verify the effect with ui_inspect or screen_capture when it matters." }),
+        images: vec![],
+    })
 }
 
 #[derive(Deserialize)]
@@ -309,7 +356,6 @@ pub fn tools() -> Vec<Tool> {
                 _ => "Снимок окна".into(),
             },
             timeout: Duration::from_secs(10),
-            fast_path: false,
             parallel_safe: true,
             handler: handler(screen_capture),
         },
@@ -320,7 +366,12 @@ pub fn tools() -> Vec<Tool> {
                 clicking: then call ui_act with snapshotId and the element id. Some apps (games, custom-drawn UIs) \
                 expose little — fall back to screen_capture + input_click.",
             schema: object(
-                json!({ "hwnd": { "type": "integer" }, "query": { "type": "string" }, "max_elements": { "type": "integer" } }),
+                json!({
+                    "hwnd": { "type": "integer" },
+                    "query": { "type": "string", "description": "Window title/process words (not element names)" },
+                    "filter": { "type": "string", "description": "Only return elements whose name or value contains any of these words" },
+                    "max_elements": { "type": "integer" }
+                }),
                 &[],
             ),
             risk: low,
@@ -329,28 +380,42 @@ pub fn tools() -> Vec<Tool> {
                 None => "Разобрать интерфейс окна".into(),
             },
             timeout: Duration::from_secs(12),
-            fast_path: false,
             parallel_safe: true,
             handler: handler(ui_inspect),
         },
         Tool {
             name: "ui_act",
-            description: "Perform an action on an element from the latest ui_inspect: invoke (press), set_value (text \
+            description: "Perform actions on elements from the latest ui_inspect: invoke (press), set_value (text \
                 fields), toggle, select, expand, collapse, scroll_into_view, focus, click, double_click, right_click. \
-                Returns the state read back when available.",
+                Use `steps` to run a whole sequence in one call (e.g. pressing several buttons) — it saves steps. \
+                Returns the state read back when available and stops at the first failing step.",
             schema: object(
                 json!({
                     "snapshot_id": { "type": "integer" },
                     "element_id": { "type": "integer" },
                     "action": { "type": "string", "enum": ["invoke", "set_value", "toggle", "select", "expand", "collapse", "scroll_into_view", "focus", "click", "double_click", "right_click"] },
-                    "value": { "type": "string" }
+                    "value": { "type": "string" },
+                    "steps": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "element_id": { "type": "integer" },
+                                "action": { "type": "string" },
+                                "value": { "type": "string" }
+                            },
+                            "required": ["element_id", "action"]
+                        }
+                    }
                 }),
-                &["snapshot_id", "element_id", "action"],
+                &["snapshot_id"],
             ),
             risk: low,
-            title: |a| format!("Действие {} над [{}]", str_arg(a, "action"), a.get("element_id").and_then(Value::as_u64).unwrap_or(0)),
-            timeout: Duration::from_secs(10),
-            fast_path: false,
+            title: |a| match a.get("steps").and_then(Value::as_array).filter(|s| !s.is_empty()) {
+                Some(s) => format!("Действия в интерфейсе: {}", s.len() + usize::from(a.get("element_id").is_some())),
+                None => format!("Действие {} над [{}]", str_arg(a, "action"), a.get("element_id").and_then(Value::as_u64).unwrap_or(0)),
+            },
+            timeout: Duration::from_secs(30),
             parallel_safe: false,
             handler: handler(ui_act),
         },
@@ -377,7 +442,6 @@ pub fn tools() -> Vec<Tool> {
                 if d.is_empty() { "Клик".into() } else { format!("Клик: {d}") }
             },
             timeout: Duration::from_secs(6),
-            fast_path: false,
             parallel_safe: false,
             handler: handler(input_click),
         },
@@ -393,7 +457,6 @@ pub fn tools() -> Vec<Tool> {
                 format!("Ввести «{short}{}»", if t.chars().count() > 40 { "…" } else { "" })
             },
             timeout: Duration::from_secs(20),
-            fast_path: false,
             parallel_safe: false,
             handler: handler(input_type),
         },
@@ -405,7 +468,6 @@ pub fn tools() -> Vec<Tool> {
             risk: key_risk,
             title: |a| format!("Клавиши {}", str_arg(a, "keys")),
             timeout: Duration::from_secs(5),
-            fast_path: false,
             parallel_safe: false,
             handler: handler(input_key),
         },
@@ -425,7 +487,6 @@ pub fn tools() -> Vec<Tool> {
             risk: low,
             title: |_| "Прокрутка".into(),
             timeout: Duration::from_secs(5),
-            fast_path: false,
             parallel_safe: false,
             handler: handler(input_scroll),
         },

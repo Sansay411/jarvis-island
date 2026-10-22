@@ -19,6 +19,17 @@ pub struct ProviderPreset {
 }
 
 pub const PRESETS: &[ProviderPreset] = &[
+    // Alem AI: LiteLLM proxy in front of vLLM serving Qwen3.8 27B (text +
+    // images, streamed tool calls, reasoning in `reasoning_content`).
+    // LiteLLM rejects unknown parameters, so nothing provider-specific is sent.
+    ProviderPreset {
+        id: "alem",
+        label: "Qwen3.8 — Alem AI",
+        base_url: "https://llm.alem.ai/v1",
+        default_model: "qwen3-8",
+        needs_key: true,
+        dashscope: false,
+    },
     ProviderPreset {
         id: "dashscope-intl",
         label: "Qwen — Model Studio, Сингапур",

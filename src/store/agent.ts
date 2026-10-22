@@ -35,6 +35,8 @@ interface AgentStore {
   phase: AgentPhase | null;
   status: AgentStatus | null;
   flash: "happy" | "error" | null;
+  /** Epoch ms until which the provider asked us to wait (rate limit). */
+  waitUntil: number | null;
   loadStatus: () => Promise<void>;
   loadHistory: () => Promise<void>;
   send: (text: string, attachments: string[]) => Promise<void>;
@@ -53,6 +55,7 @@ export const useAgent = create<AgentStore>((set, get) => ({
   phase: null,
   status: null,
   flash: null,
+  waitUntil: null,
 
   loadStatus: async () => {
     try {
@@ -138,10 +141,14 @@ function apply(ev: AgentEvent) {
       });
       break;
     case "phase":
-      set({ phase: ev.phase });
+      set({ phase: ev.phase, waitUntil: null });
+      break;
+    case "waiting":
+      set({ waitUntil: Date.now() + ev.seconds * 1000 });
       break;
     case "textDelta":
       set((s) => {
+        if (s.waitUntil) s = { ...s, waitUntil: null };
         const last = s.items[s.items.length - 1];
         if (last && last.kind === "assistant" && last.turnId === ev.turnId && last.streaming) {
           const items = s.items.slice(0, -1);
@@ -215,6 +222,7 @@ function apply(ev: AgentEvent) {
       set((s) => ({
         activeTurn: null,
         phase: null,
+        waitUntil: null,
         flash,
         items: [
           ...s.items.map((it) => (it.kind === "assistant" && it.turnId === ev.turnId ? { ...it, streaming: false } : it)),

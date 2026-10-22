@@ -91,6 +91,8 @@ pub enum StreamDelta {
     Text(String),
     /// A tool call has started (name known); arguments are still streaming.
     ToolCallStarted { index: usize, name: String },
+    /// Waiting for the provider's rate limit before (re)sending, seconds.
+    Waiting(u64),
 }
 
 #[derive(Debug, Clone)]
