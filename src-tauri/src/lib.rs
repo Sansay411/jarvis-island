@@ -89,6 +89,45 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Handle `--ask TEXT [--quiet]`, `--command NAME` and `--settings`.
+/// Returns false when argv carries none of them.
+fn handle_cli(app: &tauri::AppHandle, argv: &[String]) -> bool {
+    if let Some(pos) = argv.iter().position(|a| a == "--ask") {
+        if let Some(text) = argv.get(pos + 1).cloned() {
+            // --quiet runs the task without opening the chat (scripts, tests).
+            if !argv.iter().any(|a| a == "--quiet") {
+                app.state::<AppState>().island.set_user_hidden(false);
+                emit_command(app, "open-workspace");
+            }
+            let agent = app.state::<Arc<agent::Agent>>();
+            if let Err(e) = agent.send(text, Vec::new()) {
+                tracing::warn!("--ask rejected: {e}");
+                agent.post_report(format!("Не удалось начать задачу: {e}"), false);
+            }
+        }
+        return true;
+    }
+    // `--command toggle-workspace|open-workspace|toggle-voice` lets
+    // launchers, Stream Deck buttons and scripts drive the island.
+    if let Some(pos) = argv.iter().position(|a| a == "--command") {
+        if let Some(cmd) = argv.get(pos + 1) {
+            if matches!(cmd.as_str(), "toggle-workspace" | "open-workspace" | "toggle-voice") {
+                app.state::<AppState>().island.set_user_hidden(false);
+                emit_command(app, cmd);
+            }
+        }
+        return true;
+    }
+    if argv.iter().any(|a| a == "--settings") {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = ipc_agent::settings_open(app).await;
+        });
+        return true;
+    }
+    false
+}
+
 pub fn run() {
     init_logging();
     tracing::info!("JARVIS {} starting", env!("CARGO_PKG_VERSION"));
@@ -97,38 +136,10 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // A second launch (Start menu, shortcut, `jarvis.exe --settings`)
             // surfaces the running instance instead of starting another.
-            if let Some(pos) = argv.iter().position(|a| a == "--ask") {
-                if let Some(text) = argv.get(pos + 1).cloned() {
-                    app.state::<AppState>().island.set_user_hidden(false);
-                    emit_command(app, "open-workspace");
-                    let agent = app.state::<Arc<agent::Agent>>();
-                    if let Err(e) = agent.send(text, Vec::new()) {
-                        tracing::warn!("--ask rejected: {e}");
-                        agent.post_report(format!("Не удалось начать задачу: {e}"), false);
-                    }
-                }
-                return;
+            if !handle_cli(app, &argv) {
+                app.state::<AppState>().island.set_user_hidden(false);
+                emit_command(app, "open-workspace");
             }
-            // `--command toggle-workspace|open-workspace|toggle-voice` lets
-            // launchers, Stream Deck buttons and scripts drive the island.
-            if let Some(pos) = argv.iter().position(|a| a == "--command") {
-                if let Some(cmd) = argv.get(pos + 1) {
-                    if matches!(cmd.as_str(), "toggle-workspace" | "open-workspace" | "toggle-voice") {
-                        app.state::<AppState>().island.set_user_hidden(false);
-                        emit_command(app, cmd);
-                    }
-                }
-                return;
-            }
-            if argv.iter().any(|a| a == "--settings") {
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = ipc_agent::settings_open(app).await;
-                });
-                return;
-            }
-            app.state::<AppState>().island.set_user_hidden(false);
-            emit_command(app, "open-workspace");
         }))
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .plugin(shortcuts::plugin())
@@ -170,6 +181,15 @@ pub fn run() {
             });
 
             setup_tray(app)?;
+            // First launch with CLI arguments: act once the island UI is listening.
+            let argv: Vec<String> = std::env::args().collect();
+            if argv.len() > 1 {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    handle_cli(&handle, &argv);
+                });
+            }
             for p in shortcuts::apply(app.handle(), &settings.shortcuts) {
                 tracing::warn!("{p}");
             }
