@@ -4,6 +4,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { errorMessage } from "../lib/ipc";
 import "./settings.css";
 
@@ -20,6 +21,10 @@ interface Settings {
   provider: { preset: string; baseUrl: string; model: string; visionModel: string; temperature: number };
   voice: {
     enabled: boolean;
+    engine: "local" | "realtime";
+    sttModel: string;
+    ttsVoice: string;
+    ttsRate: number;
     realtimeUrl: string;
     model: string;
     voice: string;
@@ -58,7 +63,93 @@ interface AudioDevices {
 
 interface VoiceStatus {
   state: string;
-  metrics: { lastTimeToFirstAudioMs: number | null; lastBargeInMs: number | null; connectMs: number | null };
+  metrics: { lastTimeToFirstAudioMs: number | null; lastBargeInMs: number | null; connectMs: number | null; lastSttMs: number | null };
+}
+
+interface SpeechModel {
+  id: string;
+  label: string;
+  file: string;
+  size: number;
+  installed: boolean;
+}
+
+interface ModelProgress {
+  id: string;
+  done: number;
+  total: number;
+  state: "downloading" | "done" | "cancelled" | "error";
+  error: string | null;
+}
+
+interface TtsVoice {
+  id: string;
+  name: string;
+  language: string;
+}
+
+const mb = (bytes: number) => `${Math.round(bytes / 1_000_000)} МБ`;
+
+/** Whisper models: pick one, download it with live progress. */
+function SpeechModels({ selected, onSelect }: { selected: string; onSelect: (id: string) => void }) {
+  const [models, setModels] = useState<SpeechModel[]>([]);
+  const [progress, setProgress] = useState<ModelProgress | null>(null);
+  const refresh = () => void invoke<SpeechModel[]>("stt_models").then(setModels);
+  useEffect(() => {
+    refresh();
+    const un = listen<ModelProgress>("voice:model", (e) => {
+      setProgress(e.payload);
+      if (e.payload.state !== "downloading") refresh();
+    });
+    return () => void un.then((f) => f());
+  }, []);
+  const start = async (id: string) => {
+    try {
+      setProgress({ id, done: 0, total: 1, state: "downloading", error: null });
+      await invoke("stt_download", { id });
+    } catch (e) {
+      setProgress({ id, done: 0, total: 1, state: "error", error: errorMessage(e) });
+    }
+  };
+  const busy = progress?.state === "downloading";
+  return (
+    <div className="models">
+      {models.map((m) => {
+        const mine = progress?.id === m.id ? progress : null;
+        return (
+          <div key={m.id} className={`model${selected === m.id ? " is-selected" : ""}`}>
+            <button role="radio" aria-checked={selected === m.id} className="model-pick" onClick={() => onSelect(m.id)}>
+              <span className="radio" />
+              <span>
+                <span className="field-label">{m.label}</span>
+                <span className="field-hint">
+                  {m.file} · {mb(m.size)}
+                </span>
+              </span>
+            </button>
+            {m.installed ? (
+              <span className="key-set">Скачана</span>
+            ) : mine?.state === "downloading" ? (
+              <span className="model-progress">
+                <span className="meter">
+                  <i style={{ width: `${Math.min(100, (mine.done / Math.max(1, mine.total)) * 100)}%` }} />
+                </span>
+                <span className="mono">{Math.floor((mine.done / Math.max(1, mine.total)) * 100)}%</span>
+                <button className="btn btn-quiet" onClick={() => void invoke("stt_download_cancel")}>
+                  Отмена
+                </button>
+              </span>
+            ) : (
+              <button className="btn btn-quiet" disabled={busy} onClick={() => void start(m.id)}>
+                Скачать
+              </button>
+            )}
+            {mine?.state === "error" && <span className="field-hint danger-text">{mine.error}</span>}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 interface TaskRecord {
@@ -113,7 +204,8 @@ function Toggle({ checked, onChange, label, hint }: { checked: boolean; onChange
   );
 }
 
-function KeyField({ kind, has, onChanged }: { kind: "llm" | "voice"; has: boolean; onChanged: () => void }) {
+/** `baseUrl`: the API address on screen — the LLM key is bound to its origin. */
+function KeyField({ kind, has, onChanged, baseUrl }: { kind: "llm" | "voice"; has: boolean; onChanged: () => void; baseUrl?: string }) {
   const [value, setValue] = useState("");
   const [editing, setEditing] = useState(!has);
   const [msg, setMsg] = useState<string | null>(null);
@@ -121,7 +213,7 @@ function KeyField({ kind, has, onChanged }: { kind: "llm" | "voice"; has: boolea
 
   const save = async () => {
     try {
-      await invoke("secret_set", { kind, value });
+      await invoke("secret_set", { kind, value, baseUrl: baseUrl ?? null });
       setValue("");
       setMsg("Ключ сохранён в диспетчере учётных данных Windows");
       onChanged();
@@ -136,7 +228,10 @@ function KeyField({ kind, has, onChanged }: { kind: "llm" | "voice"; has: boolea
   };
 
   return (
-    <Field label="API-ключ" hint={msg ?? "Хранится в диспетчере учётных данных Windows, не в файлах приложения."}>
+    <Field
+      label="API-ключ"
+      hint={msg ?? `Хранится в диспетчере учётных данных Windows, не в файлах приложения.${kind === "llm" ? " Отправляется только на адрес, для которого сохранён." : ""}`}
+    >
       {editing ? (
         <div className="row">
           <input
@@ -184,6 +279,7 @@ export default function SettingsApp() {
   const [shortcutProblems, setShortcutProblems] = useState<string[]>([]);
   const [devices, setDevices] = useState<AudioDevices | null>(null);
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null);
+  const [ttsVoices, setTtsVoices] = useState<TtsVoice[]>([]);
 
   const load = async () => {
     const v = await invoke<SettingsView>("settings_get");
@@ -203,7 +299,10 @@ export default function SettingsApp() {
       void invoke<Diagnostics>("diagnostics_get").then(setDiag);
       void invoke<VoiceStatus>("voice_status").then(setVoiceStatus);
     }
-    if (section === "voice") void invoke<AudioDevices>("audio_devices").then(setDevices);
+    if (section === "voice") {
+      void invoke<AudioDevices>("audio_devices").then(setDevices);
+      void invoke<TtsVoice[]>("tts_voices").then(setTtsVoices).catch(() => setTtsVoices([]));
+    }
   }, [section]);
 
   const dirty = useMemo(() => JSON.stringify(view?.settings) !== JSON.stringify(draft), [view, draft]);
@@ -299,7 +398,9 @@ export default function SettingsApp() {
                 />
               </Field>
             </div>
-            {preset.needsKey && <KeyField kind="llm" has={view.hasLlmKey} onChanged={() => void load()} />}
+            {preset.needsKey && (
+              <KeyField kind="llm" has={view.hasLlmKey} baseUrl={draft.provider.baseUrl.trim() || preset.baseUrl} onChanged={() => void load()} />
+            )}
             <div className="row">
               <button className="btn btn-quiet" disabled={testing} onClick={() => void test()}>
                 Проверить подключение
@@ -311,30 +412,75 @@ export default function SettingsApp() {
         {section === "voice" && (
           <section>
             <h1>Голос</h1>
-            <p className="lead">Разговор в реальном времени через Qwen Omni Realtime: речь в обе стороны, перебивание голосом.</p>
             <Toggle checked={draft.voice.enabled} onChange={(v) => set((s) => ({ ...s, voice: { ...s.voice, enabled: v } }))} label="Голосовой режим" />
-            <Field label="Адрес realtime" hint="WebSocket-адрес Model Studio без параметра ?model=">
-              <input value={draft.voice.realtimeUrl} spellCheck={false} onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, realtimeUrl: e.target.value } }))} />
+            <Field label="Как работает голос">
+              <select value={draft.voice.engine} onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, engine: e.target.value as Settings["voice"]["engine"] } }))}>
+                <option value="local">На этом компьютере — Whisper, ваша модель и голос Windows</option>
+                <option value="realtime">Qwen Omni Realtime — нужен ключ Model Studio</option>
+              </select>
             </Field>
-            <div className="grid2">
-              <Field label="Модель">
-                <input value={draft.voice.model} spellCheck={false} onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, model: e.target.value } }))} />
-              </Field>
-              <Field label="Голос" hint="Для русского: Katerina, Marina, Alek, Tina">
-                <input value={draft.voice.voice} spellCheck={false} onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, voice: e.target.value } }))} />
-              </Field>
-            </div>
-            <Toggle
-              checked={draft.voice.reuseLlmKey}
-              onChange={(v) => set((s) => ({ ...s, voice: { ...s.voice, reuseLlmKey: v } }))}
-              label="Использовать ключ модели"
-              hint="Один аккаунт Model Studio для текста и голоса"
-            />
-            {!draft.voice.reuseLlmKey && <KeyField kind="voice" has={view.hasVoiceKey} onChanged={() => void load()} />}
+            {draft.voice.engine === "local" ? (
+              <>
+                <p className="lead">
+                  Речь распознаётся на этом компьютере и никуда не отправляется: модели уходит только распознанный текст. Джарвис отвечает голосом Windows и выполняет
+                  команды тем же агентом, что и в чате.
+                </p>
+                <Field
+                  label="Распознавание речи"
+                  hint="Модели скачиваются из официального репозитория whisper.cpp на Hugging Face и проверяются по SHA-256. Вместе с первой моделью скачивается Silero VAD (0,9 МБ) — он отсеивает шум и музыку. Без видеокарты точная модель распознаёт фразу ~18 с, быстрая — ~1 с."
+                >
+                  <SpeechModels selected={draft.voice.sttModel} onSelect={(id) => set((s) => ({ ...s, voice: { ...s.voice, sttModel: id } }))} />
+                </Field>
+                <div className="grid2">
+                  <Field label="Голос Джарвиса" hint="Голоса, установленные в Windows">
+                    <select value={draft.voice.ttsVoice} onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, ttsVoice: e.target.value } }))}>
+                      <option value="">Первый русский голос</option>
+                      {ttsVoices.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.name} ({v.language})
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label={`Скорость речи — ${draft.voice.ttsRate.toFixed(1)}×`}>
+                    <input
+                      type="range"
+                      min={0.7}
+                      max={1.6}
+                      step={0.1}
+                      value={draft.voice.ttsRate}
+                      onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, ttsRate: Number(e.target.value) } }))}
+                    />
+                  </Field>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="lead">Разговор в реальном времени через Qwen Omni Realtime: речь в обе стороны, перебивание голосом.</p>
+                <Field label="Адрес realtime" hint="WebSocket-адрес Model Studio без параметра ?model=">
+                  <input value={draft.voice.realtimeUrl} spellCheck={false} onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, realtimeUrl: e.target.value } }))} />
+                </Field>
+                <div className="grid2">
+                  <Field label="Модель">
+                    <input value={draft.voice.model} spellCheck={false} onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, model: e.target.value } }))} />
+                  </Field>
+                  <Field label="Голос" hint="Для русского: Katerina, Marina, Alek, Tina">
+                    <input value={draft.voice.voice} spellCheck={false} onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, voice: e.target.value } }))} />
+                  </Field>
+                </div>
+                <Toggle
+                  checked={draft.voice.reuseLlmKey}
+                  onChange={(v) => set((s) => ({ ...s, voice: { ...s.voice, reuseLlmKey: v } }))}
+                  label="Использовать ключ модели"
+                  hint="Один аккаунт Model Studio для текста и голоса"
+                />
+                {!draft.voice.reuseLlmKey && <KeyField kind="voice" has={view.hasVoiceKey} onChanged={() => void load()} />}
+              </>
+            )}
             <div className="grid2">
               <Field label="Микрофон">
                 <select value={draft.voice.inputDevice} onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, inputDevice: e.target.value } }))}>
-                  <option value="">По умолчанию{devices?.defaultInput ? ` — ` : ""}</option>
+                  <option value="">По умолчанию{devices?.defaultInput ? ` — ${devices.defaultInput}` : ""}</option>
                   {devices?.inputs.map((d) => (
                     <option key={d} value={d}>
                       {d}
@@ -344,7 +490,7 @@ export default function SettingsApp() {
               </Field>
               <Field label="Вывод звука">
                 <select value={draft.voice.outputDevice} onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, outputDevice: e.target.value } }))}>
-                  <option value="">По умолчанию{devices?.defaultOutput ? ` — ` : ""}</option>
+                  <option value="">По умолчанию{devices?.defaultOutput ? ` — ${devices.defaultOutput}` : ""}</option>
                   {devices?.outputs.map((d) => (
                     <option key={d} value={d}>
                       {d}
@@ -353,7 +499,10 @@ export default function SettingsApp() {
                 </select>
               </Field>
             </div>
-            <p className="field-hint">С колонками без наушников Джарвис приглушает микрофон, пока говорит сам, — перебивать можно, говоря громче.</p>
+            <p className="field-hint">
+              С колонками без наушников Джарвис хуже слышит себя, пока говорит, — перебивать можно, говоря громче. «Стоп» или «хватит» останавливают ответ и
+              задачу.
+            </p>
           </section>
         )}
 
@@ -502,9 +651,11 @@ export default function SettingsApp() {
                     .map((m) => `${m.name.replace("\\\\.\\", "")} ${m.bounds.width}×${m.bounds.height} @${Math.round(m.scale * 100)}%${m.primary ? " (основной)" : ""}`)
                     .join(", ")}
                 </dd>
+                <dt>Голос: распознавание речи</dt>
+                <dd>{voiceStatus?.metrics.lastSttMs != null ? `${voiceStatus.metrics.lastSttMs} мс` : "ещё не измерено"}</dd>
                 <dt>Голос: время до первого звука</dt>
                 <dd>{voiceStatus?.metrics.lastTimeToFirstAudioMs != null ? `${voiceStatus.metrics.lastTimeToFirstAudioMs} мс` : "ещё не измерено"}</dd>
-                <dt>Голос: подключение</dt>
+                <dt>Голос: подключение (Qwen Omni)</dt>
                 <dd>{voiceStatus?.metrics.connectMs != null ? `${voiceStatus.metrics.connectMs} мс` : "ещё не измерено"}</dd>
                 <dt>Журнал</dt>
                 <dd className="mono">{view.logPath}</dd>

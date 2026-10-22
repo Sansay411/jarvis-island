@@ -190,6 +190,26 @@ pub async fn audio_devices() -> AppResult<crate::voice::audio::AudioDevices> {
 }
 
 #[tauri::command]
+pub fn stt_models() -> Vec<crate::voice::stt::ModelInfo> {
+    crate::voice::stt::list()
+}
+
+#[tauri::command]
+pub fn stt_download(voice: State<'_, std::sync::Arc<crate::voice::VoiceManager>>, id: String) -> AppResult<()> {
+    voice.download_model(&id)
+}
+
+#[tauri::command]
+pub fn stt_download_cancel(voice: State<'_, std::sync::Arc<crate::voice::VoiceManager>>) {
+    voice.cancel_download();
+}
+
+#[tauri::command]
+pub async fn tts_voices() -> AppResult<Vec<crate::voice::tts::TtsVoice>> {
+    platform::blocking(crate::voice::tts::voices).await
+}
+
+#[tauri::command]
 pub fn island_context(state: State<'_, AppState>) -> serde_json::Value {
     serde_json::json!({ "topCovered": state.island.top_covered() })
 }

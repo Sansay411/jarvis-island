@@ -18,7 +18,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::ai::types::{ChatMessage, Part, Role, StreamDelta, ToolCall};
@@ -94,6 +94,10 @@ struct Turn {
     cancel: CancellationToken,
     attachments: Arc<Vec<String>>,
     settings: Settings,
+    /// Spoken request: the reply is read aloud (shorter, no Markdown).
+    voice: bool,
+    /// Streamed reply text for speech synthesis.
+    deltas: Option<mpsc::UnboundedSender<String>>,
 }
 
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp"];
@@ -142,7 +146,7 @@ impl Agent {
     pub fn status(&self) -> AgentStatus {
         let s = self.state().store.settings();
         let preset = crate::store::settings::preset(&s.provider.preset);
-        match ai::client_from_settings(&s) {
+        match ai::client_from_settings(&s, &self.state().store) {
             Ok(c) => AgentStatus { configured: true, provider: preset.label.into(), model: c.model, problem: None },
             Err(e) => AgentStatus {
                 configured: false,
@@ -255,8 +259,21 @@ impl Agent {
     /// (used by the voice session for multi-step work).
     pub async fn delegate(self: &Arc<Self>, task: String) -> AppResult<String> {
         let (tx, rx) = oneshot::channel();
-        self.start_turn(task, Vec::new(), Some(tx))?;
+        self.start_turn(task, Vec::new(), Some(tx), true, None)?;
         rx.await.map_err(|_| AppError::internal("Задача агента прервалась"))?
+    }
+
+    /// A spoken request from the local voice pipeline: a normal turn (shown in
+    /// the chat, same tools and confirmations) whose reply text is streamed to
+    /// `deltas` for speech as it is generated. Resolves with the final answer.
+    pub async fn voice_turn(self: &Arc<Self>, text: String, deltas: mpsc::UnboundedSender<String>) -> AppResult<String> {
+        let (tx, rx) = oneshot::channel();
+        self.start_turn(text, Vec::new(), Some(tx), true, Some(deltas))?;
+        rx.await.map_err(|_| AppError::internal("Задача агента прервалась"))?
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.inner.lock().active.is_some()
     }
 
     /// Execute one tool call on behalf of the realtime voice model with the
@@ -269,6 +286,8 @@ impl Agent {
             cancel,
             attachments: Arc::new(Vec::new()),
             settings,
+            voice: true,
+            deltas: None,
         };
         let call = ToolCall { id: uuid::Uuid::new_v4().to_string(), name: name.to_string(), arguments: arguments.to_string() };
         let args: Value = match serde_json::from_str(arguments) {
@@ -308,7 +327,7 @@ impl Agent {
     }
 
     pub fn send(self: &Arc<Self>, text: String, attachments: Vec<String>) -> AppResult<SendResult> {
-        self.start_turn(text, attachments, None)
+        self.start_turn(text, attachments, None, false, None)
     }
 
     fn start_turn(
@@ -316,13 +335,15 @@ impl Agent {
         text: String,
         attachments: Vec<String>,
         waiter: Option<oneshot::Sender<AppResult<String>>>,
+        voice: bool,
+        deltas: Option<mpsc::UnboundedSender<String>>,
     ) -> AppResult<SendResult> {
         let text = text.trim().to_string();
         if text.is_empty() {
             return Err(AppError::invalid("Пустое сообщение"));
         }
         let settings = self.state().store.settings();
-        let client = ai::client_from_settings(&settings)?;
+        let client = ai::client_from_settings(&settings, &self.state().store)?;
         self.ensure_loaded();
 
         let turn = {
@@ -335,6 +356,8 @@ impl Agent {
                 cancel: CancellationToken::new(),
                 attachments: Arc::new(attachments),
                 settings,
+                voice,
+                deltas,
             };
             i.active = Some(ActiveTurn { turn_id: t.id.clone(), cancel: t.cancel.clone() });
             if let Some(w) = waiter {
@@ -478,7 +501,7 @@ impl Agent {
             let system = {
                 let st = self.state();
                 let memories = st.store.memories().unwrap_or_default();
-                prompt::system_prompt(&turn.settings, &st.history, &memories, &names)
+                prompt::system_prompt(&turn.settings, &st.history, &memories, &names, turn.voice)
             };
             let messages = self.context(system);
             let use_vision = !vision_model.is_empty() && messages.last().is_some_and(ChatMessage::has_images);
@@ -486,9 +509,13 @@ impl Agent {
 
             let turn_id = turn.id.clone();
             let app = self.app.clone();
+            let deltas = turn.deltas.clone();
             let completion = model
                 .complete(&messages, &specs, &turn.cancel, None, move |d| match d {
                     StreamDelta::Text(t) => {
+                        if let Some(tx) = &deltas {
+                            let _ = tx.send(t.clone());
+                        }
                         let _ = app.emit(EVT_AGENT, AgentEvent::TextDelta { turn_id: turn_id.clone(), text: t });
                     }
                     StreamDelta::Waiting(seconds) => {

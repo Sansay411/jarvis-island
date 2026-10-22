@@ -122,7 +122,160 @@ tone max_out_level={max_out:.2} still_queued_after_500ms={playing_after}", io.in
             s.provider.base_url = String::new();
             s.provider.model = p.default_model.into();
             store.save_settings(&s).unwrap();
+            store.kv_set(jarvis_lib::ai::KEY_ORIGIN, &jarvis_lib::ai::origin_of(&s.provider.effective_base_url())).unwrap();
             format!("provider={} model={} key_saved={}", s.provider.preset, s.provider.model, jarvis_lib::store::secrets::exists(jarvis_lib::store::secrets::LLM_API_KEY))
+        }
+        "api" => {
+            // api GET|POST URL [BODY_JSON_FILE] — authenticated with the stored
+            // LLM key; prints status and the body, never the key.
+            let key = jarvis_lib::store::secrets::get(jarvis_lib::store::secrets::LLM_API_KEY).unwrap().unwrap_or_default();
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let client = reqwest::Client::new();
+                let req = match args[1].as_str() {
+                    "POST" => client.post(&args[2]).header("content-type", "application/json").body(std::fs::read(&args[3]).unwrap()),
+                    _ => client.get(&args[2]),
+                };
+                match req.bearer_auth(key).send().await {
+                    Ok(r) => {
+                        let status = r.status();
+                        let ct = r.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                        let body = r.bytes().await.unwrap_or_default();
+                        let text = if ct.starts_with("audio") { format!("<{} bytes of {ct}>", body.len()) } else { String::from_utf8_lossy(&body).chars().take(6000).collect() };
+                        format!("{status} {ct}\n{text}")
+                    }
+                    Err(e) => format!("error: {e}"),
+                }
+            })
+        }
+        "stt-download" => {
+            // stt-download turbo|small — same code path as Settings → Voice.
+            let m = jarvis_lib::voice::stt::model(args.get(1).map(String::as_str).unwrap_or("turbo"));
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let res = rt.block_on(jarvis_lib::voice::stt::download(m, Default::default(), |d, t| {
+                eprintln!("{:.1}% ({d}/{t})", d as f64 * 100.0 / t as f64);
+            }));
+            format!("{:?}", res.map(|p| p.display().to_string()))
+        }
+        "cpal-steps" => {
+            // Time each cpal step separately to find a device that hangs.
+            use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+            let t = std::time::Instant::now();
+            let host = cpal::default_host();
+            eprintln!("host {:?} {} ms", host.id(), t.elapsed().as_millis());
+            let skip_in = std::env::var("SKIP_IN").is_ok();
+            for (kind, dev) in [("in", host.default_input_device()), ("out", host.default_output_device())] {
+                if skip_in && kind == "in" {
+                    continue;
+                }
+                let t = std::time::Instant::now();
+                let Some(dev) = dev else { eprintln!("{kind}: none"); continue };
+                let name = dev.description().map(|d| d.name().to_string()).unwrap_or_default();
+                eprintln!("{kind} device '{name}' {} ms", t.elapsed().as_millis());
+                let t = std::time::Instant::now();
+                let cfg = if kind == "in" { dev.default_input_config() } else { dev.default_output_config() };
+                eprintln!("{kind} config {:?} {} ms", cfg.as_ref().map(|c| (c.sample_rate(), c.channels(), c.sample_format())), t.elapsed().as_millis());
+                let Ok(cfg) = cfg else { continue };
+                let t = std::time::Instant::now();
+                let stream = if kind == "in" {
+                    dev.build_input_stream::<f32, _, _>(cfg.config(), |_d, _| {}, |e| eprintln!("err {e}"), None)
+                } else {
+                    dev.build_output_stream::<f32, _, _>(cfg.config(), |d: &mut [f32], _| d.fill(0.0), |e| eprintln!("err {e}"), None)
+                };
+                eprintln!("{kind} build {:?} {} ms", stream.as_ref().err(), t.elapsed().as_millis());
+                if let Ok(s) = stream {
+                    let t = std::time::Instant::now();
+                    eprintln!("{kind} play {:?} {} ms", s.play().err(), t.elapsed().as_millis());
+                }
+            }
+            let t = std::time::Instant::now();
+            let ins: Vec<String> = host.input_devices().map(|d| d.map(|d| d.description().map(|x| x.name().to_string()).unwrap_or_default()).collect()).unwrap_or_default();
+            eprintln!("inputs {ins:?} {} ms", t.elapsed().as_millis());
+            let t = std::time::Instant::now();
+            let outs: Vec<String> = host.output_devices().map(|d| d.map(|d| d.description().map(|x| x.name().to_string()).unwrap_or_default()).collect()).unwrap_or_default();
+            eprintln!("outputs {outs:?} {} ms", t.elapsed().as_millis());
+            "done".into()
+        }
+        "key-scan" => {
+            // key-scan PATH... | - — count occurrences of the stored LLM key in
+            // files (recursively; "-" = stdin). Prints counts, never the key.
+            let key = jarvis_lib::store::secrets::get(jarvis_lib::store::secrets::LLM_API_KEY).unwrap().unwrap_or_default();
+            assert!(key.len() >= 8, "no key stored");
+            let needle = key.as_bytes();
+            let count = |hay: &[u8]| hay.windows(needle.len()).filter(|w| *w == needle).count();
+            let mut out = String::new();
+            let mut files = 0usize;
+            for arg in &args[1..] {
+                if arg == "-" {
+                    let mut buf = Vec::new();
+                    std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf).unwrap();
+                    out.push_str(&format!("stdin ({} bytes): {}\n", buf.len(), count(&buf)));
+                    continue;
+                }
+                let mut stack = vec![std::path::PathBuf::from(arg)];
+                while let Some(p) = stack.pop() {
+                    if p.is_dir() {
+                        if p.file_name().is_some_and(|n| n == "target" || n == "node_modules") {
+                            continue;
+                        }
+                        for e in std::fs::read_dir(&p).into_iter().flatten().flatten() {
+                            stack.push(e.path());
+                        }
+                    } else if let Ok(bytes) = std::fs::read(&p) {
+                        files += 1;
+                        let n = count(&bytes);
+                        if n > 0 {
+                            out.push_str(&format!("FOUND {n}× in {}\n", p.display()));
+                        }
+                    }
+                }
+            }
+            format!("{out}scanned {files} files")
+        }
+        "tts-voices" => serde_json::to_string_pretty(&jarvis_lib::voice::tts::voices()).unwrap(),
+        "tts-wav" => {
+            // tts-wav "текст" OUT.wav [RATE] — synthesise with the first Russian voice.
+            let rate: u32 = args.get(3).and_then(|r| r.parse().ok()).unwrap_or(16_000);
+            let sp = jarvis_lib::voice::tts::Speaker::new(&std::env::var("TTS_VOICE").unwrap_or_default(), 1.0).unwrap();
+            let t = std::time::Instant::now();
+            let pcm = sp.synthesize(&args[1], rate).unwrap();
+            let ms = t.elapsed().as_millis();
+            let data: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+            let mut w = Vec::new();
+            w.extend_from_slice(b"RIFF");
+            w.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+            w.extend_from_slice(b"WAVEfmt ");
+            for v in [16u32.to_le_bytes(), [1, 0, 1, 0], rate.to_le_bytes(), (rate * 2).to_le_bytes(), [2, 0, 16, 0]] {
+                w.extend_from_slice(&v);
+            }
+            w.extend_from_slice(b"data");
+            w.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            w.extend_from_slice(&data);
+            std::fs::write(&args[2], w).unwrap();
+            format!("voice={} synth {ms} ms, {:.2} s of audio", sp.voice, pcm.len() as f64 / rate as f64)
+        }
+        "stt-file" => {
+            // stt-file turbo|small FILE.wav — transcribe a 16 kHz mono PCM16 WAV.
+            let m = jarvis_lib::voice::stt::model(&args[1]);
+            let bytes = std::fs::read(&args[2]).unwrap();
+            let pcm: Vec<f32> = bytes[44..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
+            if std::env::var("STT_LOG").is_ok() { tracing_subscriber::fmt().with_env_filter("debug").init(); }
+            let t = std::time::Instant::now();
+            let mut r = jarvis_lib::voice::stt::Recognizer::load(jarvis_lib::voice::stt::model_path(m)).unwrap();
+            let load = t.elapsed().as_millis();
+            if let Ok(v) = std::env::var("STT_THREADS") { r.threads = v.parse().unwrap(); }
+            if let Ok(v) = std::env::var("STT_CTX") { r.audio_ctx = v.parse().unwrap(); }
+            if std::env::var("STT_BENCH").is_ok() {
+                let mut padded = pcm.clone();
+                padded.resize(16_000 * 30, 0.0);
+                let th = r.threads;
+                return println!("threads {th} — mel/encode ms: {:?}", r.bench_encode(&padded));
+            }
+            let mut out = format!("{}\nload {load} ms, audio {:.2} s, threads {}\n", whisper_rs::print_system_info(), pcm.len() as f64 / 16000.0, r.threads);
+            for _ in 0..std::env::var("STT_RUNS").ok().and_then(|v| v.parse().ok()).unwrap_or(2) {
+                out.push_str(&format!("{:?}\n", r.transcribe(&pcm)));
+            }
+            out
         }
         "monitors" => serde_json::to_string_pretty(&display::list_monitors()).unwrap(),
         "apps" => {

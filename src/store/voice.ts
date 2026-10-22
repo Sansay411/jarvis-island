@@ -29,8 +29,12 @@ export async function startVoiceFeed() {
   await listen<{ state: VoiceState; error: string | null }>("voice:state", (e) => {
     const { state, error } = e.payload;
     const patch: Partial<VoiceStore> = { state, error: error ?? null };
-    if (state === "hearing") patch.userLine = "";
-    if (state === "thinking") patch.assistantLine = "";
+    // A new utterance starts a new exchange. (Not on "thinking": the local
+    // engine passes through it between spoken phrases of one answer.)
+    if (state === "hearing") {
+      patch.userLine = "";
+      patch.assistantLine = "";
+    }
     useVoice.setState(patch);
     window.clearTimeout(closeTimer);
     const island = useIsland.getState();

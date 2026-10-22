@@ -73,7 +73,7 @@ pub fn list_devices() -> AudioDevices {
 }
 
 /// Streaming linear resampler with a short box low-pass for downsampling.
-struct Resampler {
+pub(crate) struct Resampler {
     ratio: f64, // input samples per output sample
     pos: f64,
     prev: f32,
@@ -82,13 +82,13 @@ struct Resampler {
 }
 
 impl Resampler {
-    fn new(from: u32, to: u32) -> Self {
+    pub(crate) fn new(from: u32, to: u32) -> Self {
         let ratio = from as f64 / to as f64;
         let n = if ratio > 1.0 { ratio.ceil() as usize } else { 1 };
         Resampler { ratio, pos: 0.0, prev: 0.0, taps: vec![0.0; n.max(1)], tap_i: 0 }
     }
 
-    fn process(&mut self, input: &[f32], out: &mut Vec<f32>) {
+    pub(crate) fn process(&mut self, input: &[f32], out: &mut Vec<f32>) {
         for &raw in input {
             // Box filter (moving average) before decimation.
             self.taps[self.tap_i] = raw;
@@ -157,16 +157,53 @@ impl AudioIo {
         let levels = Arc::new(Levels::default());
         let speaking = Arc::new(AtomicBool::new(false));
 
+        // Debug builds only: JARVIS_VOICE_INPUT_WAV=a.wav;b.wav replaces the
+        // microphone with 16 kHz WAV files played in real time (end-to-end
+        // tests of the voice pipeline without a person speaking).
+        let test_input: Option<Vec<std::path::PathBuf>> = if cfg!(debug_assertions) {
+            std::env::var("JARVIS_VOICE_INPUT_WAV").ok().map(|v| v.split(';').map(std::path::PathBuf::from).collect())
+        } else {
+            None
+        };
+        if let Some(files) = test_input.clone() {
+            spawn_test_feeder(files, mic_tx.clone(), levels.clone());
+        }
+        let test_mode = test_input.is_some();
+        // With test input, JARVIS_VOICE_OUTPUT=null also replaces the speaker:
+        // queued audio is consumed in real time without any device, so the
+        // pipeline can be tested when the machine's audio stack is unusable.
+        let null_output = test_mode && std::env::var("JARVIS_VOICE_OUTPUT").is_ok_and(|v| v == "null");
+        // What the audio thread is doing, to name the device if it hangs
+        // (a wedged USB microphone blocks IAudioClient::Initialize).
+        let stage = Arc::new(Mutex::new(String::from("Список аудиоустройств")));
+        let stage_t = stage.clone();
         let (pb, lv, sp) = (playback.clone(), levels.clone(), speaking.clone());
         let (in_name, out_name) = (input_name.to_string(), output_name.to_string());
         std::thread::Builder::new()
             .name("voice-audio".into())
             .spawn(move || {
+                if null_output {
+                    let _ = ready_tx.send(Ok((SPEAKER_RATE, "тестовые WAV-файлы".into(), "без устройства (тест)".into())));
+                    let frames = SPEAKER_RATE as usize / 50; // 20 ms
+                    while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = cmd_rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                        let mut q = pb.lock();
+                        let n = frames.min(q.len());
+                        let sq: f32 = q.drain(..n).map(|s| s * s).sum();
+                        let playing = !q.is_empty();
+                        drop(q);
+                        let level = (sq / frames as f32).sqrt();
+                        Levels::set(&lv.output, perceptual(level));
+                        sp.store(playing || level > 0.001, Ordering::Relaxed);
+                    }
+                    return;
+                }
                 let host = cpal::default_host();
-                let result = (|| -> AppResult<(cpal::Stream, cpal::Stream, u32, String, String)> {
+                let result = (|| -> AppResult<(Option<cpal::Stream>, cpal::Stream, u32, String, String)> {
                     let input = find_device(&host, &in_name, true).ok_or_else(|| AppError::not_found("Микрофон не найден"))?;
                     let output = find_device(&host, &out_name, false).ok_or_else(|| AppError::not_found("Устройство вывода звука не найдено"))?;
+                    *stage_t.lock() = format!("Микрофон «{}»", dev_name(&input));
                     let in_cfg = input.default_input_config().map_err(|e| AppError::platform(format!("Микрофон: {e}")))?;
+                    *stage_t.lock() = format!("Вывод звука «{}»", dev_name(&output));
                     let out_cfg = output.default_output_config().map_err(|e| AppError::platform(format!("Вывод звука: {e}")))?;
 
                     // ---- microphone ----
@@ -210,15 +247,18 @@ impl AudioIo {
                         }
                     };
                     let err = |e| tracing::warn!("mic stream error: {e}");
-                    let in_stream = match in_cfg.sample_format() {
+                    *stage_t.lock() = format!("Микрофон «{}»", dev_name(&input));
+                    // In test mode the WAV feeder replaces the microphone entirely.
+                    let in_stream = if test_mode { None } else { Some(match in_cfg.sample_format() {
                         SampleFormat::F32 => input.build_input_stream::<f32, _, _>(in_conf, move |d, _| on_input(&mut d.iter().copied()), err, None),
                         SampleFormat::I16 => input.build_input_stream::<i16, _, _>(in_conf, move |d, _| on_input(&mut d.iter().map(|s| *s as f32 / 32768.0)), err, None),
                         SampleFormat::U16 => input.build_input_stream::<u16, _, _>(in_conf, move |d, _| on_input(&mut d.iter().map(|s| (*s as f32 - 32768.0) / 32768.0)), err, None),
                         other => return Err(AppError::unsupported(format!("Формат микрофона {other:?} не поддерживается"))),
                     }
-                    .map_err(|e| AppError::platform(format!("Не удалось открыть микрофон: {e}")))?;
+                    .map_err(|e| AppError::platform(format!("Не удалось открыть микрофон: {e}")))?) };
 
                     // ---- speaker ----
+                    *stage_t.lock() = format!("Вывод звука «{}»", dev_name(&output));
                     let out_conf: StreamConfig = out_cfg.config();
                     let out_ch = out_conf.channels as usize;
                     let out_rate = out_conf.sample_rate;
@@ -263,7 +303,9 @@ impl AudioIo {
                     }
                     .map_err(|e| AppError::platform(format!("Не удалось открыть вывод звука: {e}")))?;
 
-                    in_stream.play().map_err(|e| AppError::platform(format!("Микрофон: {e}")))?;
+                    if let Some(s) = &in_stream {
+                        s.play().map_err(|e| AppError::platform(format!("Микрофон: {e}")))?;
+                    }
                     out_stream.play().map_err(|e| AppError::platform(format!("Вывод звука: {e}")))?;
                     Ok((in_stream, out_stream, out_rate, dev_name(&input), dev_name(&output)))
                 })();
@@ -285,7 +327,7 @@ impl AudioIo {
 
         let (out_rate, input_device, output_device) = ready_rx
             .recv_timeout(std::time::Duration::from_secs(5))
-            .map_err(|_| AppError::Timeout("Аудиоустройства не ответили".into()))??;
+            .map_err(|_| AppError::Timeout(format!("{} не отвечает — переподключите устройство или выберите другое в Настройках → Голос", stage.lock())))??;
         Ok((
             Arc::new(AudioIo {
                 cmd: cmd_tx,
@@ -326,6 +368,45 @@ impl AudioIo {
     pub fn stop(&self) {
         let _ = self.cmd.send(Cmd::Stop);
     }
+}
+
+/// See `JARVIS_VOICE_INPUT_WAV` in `AudioIo::start`. 2 s of silence, then
+/// each file followed by `JARVIS_VOICE_INPUT_GAP_S` (default 25) seconds of
+/// silence so the agent can answer, then silence until the session ends.
+fn spawn_test_feeder(files: Vec<std::path::PathBuf>, tx: mpsc::Sender<Vec<i16>>, levels: Arc<Levels>) {
+    let gap: usize = std::env::var("JARVIS_VOICE_INPUT_GAP_S").ok().and_then(|v| v.parse().ok()).unwrap_or(25) * 10;
+    tracing::warn!(?files, "voice test input: microphone replaced by WAV files");
+    let _ = std::thread::Builder::new().name("voice-test-input".into()).spawn(move || {
+        let send = |chunk: Vec<i16>| -> bool {
+            let f: Vec<f32> = chunk.iter().map(|s| *s as f32 / 32768.0).collect();
+            Levels::set(&levels.input, perceptual(rms(&f)));
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            tx.blocking_send(chunk).is_ok()
+        };
+        let silence = || vec![0i16; CHUNK];
+        for _ in 0..20 {
+            if !send(silence()) {
+                return;
+            }
+        }
+        for file in files {
+            let Ok(bytes) = std::fs::read(&file) else { continue };
+            let pcm: Vec<i16> = bytes.get(44..).unwrap_or_default().chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+            for c in pcm.chunks(CHUNK) {
+                let mut c = c.to_vec();
+                c.resize(CHUNK, 0);
+                if !send(c) {
+                    return;
+                }
+            }
+            for _ in 0..gap {
+                if !send(silence()) {
+                    return;
+                }
+            }
+        }
+        while send(silence()) {}
+    });
 }
 
 impl Drop for AudioIo {

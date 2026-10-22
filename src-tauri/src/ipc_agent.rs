@@ -101,11 +101,20 @@ fn target(kind: &SecretKind) -> &'static str {
     }
 }
 
+/// `base_url`: the API address shown in Settings when the key is saved; the
+/// LLM key is bound to its origin and never sent anywhere else.
 #[tauri::command]
-pub fn secret_set(app: AppHandle, kind: SecretKind, value: String) -> AppResult<()> {
+pub fn secret_set(app: AppHandle, state: State<'_, AppState>, kind: SecretKind, value: String, base_url: Option<String>) -> AppResult<()> {
     let v = value.trim();
     if v.is_empty() {
         return Err(AppError::invalid("Пустой ключ"));
+    }
+    if matches!(kind, SecretKind::Llm) {
+        let url = base_url.filter(|u| !u.trim().is_empty()).unwrap_or_else(|| state.store.settings().provider.effective_base_url());
+        if url.trim().is_empty() {
+            return Err(AppError::invalid("Сначала укажите адрес API провайдера"));
+        }
+        state.store.kv_set(ai::KEY_ORIGIN, &ai::origin_of(&url))?;
     }
     secrets::set(target(&kind), v)?;
     let _ = app.emit("settings:changed", ());
@@ -113,8 +122,11 @@ pub fn secret_set(app: AppHandle, kind: SecretKind, value: String) -> AppResult<
 }
 
 #[tauri::command]
-pub fn secret_clear(app: AppHandle, kind: SecretKind) -> AppResult<()> {
+pub fn secret_clear(app: AppHandle, state: State<'_, AppState>, kind: SecretKind) -> AppResult<()> {
     secrets::delete(target(&kind))?;
+    if matches!(kind, SecretKind::Llm) {
+        state.store.kv_set(ai::KEY_ORIGIN, "")?;
+    }
     let _ = app.emit("settings:changed", ());
     Ok(())
 }
@@ -132,7 +144,7 @@ pub struct ProviderTest {
 #[tauri::command]
 pub async fn provider_test(state: State<'_, AppState>) -> AppResult<ProviderTest> {
     let settings = state.store.settings();
-    let client = ai::client_from_settings(&settings)?;
+    let client = ai::client_from_settings(&settings, &state.store)?;
     let started = Instant::now();
     let cancel = tokio_util::sync::CancellationToken::new();
     let msgs = vec![ChatMessage::text(Role::User, "Ответь одним словом: «готов».")];

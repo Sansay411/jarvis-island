@@ -1,0 +1,18 @@
+# Build settings for whisper.cpp (local speech recognition), read by the
+# whisper-rs-sys build script. CMake must be on PATH or named by $CMAKE
+# (Visual Studio Build Tools ship one under Common7\IDE\CommonExtensions).
+[env]
+# Use the bindings bundled with whisper-rs-sys: no libclang needed.
+WHISPER_DONT_GENERATE_BINDINGS = "1"
+# Portable x86-64 baseline (AVX2/FMA/F16C — Haswell and newer) instead of
+# tuning for the build machine's CPU, so the installer runs elsewhere.
+GGML_NATIVE = "OFF"
+# With the Visual Studio generator the `cmake` crate overwrites the
+# per-config flags and drops every /O option, so whisper.cpp would build
+# unoptimised (~10x slower: 22 s instead of ~2 s to encode with
+# Whisper small). Defining them here makes the crate leave them alone.
+# Release = `cargo build --release`; RelWithDebInfo = debug builds.
+CMAKE_C_FLAGS_RELEASE = "-nologo -MD -Brepro /O2 /Ob2 /DNDEBUG"
+CMAKE_CXX_FLAGS_RELEASE = "-nologo -MD -Brepro /O2 /Ob2 /DNDEBUG"
+CMAKE_C_FLAGS_RELWITHDEBINFO = "-nologo -MD -Brepro /O2 /Ob1 /DNDEBUG"
+CMAKE_CXX_FLAGS_RELWITHDEBINFO = "-nologo -MD -Brepro /O2 /Ob1 /DNDEBUG"

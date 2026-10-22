@@ -14,17 +14,24 @@ SQLite · Windows Credential Manager. Без Python, Electron и фоновог�
 | Остров | компактный → hover → чат → голос → зона сброса файлов; «губа» над развёрнутыми окнами; скрывается при полноэкранных приложениях; клики сквозь прозрачные области |
 | Система | громкость и mute (Core Audio), громкость отдельных приложений, яркость (WMI для встроенной панели, DDC/CI для внешних мониторов), медиа (GSMTC: трек, обложка, управление) |
 | Приложения и окна | индекс всех приложений меню «Пуск» (включая Store), запуск с проверкой окна, фокус, свернуть/развернуть, закрыть через WM_CLOSE, раскладка по сторонам экрана, возврат к предыдущему окну |
-| Агент | Qwen (Model Studio, OpenAI-совместимый режим) с вызовом инструментов, цикл с проверкой результатов, подтверждения для рискованных действий, журнал аудита, отмена |
+| Агент | любой OpenAI-совместимый провайдер (по умолчанию Qwen3.8 через Alem AI; также Model Studio, OpenAI, OpenRouter, Ollama) с вызовом инструментов, цикл с проверкой результатов, подтверждения для рискованных действий, журнал аудита, отмена, соблюдение лимита запросов провайдера |
 | Computer use | снимки экрана/окна/области, UI Automation (список элементов и действия Invoke/Value/Toggle/Select…), клики, ввод текста, сочетания клавиш, прокрутка |
 | Браузер | вкладки (список, переключение, закрытие) и текст страницы в Chrome, Edge, Яндекс Браузере, Brave, Opera, Vivaldi, Firefox — через UI Automation, без расширений и remote debugging |
 | Разработка | VS Code (открыть проект/файл, недавние проекты), Claude Code и Codex как фоновые задачи с потоковым выводом, терминал, PowerShell с классификацией риска |
-| Голос | Qwen Omni Realtime: разговор в обе стороны, серверный VAD, перебивание, транскрипт, действия голосом, делегирование сложных задач агенту |
+| Голос | **на этом компьютере** (по умолчанию): Silero VAD + Whisper (whisper.cpp) на CPU → тот же агент с инструментами → голос Windows (Irina, Pavel); ответ звучит с первой готовой фразы, перебивание голосом, «стоп»/«хватит». Либо **Qwen Omni Realtime** (ключ DashScope) |
 | Файлы | поиск по имени/типу/дате в папках пользователя, чтение текста и изображений, буфер обмена, перетаскивание файлов на остров |
 
 ## Сборка
 
 Требования: Windows 10/11 x64, Rust (stable, MSVC), Visual Studio Build Tools
-с «Desktop development with C++» и Windows SDK, Node.js 20+, WebView2 Runtime.
+с «Desktop development with C++» и Windows SDK, CMake, Node.js 20+, WebView2 Runtime.
+
+CMake нужен для whisper.cpp. Он входит в Build Tools; если `cmake` нет в PATH,
+укажите его в переменной `CMAKE`:
+
+```bash
+export CMAKE="/c/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe"
+```
 
 ```bash
 npm install
@@ -32,13 +39,19 @@ npm run tauri dev       # разработка
 npm run tauri build     # установщик NSIS в src-tauri/target/release/bundle/nsis
 ```
 
+Релиз собирается только через `tauri build`: голый `cargo build --release`
+грузит интерфейс с dev-сервера. Флаги оптимизации whisper.cpp для MSVC и
+привязки без libclang настроены в `src-tauri/.cargo/config.toml` и
+`src-tauri/vendor/whisper-rs-sys` (см. `JARVIS-PATCH.md`).
+
 ## Первый запуск
 
 1. Откройте настройки: пункт «Настройки» в меню трея или `jarvis.exe --settings`.
-2. «Модель»: провайдер **Qwen — Model Studio** (регион как у ключа), модель
-   `qwen3.8-flash` (быстрее) или `qwen3.8-max` (сильнее), вставьте API-ключ
-   Model Studio, нажмите «Проверить подключение».
-3. Голос использует тот же ключ (`qwen3.8-omni-flash-realtime`).
+2. «Модель»: провайдер **Qwen3.8 — Alem AI** (по умолчанию) или другой,
+   вставьте API-ключ, нажмите «Проверить подключение».
+3. «Голос»: скачайте модель распознавания **Whisper small** (264 МБ, вместе с
+   ней — Silero VAD 0,9 МБ) и сохраните. Голос Джарвиса — любой русский голос
+   Windows. Для Qwen Omni Realtime выберите этот движок и ключ Model Studio.
 
 ## Управление
 
@@ -61,6 +74,8 @@ jarvis.exe --command toggle-voice
 ## Безопасность
 
 * Ключи — только в диспетчере учётных данных Windows (`JARVIS/llm-api-key`).
+  Ключ модели отправляется только на адрес, для которого сохранён, и никогда —
+  провайдерам без ключа (Ollama).
 * Риск каждого действия оценивается по аргументам: чтение состояния
   выполняется сразу; изменения файлов, команды, закрытие окон — с
   подтверждением (настраивается); удаление, установка, отправка, нажатия
@@ -68,7 +83,8 @@ jarvis.exe --command toggle-voice
 * Содержимое страниц, файлов, буфера и вывода команд передаётся модели как
   недоверенные данные; системные инструкции агента это явно оговаривают.
 * Снимки экрана делаются только по ходу задачи и никогда не сохраняются на
-  диск; звук не записывается.
+  диск; звук не записывается на диск. Локальный голос распознаёт речь на
+  компьютере — модели уходит только распознанный текст.
 * Журнал рискованных действий — таблица `audit_log` в
   `%LOCALAPPDATA%\dev.jarvis.desktop\jarvis.db`.
 
@@ -78,7 +94,15 @@ jarvis.exe --command toggle-voice
 * Настройки → «Диагностика»: память процесса, частота трекера курсора,
   мониторы, задержки голоса.
 * Проверка нативных интеграций без UI:
-  `cargo run --example probe -- audio|brightness|media|windows|apps код|uia Окно|browser|devtools|audio-test`
+  `cargo run --example probe -- audio|brightness|media|windows|apps код|uia Окно|browser|devtools|audio-test|cpal-steps`
+* Голос без UI: `probe tts-wav "текст" out.wav` (синтез голосом Windows,
+  16 кГц), `probe stt-file small out.wav` (распознавание с замером),
+  `probe stt-download small` (загрузка модели тем же кодом, что в настройках).
+* Сквозной тест голоса без человека (только отладочная сборка):
+  `JARVIS_VOICE_INPUT_WAV="a.wav;b.wav"` заменяет микрофон WAV-файлами 16 кГц
+  (`JARVIS_VOICE_INPUT_GAP_S` — пауза после каждого, по умолчанию 25 с),
+  `JARVIS_VOICE_OUTPUT=null` дополнительно заменяет динамики «нулевым»
+  выводом. Затем `jarvis.exe --command toggle-voice`; ход виден в журнале.
 
 Подробности: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 [docs/DESIGN.md](docs/DESIGN.md), состояние работ — [TASKS.md](TASKS.md).

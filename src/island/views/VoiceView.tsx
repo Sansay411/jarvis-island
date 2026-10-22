@@ -12,7 +12,7 @@ import { useAgent } from "../../store/agent";
 const BARS = 8;
 const LABEL: Record<VoiceState, string> = {
   idle: "",
-  connecting: "Подключаюсь",
+  connecting: "Запускаю",
   listening: "Слушаю",
   hearing: "Слышу вас",
   thinking: "Думаю",
@@ -90,6 +90,11 @@ export function VoiceView() {
       <div className="brow">
         <span className={`brow-name${state === "error" ? " is-error" : ""}`}>{LABEL[state]}</span>
         <div className="brow-actions">
+          {state === "error" && (
+            <button className="btn btn-quiet" onClick={() => void invoke("settings_open")}>
+              Настройки
+            </button>
+          )}
           <button className="stop-ring" aria-label="Завершить голосовой режим" onClick={() => void invoke("voice_stop")}>
             <Icon name="stop" size={10} />
           </button>

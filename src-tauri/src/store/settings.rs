@@ -128,6 +128,15 @@ impl ProviderSettings {
 #[serde(rename_all = "camelCase", default)]
 pub struct VoiceSettings {
     pub enabled: bool,
+    /// "local": Whisper on this PC + the chat model + a Windows voice.
+    /// "realtime": Qwen Omni Realtime (DashScope key).
+    pub engine: String,
+    /// Whisper model id from `voice::stt::MODELS`.
+    pub stt_model: String,
+    /// Windows voice id; empty = first Russian voice.
+    pub tts_voice: String,
+    /// Speaking rate, 0.5–2.0.
+    pub tts_rate: f32,
     /// Realtime WebSocket endpoint (without the `?model=` query).
     pub realtime_url: String,
     pub model: String,
@@ -142,6 +151,10 @@ impl Default for VoiceSettings {
     fn default() -> Self {
         VoiceSettings {
             enabled: true,
+            engine: "local".into(),
+            stt_model: "small".into(),
+            tts_voice: String::new(),
+            tts_rate: 1.1,
             realtime_url: "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime".into(),
             model: "qwen3.8-omni-flash-realtime".into(),
             voice: "Katerina".into(),

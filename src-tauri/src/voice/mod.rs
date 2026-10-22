@@ -1,4 +1,7 @@
-//! Real-time voice conversation (Qwen Omni Realtime over WebSocket).
+//! Voice conversation. Two engines share the island UI and events:
+//! - local (default): Whisper on this PC → the text agent → a Windows voice
+//!   (`local.rs`);
+//! - realtime: Qwen Omni Realtime over WebSocket (below).
 //!
 //! State machine: idle → connecting → listening ⇄ hearing (speech detected)
 //! → thinking → speaking → listening …; error/idle on failure or stop.
@@ -9,6 +12,11 @@
 //! work is delegated to the text agent (`delegate_to_agent`).
 
 pub mod audio;
+mod local;
+pub mod phrases;
+pub mod stt;
+pub mod tts;
+pub mod vad;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,6 +41,7 @@ use audio::AudioIo;
 pub const EVT_STATE: &str = "voice:state";
 pub const EVT_LEVEL: &str = "voice:level";
 pub const EVT_TRANSCRIPT: &str = "voice:transcript";
+pub const EVT_MODEL: &str = "voice:model";
 
 /// Tools exposed to the realtime model directly (fast, conversational).
 const VOICE_TOOLS: &[&str] = &[
@@ -92,9 +101,23 @@ struct TranscriptEvent {
     is_final: bool,
 }
 
+/// Progress of a speech-model download (Settings → Voice).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelEvent {
+    id: &'static str,
+    done: u64,
+    total: u64,
+    /// downloading | done | cancelled | error
+    state: &'static str,
+    error: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceMetrics {
+    /// Local engine: speech recognition time for the last utterance.
+    pub last_stt_ms: Option<u64>,
     /// Speech end (server VAD) → first audio delta.
     pub last_time_to_first_audio_ms: Option<u64>,
     /// speech_started → playback cleared.
@@ -107,11 +130,20 @@ pub struct VoiceManager {
     session: Mutex<Option<CancellationToken>>,
     state: Mutex<VoiceState>,
     pub metrics: Mutex<VoiceMetrics>,
+    stt: Arc<local::SttEngine>,
+    download: Mutex<Option<CancellationToken>>,
 }
 
 impl VoiceManager {
     pub fn new(app: AppHandle) -> Arc<Self> {
-        Arc::new(VoiceManager { app, session: Mutex::new(None), state: Mutex::new(VoiceState::Idle), metrics: Mutex::new(VoiceMetrics::default()) })
+        Arc::new(VoiceManager {
+            app,
+            session: Mutex::new(None),
+            state: Mutex::new(VoiceState::Idle),
+            metrics: Mutex::new(VoiceMetrics::default()),
+            stt: Arc::new(local::SttEngine::default()),
+            download: Mutex::new(None),
+        })
     }
 
     pub fn state(&self) -> VoiceState {
@@ -146,10 +178,15 @@ impl VoiceManager {
         if !settings.voice.enabled {
             return Err(AppError::invalid("Голосовой режим выключен в настройках"));
         }
-        let key_name = if settings.voice.reuse_llm_key { secrets::LLM_API_KEY } else { secrets::VOICE_API_KEY };
-        let key = secrets::get(key_name)?.filter(|k| !k.trim().is_empty()).ok_or_else(|| {
-            AppError::invalid("Для голоса нужен API-ключ Model Studio — добавьте его в настройках")
-        })?;
+        let realtime = settings.voice.engine == "realtime";
+        let key = if realtime {
+            let key_name = if settings.voice.reuse_llm_key { secrets::LLM_API_KEY } else { secrets::VOICE_API_KEY };
+            Some(secrets::get(key_name)?.filter(|k| !k.trim().is_empty()).ok_or_else(|| {
+                AppError::invalid("Для голоса Qwen Omni нужен API-ключ Model Studio — добавьте его в настройках")
+            })?)
+        } else {
+            None
+        };
         let cancel = {
             let mut s = self.session.lock();
             if s.is_some() {
@@ -162,7 +199,10 @@ impl VoiceManager {
         self.set_state(VoiceState::Connecting, None, None);
         let me = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
-            let res = me.run(settings.voice.clone(), key, cancel.clone()).await;
+            let res = match key {
+                Some(key) => me.run_realtime(settings.voice.clone(), key, cancel.clone()).await,
+                None => me.run_local(settings.voice.clone(), cancel.clone()).await,
+            };
             *me.session.lock() = None;
             match res {
                 Ok(()) | Err(AppError::Cancelled) => me.set_state(VoiceState::Idle, None, None),
@@ -173,6 +213,43 @@ impl VoiceManager {
             }
         });
         Ok(())
+    }
+
+    /// Download a Whisper model in the background, reporting `voice:model`.
+    pub fn download_model(self: &Arc<Self>, id: &str) -> AppResult<()> {
+        let m = stt::model(id);
+        let cancel = {
+            let mut d = self.download.lock();
+            if d.is_some() {
+                return Err(AppError::invalid("Модель уже скачивается"));
+            }
+            let c = CancellationToken::new();
+            *d = Some(c.clone());
+            c
+        };
+        let me = Arc::clone(self);
+        tauri::async_runtime::spawn(async move {
+            let app = me.app.clone();
+            let progress = |done, total| {
+                let _ = app.emit(EVT_MODEL, ModelEvent { id: m.id, done, total, state: "downloading", error: None });
+            };
+            let res = stt::download(m, cancel, progress).await;
+            *me.download.lock() = None;
+            let (state, error) = match res {
+                Ok(_) => ("done", None),
+                Err(AppError::Cancelled) => ("cancelled", None),
+                Err(e) => ("error", Some(e.to_string())),
+            };
+            tracing::info!(model = m.id, state, "speech model download finished");
+            let _ = me.app.emit(EVT_MODEL, ModelEvent { id: m.id, done: 0, total: m.size, state, error });
+        });
+        Ok(())
+    }
+
+    pub fn cancel_download(&self) {
+        if let Some(c) = self.download.lock().take() {
+            c.cancel();
+        }
     }
 
     fn tool_specs(&self) -> Vec<Value> {
@@ -193,7 +270,7 @@ impl VoiceManager {
         specs
     }
 
-    async fn run(self: &Arc<Self>, cfg: crate::store::settings::VoiceSettings, key: String, cancel: CancellationToken) -> AppResult<()> {
+    async fn run_realtime(self: &Arc<Self>, cfg: crate::store::settings::VoiceSettings, key: String, cancel: CancellationToken) -> AppResult<()> {
         let started = Instant::now();
         let url = format!("{}?model={}", cfg.realtime_url.trim_end_matches('/'), cfg.model.trim());
         let mut req = url.as_str().into_client_request().map_err(|e| AppError::invalid(format!("Некорректный адрес realtime: {e}")))?;
