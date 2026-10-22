@@ -23,6 +23,25 @@ import { WorkspaceView } from "../workspace/WorkspaceView";
 import "./island.css";
 
 const SHAPE_SPRING = { stiffness: 380, damping: 28, mass: 0.8 };
+
+/** Measure real frame pacing for ~700 ms after a shape change and log it
+ *  natively (Settings → Diagnostics reads the log). Costs nothing at rest. */
+function sampleFrames(label: string): () => void {
+  let raf = 0;
+  const times: number[] = [];
+  const start = performance.now();
+  const step = (t: number) => {
+    times.push(t);
+    if (t - start < 700) raf = requestAnimationFrame(step);
+    else if (times.length > 2) {
+      const gaps = times.slice(1).map((v, i) => v - times[i]!);
+      const avg = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+      void invoke("perf_report", { label, fps: Math.round(1000 / avg), worstMs: Math.round(Math.max(...gaps)), frames: gaps.length });
+    }
+  };
+  raf = requestAnimationFrame(step);
+  return () => cancelAnimationFrame(raf);
+}
 const REDUCED = { stiffness: 1000, damping: 100, mass: 1 };
 
 function useIslandController() {
@@ -136,6 +155,7 @@ export function Island() {
     w.set(dims.w);
     h.set(dims.h);
     void ipc.island.setShape(shapeRect(dims));
+    return sampleFrames(`${mode} ${dims.w}x${dims.h}`);
   }, [dims, w, h]);
 
   // Fresh, verified values every time the controls become visible.
@@ -181,9 +201,11 @@ export function Island() {
               key={mode}
               className="island-content"
               style={{ width: dims.w, height: dims.h }}
-              initial={{ opacity: 0, filter: "blur(6px)", scale: 0.97 }}
-              animate={{ opacity: 1, filter: "blur(0px)", scale: 1, transition: { duration: 0.24, delay: 0.06, ease: [0.22, 1, 0.36, 1] } }}
-              exit={{ opacity: 0, filter: "blur(4px)", scale: 0.98, transition: { duration: 0.1 } }}
+              // Blur reads beautifully on small views but re-rasterises every
+              // frame; the large workspace fades and settles without it.
+              initial={{ opacity: 0, filter: mode === "workspace" ? "none" : "blur(6px)", scale: 0.97 }}
+              animate={{ opacity: 1, filter: mode === "workspace" ? "none" : "blur(0px)", scale: 1, transition: { duration: 0.24, delay: 0.06, ease: [0.22, 1, 0.36, 1] } }}
+              exit={{ opacity: 0, filter: mode === "workspace" ? "none" : "blur(4px)", scale: 0.98, transition: { duration: 0.1 } }}
             >
               {mode === "compact" && <CompactView />}
               {mode === "peek" && <PeekView />}

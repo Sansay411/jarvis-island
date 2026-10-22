@@ -193,3 +193,9 @@ pub async fn audio_devices() -> AppResult<crate::voice::audio::AudioDevices> {
 pub fn island_context(state: State<'_, AppState>) -> serde_json::Value {
     serde_json::json!({ "topCovered": state.island.top_covered() })
 }
+
+/// Frame pacing measured by the island during shape transitions.
+#[tauri::command]
+pub fn perf_report(label: String, fps: u32, worst_ms: u32, frames: u32) {
+    tracing::info!(label, fps, worst_ms, frames, "island animation");
+}

@@ -213,6 +213,7 @@ pub fn run() {
             ipc::island_end_input,
             ipc::island_set_hidden,
             ipc::island_context,
+            ipc::perf_report,
             ipc::audio_get,
             ipc::audio_set_volume,
             ipc::audio_set_mute,
