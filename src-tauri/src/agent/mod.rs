@@ -587,6 +587,17 @@ impl Agent {
                 if attached { Risk::Low } else { base }
             }
             "clipboard_read" if turn.settings.privacy.allow_clipboard_read => Risk::Low,
+            // Enter in a messenger or mail client sends a message to someone:
+            // always confirmed, with the window (chat) shown. Live use: a voice
+            // note for «Избранное» was typed and sent with no question asked.
+            "input_key" => {
+                let submits = crate::tools::screen::is_submit_key(args.get("keys").and_then(Value::as_str).unwrap_or(""));
+                if submits && crate::platform::winmgr::foreground_window().is_some_and(|w| crate::tools::screen::is_messaging_window(&w)) {
+                    Risk::High
+                } else {
+                    base
+                }
+            }
             "ui_act" => {
                 // Pressing a control whose name says "Send", "Delete", "Buy"…
                 // in the single action or anywhere in a batch of steps.
@@ -652,17 +663,32 @@ impl Agent {
     }
 
     async fn ask_confirmation(&self, turn: &Turn, call: &ToolCall, title: &str, risk: Risk, args: &Value) -> AppResult<bool> {
-        let details = match args.get("command").and_then(Value::as_str) {
+        let mut title = title.to_string();
+        let mut details = match args.get("command").and_then(Value::as_str) {
             Some(cmd) => cmd.to_string(),
             None => serde_json::to_string_pretty(args).unwrap_or_default(),
         };
+        // Keyboard and mouse act on the foreground window: say which one (in a
+        // messenger its title is the chat — the recipient).
+        if call.name.starts_with("input_") {
+            if let Some(w) = crate::platform::winmgr::foreground_window() {
+                let sends = crate::tools::screen::is_messaging_window(&w) && call.name == "input_key";
+                if sends {
+                    title = format!("Отправить сообщение — {}", w.process.trim_end_matches(".exe"));
+                }
+                let what = if sends { "Отправит сообщение в окне" } else { "Окно" };
+                details = format!("{what}: «{}» ({})
+{details}", w.title.trim_start_matches('‎'), w.process);
+            }
+        }
+        tracing::info!(tool = %call.name, risk = risk.as_str(), title = %title, "confirmation requested");
         let (tx, rx) = oneshot::channel();
         self.inner.lock().confirms.insert(call.id.clone(), tx);
         self.emit(AgentEvent::ConfirmationRequired {
             turn_id: turn.id.clone(),
             call_id: call.id.clone(),
             tool: call.name.clone(),
-            title: title.to_string(),
+            title,
             risk: risk.as_str(),
             details: truncate_chars(&details, 2000),
         });

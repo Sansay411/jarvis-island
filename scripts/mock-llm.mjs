@@ -25,6 +25,7 @@ function plan(userText) {
   if (t.includes("громкость")) return [{ name: "system_volume", args: { action: "get" } }];
   if (t.includes("осмотрись")) return [{ name: "context_snapshot", args: {} }];
   if (t.includes("сломанный")) return [{ name: "no_such_tool", args: {} }];
+  if (t.includes("нажми enter")) return [{ name: "input_key", args: { keys: "enter" } }];
   return [];
 }
 

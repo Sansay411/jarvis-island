@@ -57,7 +57,9 @@ try {
   let final = r.msgs.filter((m) => m.role === "assistant").pop();
   check("single tool: status", r.task.status === "completed", r.task.status);
   check("single tool: ran and verified", tools.length === 1 && tools[0].toolOk === 1, tools.map((t) => t.toolTitle));
-  check("single tool: answer from verified result", text(final).startsWith("Проверил: Громкость"), text(final));
+  // The summary depends on the machine: "Громкость N%" or "Звук выключен" when muted.
+  const volumeSummary = /^Проверил: (Громкость|Звук выключен)/;
+  check("single tool: answer from verified result", volumeSummary.test(text(final)), text(final));
   check("single tool: two model calls", r.task.steps === 2, r.task.steps);
 
   // 2. Parallel independent tools in one step.
@@ -65,7 +67,7 @@ try {
   tools = r.msgs.filter((m) => m.role === "tool");
   final = r.msgs.filter((m) => m.role === "assistant").pop();
   check("parallel: two tools", tools.length === 2 && tools.every((t) => t.toolOk === 1), tools.map((t) => `${t.toolTitle}:${t.toolOk}`));
-  check("parallel: combined answer", text(final).includes("Громкость") && text(final).includes("Яркость"), text(final));
+  check("parallel: combined answer", /Громкость|Звук выключен/.test(text(final)) && text(final).includes("Яркость"), text(final));
 
   // 3. Non-fast tool → second model round with the tool result.
   r = await ask("осмотрись");

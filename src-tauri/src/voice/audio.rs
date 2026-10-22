@@ -330,8 +330,9 @@ impl AudioIo {
             .map_err(|e| AppError::internal(format!("audio thread: {e}")))?;
 
         let (out_rate, input_device, output_device) = ready_rx
-            // A USB microphone right after reconnecting took over 5 s to open.
-            .recv_timeout(std::time::Duration::from_secs(10))
+            // The fifine USB microphone has taken 5–21 s to open (after
+            // reconnecting, after idle); the island shows «Запускаю» meanwhile.
+            .recv_timeout(std::time::Duration::from_secs(30))
             .map_err(|_| AppError::Timeout(format!("{} не отвечает — переподключите устройство или выберите другое в Настройках → Голос", stage.lock())))??;
         Ok((
             Arc::new(AudioIo {

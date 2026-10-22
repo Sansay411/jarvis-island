@@ -107,11 +107,13 @@ fn handle_cli(app: &tauri::AppHandle, argv: &[String]) -> bool {
         }
         return true;
     }
-    // `--command toggle-workspace|open-workspace|toggle-voice` lets
+    // `--command toggle-workspace|open-workspace|toggle-voice|cancel-task` lets
     // launchers, Stream Deck buttons and scripts drive the island.
     if let Some(pos) = argv.iter().position(|a| a == "--command") {
         if let Some(cmd) = argv.get(pos + 1) {
-            if matches!(cmd.as_str(), "toggle-workspace" | "open-workspace" | "toggle-voice") {
+            if cmd == "cancel-task" {
+                app.state::<Arc<agent::Agent>>().cancel();
+            } else if matches!(cmd.as_str(), "toggle-workspace" | "open-workspace" | "toggle-voice") {
                 app.state::<AppState>().island.set_user_hidden(false);
                 emit_command(app, cmd);
             }

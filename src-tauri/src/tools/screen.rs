@@ -26,6 +26,32 @@ const SENSITIVE: &[&str] = &[
     "форматир", "transfer", "перевест", "перевод", "sign out", "выйти из", "logout", "reset", "сброс", "стереть", "erase",
 ];
 
+/// Messengers and mail clients: there Enter sends a message to someone.
+const MESSAGING_PROCESSES: &[&str] = &[
+    "telegram.exe", "whatsapp.exe", "whatsapp.root.exe", "discord.exe", "slack.exe", "ms-teams.exe", "teams.exe",
+    "viber.exe", "signal.exe", "skype.exe", "outlook.exe", "olk.exe", "thunderbird.exe", "element.exe",
+    "zoom.exe", "mattermost.exe", "wechat.exe", "weixin.exe",
+];
+const BROWSERS: &[&str] = &["chrome.exe", "msedge.exe", "firefox.exe", "browser.exe", "opera.exe", "brave.exe", "vivaldi.exe"];
+/// Web messengers and mail, recognised by the browser window title.
+const MESSAGING_TITLES: &[&str] = &[
+    "telegram", "whatsapp", "discord", "slack", "teams", "gmail", "почта", "входящие", "inbox", "outlook",
+    "messenger", "сообщения", "messages", "вконтакте", "vk.com", "mail",
+];
+
+/// Whether text typed into `w` and confirmed with Enter reaches other people.
+pub fn is_messaging_window(w: &winmgr::WindowInfo) -> bool {
+    let process = w.process.to_lowercase();
+    let title = w.title.to_lowercase();
+    MESSAGING_PROCESSES.contains(&process.as_str()) || (BROWSERS.contains(&process.as_str()) && MESSAGING_TITLES.iter().any(|t| title.contains(t)))
+}
+
+/// Keys that submit what was typed (send a message, an email, a form).
+pub fn is_submit_key(keys: &str) -> bool {
+    let k = keys.to_lowercase().replace(' ', "").replace("return", "enter");
+    matches!(k.as_str(), "enter" | "ctrl+enter" | "alt+s" | "ctrl+s+enter")
+}
+
 pub fn sensitive_text(text: &str) -> bool {
     let t = text.to_lowercase();
     SENSITIVE.iter().any(|w| t.contains(w))
@@ -503,6 +529,22 @@ mod tests {
         assert_eq!(click_risk(&json!({"target_description": "Delete branch button"})), Risk::High);
         assert_eq!(click_risk(&json!({"target_description": "вкладка GitHub"})), Risk::Low);
         assert_eq!(key_risk(&json!({"keys": "Alt+F4"})), Risk::Moderate);
+        assert!(is_submit_key("Enter") && is_submit_key("ctrl + enter") && !is_submit_key("shift+enter") && !is_submit_key("ctrl+a"));
+        let w = |process: &str, title: &str| winmgr::WindowInfo {
+            hwnd: 1,
+            title: title.into(),
+            process: process.into(),
+            pid: 1,
+            class_name: String::new(),
+            state: "normal",
+            foreground: true,
+            rect: Rect { x: 0, y: 0, width: 10, height: 10 },
+            monitor: String::new(),
+        };
+        assert!(is_messaging_window(&w("Telegram.exe", "Нинок @ Noxen")));
+        assert!(is_messaging_window(&w("browser.exe", "Входящие — Почта — Яндекс Браузер")));
+        assert!(!is_messaging_window(&w("browser.exe", "Погода в Алматы — Яндекс Браузер")));
+        assert!(!is_messaging_window(&w("Code.exe", "main.rs — Jarvis")));
     }
 
     #[test]

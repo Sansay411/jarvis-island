@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Listener, Manager};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -249,6 +249,17 @@ impl VoiceManager {
             shown: VoiceState::Listening,
         };
         let mut level_tick = tokio::time::interval(Duration::from_millis(33));
+        // A voice user is not looking at the screen: say it aloud when an
+        // action waits for confirmation (given only by clicking on the island —
+        // a misheard «да» must not send a message).
+        let (confirm_tx, mut confirm_rx) = mpsc::unbounded_channel::<String>();
+        let confirm_listener = self.app.listen(crate::agent::events::EVT_AGENT, move |e| {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(e.payload()) {
+                if v["type"] == "confirmationRequired" {
+                    let _ = confirm_tx.send(v["title"].as_str().unwrap_or_default().to_string());
+                }
+            }
+        });
 
         let result: AppResult<()> = loop {
             tokio::select! {
@@ -360,6 +371,12 @@ impl VoiceManager {
                     }
                     Ev::Audio(..) => {}
                 },
+                Some(title) = confirm_rx.recv() => {
+                    if pl.turn_active {
+                        pl.say(format!("Нужно ваше подтверждение: {}. Нажмите «Разрешить» или «Отклонить» на острове.", super::phrases::speakable(&title)));
+                        pl.refresh_state(&vad);
+                    }
+                }
                 _ = level_tick.tick() => {
                     let _ = self.app.emit(EVT_LEVEL, LevelEvent { input: audio.levels.input(), output: audio.levels.output() });
                     pl.refresh_state(&vad);
@@ -367,6 +384,7 @@ impl VoiceManager {
             }
         };
 
+        self.app.unlisten(confirm_listener);
         if pl.turn_active {
             self.app.state::<Arc<Agent>>().cancel();
         }

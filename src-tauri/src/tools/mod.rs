@@ -10,7 +10,7 @@ mod browser;
 mod dev;
 mod files;
 mod memory;
-mod screen;
+pub mod screen;
 mod shell;
 mod system;
 
