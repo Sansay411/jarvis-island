@@ -7,6 +7,7 @@
 //! room (`echo_guard`), and segments that never passed that check are
 //! dropped — JARVIS must not answer its own voice.
 
+use std::collections::VecDeque;
 use std::path::Path;
 
 use sherpa_onnx::{SileroVadModelConfig, VadModelConfig, VoiceActivityDetector};
@@ -19,6 +20,13 @@ const MIN_SPEECH_S: f32 = 0.25;
 const MAX_SPEECH_S: f32 = 20.0;
 /// Extra loudness over the room needed while JARVIS speaks.
 const ECHO_MARGIN_DB: f32 = 12.0;
+/// Audio kept around each detected phrase: Silero's segment can start a
+/// little late and clip a short word's onset — a lone «Джарвис» came out
+/// unrecognised in the app while the same file read fine whole.
+const PAD_BEFORE: usize = 16_000 * 35 / 100;
+const PAD_AFTER: usize = 16_000 * 15 / 100;
+/// Recent audio kept for the padding (longest phrase plus margin).
+const HISTORY: usize = 16_000 * 25;
 
 #[derive(Debug, PartialEq)]
 pub enum VadEvent {
@@ -67,6 +75,9 @@ pub struct Vad {
     accepted: bool,
     /// JARVIS is speaking: apply the echo guard.
     pub echo_guard: bool,
+    /// Recent samples; `history[0]` is sample number `history_base`.
+    history: VecDeque<f32>,
+    history_base: usize,
 }
 
 impl Vad {
@@ -89,7 +100,7 @@ impl Vad {
         };
         let det = VoiceActivityDetector::create(&cfg, MAX_SPEECH_S + 10.0)
             .ok_or_else(|| AppError::platform("Не удалось загрузить детектор речи"))?;
-        Ok(Vad { det, floor: Floor::default(), in_speech: false, accepted: false, echo_guard: false })
+        Ok(Vad { det, floor: Floor::default(), in_speech: false, accepted: false, echo_guard: false, history: VecDeque::with_capacity(HISTORY), history_base: 0 })
     }
 
     pub fn floor_db(&self) -> f32 {
@@ -103,11 +114,16 @@ impl Vad {
     pub fn push(&mut self, chunk: &[f32]) -> Vec<VadEvent> {
         let db = chunk_db(chunk);
         self.det.accept_waveform(chunk);
+        self.history.extend(chunk.iter().copied());
+        while self.history.len() > HISTORY {
+            self.history.pop_front();
+            self.history_base += 1;
+        }
         let mut events = Vec::new();
         // Finished segments first: each closes the utterance it belongs to.
         while let Some(seg) = self.det.front() {
             if self.accepted {
-                events.push(VadEvent::Ended(seg.samples().to_vec()));
+                events.push(VadEvent::Ended(self.padded(seg.start().max(0) as usize, seg.samples())));
             }
             self.det.pop();
             self.accepted = false;
@@ -125,9 +141,23 @@ impl Vad {
         events
     }
 
+    /// The phrase with some audio before and after it, from the history;
+    /// the bare segment if that part of the history is gone.
+    fn padded(&self, start: usize, segment: &[f32]) -> Vec<f32> {
+        let seen = self.history_base + self.history.len();
+        let from = start.saturating_sub(PAD_BEFORE).max(self.history_base);
+        let to = (start + segment.len() + PAD_AFTER).min(seen);
+        if start < self.history_base || from >= to {
+            return segment.to_vec();
+        }
+        self.history.range(from - self.history_base..to - self.history_base).copied().collect()
+    }
+
     /// Forget a half-heard utterance.
     pub fn reset(&mut self) {
         self.det.reset();
+        self.history.clear();
+        self.history_base = 0;
         self.in_speech = false;
         self.accepted = false;
     }

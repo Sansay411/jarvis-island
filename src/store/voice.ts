@@ -9,7 +9,7 @@ import { listen } from "@tauri-apps/api/event";
 import { errorMessage } from "../lib/ipc";
 import { useIsland } from "./island";
 
-export type VoiceState = "idle" | "connecting" | "listening" | "hearing" | "thinking" | "speaking" | "error";
+export type VoiceState = "idle" | "dormant" | "connecting" | "listening" | "hearing" | "thinking" | "speaking" | "error";
 
 interface VoiceStore {
   state: VoiceState;
@@ -38,7 +38,8 @@ export async function startVoiceFeed() {
     useVoice.setState(patch);
     window.clearTimeout(closeTimer);
     const island = useIsland.getState();
-    if (state === "idle") {
+    // "dormant": the microphone waits for «Джарвис» — nothing to show.
+    if (state === "idle" || state === "dormant") {
       island.set({ voiceOpen: false });
     } else if (state === "error") {
       island.set({ voiceOpen: true });
@@ -46,7 +47,7 @@ export async function startVoiceFeed() {
     } else {
       island.set({ voiceOpen: true });
     }
-    if (state === "idle" || state === "error") {
+    if (state === "idle" || state === "dormant" || state === "error") {
       inputLevel.set(0);
       outputLevel.set(0);
     }

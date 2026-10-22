@@ -22,6 +22,25 @@ settings.provider = { ...(settings.provider ?? {}), preset: "ollama", baseUrl: `
 settings.privacy = { ...(settings.privacy ?? {}), storeHistory: true };
 db.prepare("INSERT INTO kv(key, value) VALUES('settings', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(JSON.stringify(settings));
 
+// Run in a conversation of its own and put the user back in theirs after:
+// test turns must never become part of the user's chat or the model's context.
+const testStart = new Date().toISOString();
+const userConversation = db.prepare("SELECT conversation_id AS id FROM messages ORDER BY id DESC LIMIT 1").get()?.id ?? null;
+execFileSync(exe, ["--command", "new-conversation"]);
+function restoreConversation() {
+  const ids = db
+    .prepare("SELECT DISTINCT conversation_id AS id FROM messages WHERE created_at >= ?")
+    .all(testStart)
+    .map((r) => r.id)
+    .filter((id) => id !== userConversation);
+  for (const id of ids) {
+    db.prepare("DELETE FROM messages WHERE conversation_id = ?").run(id);
+    db.prepare("DELETE FROM tasks WHERE conversation_id = ?").run(id);
+    db.prepare("DELETE FROM conversations WHERE id = ?").run(id);
+  }
+  execFileSync(exe, userConversation ? ["--conversation", userConversation] : ["--command", "new-conversation"]);
+}
+
 const server = spawn(process.execPath, [path.join(import.meta.dirname, "mock-llm.mjs"), String(port), logPath], { stdio: "ignore" });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -91,6 +110,7 @@ try {
 } catch (e) {
   results.push({ name: "harness", ok: false, detail: String(e) });
 } finally {
+  restoreConversation();
   if (backup === null) db.prepare("DELETE FROM kv WHERE key = 'settings'").run();
   else db.prepare("UPDATE kv SET value = ? WHERE key = 'settings'").run(backup);
   server.kill();

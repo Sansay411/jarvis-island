@@ -137,6 +137,8 @@ pub struct VoiceSettings {
     pub tts_voice: String,
     /// Speaking rate, 0.5–2.0.
     pub tts_rate: f32,
+    /// Keep the microphone open and start a conversation on «Джарвис…».
+    pub wake_word: bool,
     /// Realtime WebSocket endpoint (without the `?model=` query).
     pub realtime_url: String,
     pub model: String,
@@ -155,6 +157,7 @@ impl Default for VoiceSettings {
             stt_model: "gigaam-v3".into(),
             tts_voice: String::new(),
             tts_rate: 1.1,
+            wake_word: false,
             realtime_url: "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime".into(),
             model: "qwen3.8-omni-flash-realtime".into(),
             voice: "Katerina".into(),

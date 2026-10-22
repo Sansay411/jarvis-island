@@ -84,6 +84,9 @@ pub fn settings_save(app: AppHandle, state: State<'_, AppState>, settings: Setti
         crate::shortcuts::apply(&app, &settings.shortcuts);
     }
     let _ = app.emit("settings:changed", ());
+    if old.voice.wake_word != settings.voice.wake_word || old.voice.enabled != settings.voice.enabled || old.voice.engine != settings.voice.engine {
+        app.state::<Arc<crate::voice::VoiceManager>>().apply_settings();
+    }
     Ok(())
 }
 

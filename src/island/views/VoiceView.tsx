@@ -12,6 +12,7 @@ import { useAgent } from "../../store/agent";
 const BARS = 8;
 const LABEL: Record<VoiceState, string> = {
   idle: "",
+  dormant: "",
   connecting: "Запускаю",
   listening: "Слушаю",
   hearing: "Слышу вас",

@@ -30,6 +30,7 @@ interface Settings {
     sttModel: string;
     ttsVoice: string;
     ttsRate: number;
+    wakeWord: boolean;
     realtimeUrl: string;
     model: string;
     voice: string;
@@ -583,6 +584,14 @@ export default function SettingsApp() {
                 <Row label="Голосовой режим" hint="Ctrl+Alt+K или кнопка микрофона на острове.">
                   <Switch label="Голосовой режим" checked={draft.voice.enabled} onChange={(v) => set((s) => ({ ...s, voice: { ...s.voice, enabled: v } }))} />
                 </Row>
+                {draft.voice.engine === "local" && (
+                  <Row
+                    label="Откликаться на имя"
+                    hint={`«Джарвис…» или «Джар…» в начале фразы — и я слушаю, без мыши. «Стоп» или «хватит» — замолкаю и снова жду имени. Микрофон при этом остаётся включённым, Windows показывает его значок; фразы без имени разбираются на этом компьютере и сразу забываются.`}
+                  >
+                    <Switch label="Откликаться на имя" checked={draft.voice.wakeWord} onChange={(v) => set((s) => ({ ...s, voice: { ...s.voice, wakeWord: v } }))} />
+                  </Row>
+                )}
                 <Row label="Где работает голос">
                   <Segmented
                     label="Где работает голос"

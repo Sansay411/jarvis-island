@@ -19,6 +19,11 @@ use tokio::sync::mpsc;
 use crate::error::{AppError, AppResult};
 
 pub const MIC_RATE: u32 = 16_000;
+
+/// An audio thread is still opening devices. When Windows' capture stack is
+/// wedged, IAudioClient::Initialize never returns; starting more attempts
+/// would only pile up stuck threads.
+static OPENING: AtomicBool = AtomicBool::new(false);
 pub const SPEAKER_RATE: u32 = 24_000;
 const CHUNK: usize = 1600; // 100 ms at 16 kHz
 
@@ -150,6 +155,11 @@ fn find_device(host: &cpal::Host, name: &str, input: bool) -> Option<cpal::Devic
 
 impl AudioIo {
     pub fn start(input_name: &str, output_name: &str) -> AppResult<(Arc<AudioIo>, MicStream)> {
+        if OPENING.swap(true, Ordering::AcqRel) {
+            return Err(AppError::Timeout(
+                "Микрофон всё ещё не ответил на прошлую попытку открыть его — переподключите его или перезапустите службу «Windows Audio»".into(),
+            ));
+        }
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
         let (mic_tx, mic_rx) = mpsc::channel::<Vec<i16>>(64);
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<AppResult<(u32, String, String)>>();
@@ -183,6 +193,7 @@ impl AudioIo {
             .name("voice-audio".into())
             .spawn(move || {
                 if null_output {
+                    OPENING.store(false, Ordering::Release);
                     let _ = ready_tx.send(Ok((SPEAKER_RATE, "тестовые WAV-файлы".into(), "без устройства (тест)".into())));
                     let frames = SPEAKER_RATE as usize / 50; // 20 ms
                     while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = cmd_rx.recv_timeout(std::time::Duration::from_millis(20)) {
@@ -310,6 +321,8 @@ impl AudioIo {
                     out_stream.play().map_err(|e| AppError::platform(format!("Вывод звука: {e}")))?;
                     Ok((in_stream, out_stream, out_rate, dev_name(&input), dev_name(&output)))
                 })();
+                // Devices answered (opened or failed): another attempt may start.
+                OPENING.store(false, Ordering::Release);
                 match result {
                     Ok((in_stream, out_stream, out_rate, in_dev, out_dev)) => {
                         // Logged even when the caller already gave up waiting:

@@ -164,7 +164,12 @@ tone max_out_level={max_out:.2} still_queued_after_500ms={playing_after}", io.in
             let host = cpal::default_host();
             eprintln!("host {:?} {} ms", host.id(), t.elapsed().as_millis());
             let skip_in = std::env::var("SKIP_IN").is_ok();
-            for (kind, dev) in [("in", host.default_input_device()), ("out", host.default_output_device())] {
+            // CPAL_IN=substring picks a non-default microphone.
+            let input = match std::env::var("CPAL_IN") {
+                Ok(want) => host.input_devices().ok().and_then(|mut it| it.find(|d| d.description().map(|x| x.name().contains(want.as_str())).unwrap_or(false))),
+                Err(_) => host.default_input_device(),
+            };
+            for (kind, dev) in [("in", input), ("out", host.default_output_device())] {
                 if skip_in && kind == "in" {
                     continue;
                 }

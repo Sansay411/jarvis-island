@@ -23,7 +23,7 @@ use super::models;
 use super::stt::{self, Recognizer, Transcript};
 use super::tts::Speaker;
 use super::vad::{Vad, VadEvent};
-use super::{LevelEvent, TranscriptEvent, VoiceManager, VoiceState, EVT_LEVEL, EVT_TRANSCRIPT};
+use super::{Ctl, LevelEvent, TranscriptEvent, VoiceManager, VoiceState, EVT_LEVEL, EVT_TRANSCRIPT};
 use crate::agent::Agent;
 use crate::error::{AppError, AppResult};
 use crate::store::settings::VoiceSettings;
@@ -69,11 +69,23 @@ impl SttEngine {
 /// speech pauses between sentences longer than the end-of-utterance silence.
 const CONTINUATION_GAP: Duration = Duration::from_millis(1300);
 
-const STOP_WORDS: &[&str] = &["стоп", "хватит", "отмена", "отмени", "замолчи", "тихо", "стой"];
+/// A conversation with no speech for this long goes back to waiting for
+/// the name (when that is on).
+const SLEEP_AFTER: Duration = Duration::from_secs(60);
+
+/// What JARVIS says when called by name alone.
+fn acknowledgement(vy: bool) -> String {
+    let options: &[&str] = if vy { &["Слушаю вас.", "Да?", "Я здесь."] } else { &["Слушаю.", "Да?", "Я здесь.", "Слушаю тебя."] };
+    let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos() as usize).unwrap_or(0);
+    options[n % options.len()].to_string()
+}
+
+/// GigaAM writes a lone «стоп» in Latin («Stop.») — seen live.
+const STOP_WORDS: &[&str] = &["стоп", "хватит", "отмена", "отмени", "замолчи", "тихо", "стой", "stop"];
 
 fn is_stop(text: &str) -> bool {
     let t: String = text.to_lowercase().chars().filter(|c| c.is_alphabetic() || c.is_whitespace()).collect();
-    let words: Vec<&str> = t.split_whitespace().filter(|w| *w != "джарвис" && *w != "джарвиз").collect();
+    let words: Vec<&str> = t.split_whitespace().filter(|w| !super::wake::is_name(w)).collect();
     !words.is_empty() && words.len() <= 2 && words.iter().all(|w| STOP_WORDS.contains(w))
 }
 
@@ -87,6 +99,13 @@ enum Ev {
 
 struct Pipeline {
     vm: Arc<VoiceManager>,
+    /// In a conversation; otherwise only listening for the name.
+    awake: bool,
+    wake_enabled: bool,
+    address_vy: bool,
+    last_activity: Instant,
+    /// «Стоп» without the name listener: close the session.
+    ending: bool,
     audio: Arc<AudioIo>,
     ev_tx: mpsc::UnboundedSender<Ev>,
     synth_tx: mpsc::UnboundedSender<(u64, String)>,
@@ -123,6 +142,29 @@ impl Pipeline {
         let _ = self.synth_tx.send((self.speech_gen, phrase));
     }
 
+    fn wake(&mut self) {
+        if !self.awake {
+            self.awake = true;
+            self.vm.set_awake(true);
+            tracing::info!("voice: conversation started");
+        }
+        self.last_activity = Instant::now();
+    }
+
+    /// Back to waiting for the name: silence, cancel the running turn.
+    fn sleep(&mut self) {
+        self.hush();
+        self.pending_request = None;
+        if self.turn_active {
+            self.vm.app.state::<Arc<Agent>>().cancel();
+        }
+        if self.awake {
+            self.awake = false;
+            self.vm.set_awake(false);
+            tracing::info!("voice: waiting for the name");
+        }
+    }
+
     /// Drop everything queued or playing.
     fn hush(&mut self) {
         self.audio.clear_playback();
@@ -156,12 +198,19 @@ impl Pipeline {
     fn on_request(&mut self, text: String, continues: bool) {
         let agent = self.vm.app.state::<Arc<Agent>>().inner().clone();
         if is_stop(&text) {
+            // «Стоп», «хватит»: silence, cancel, and end the voice mode —
+            // back to waiting for the name, or microphone off.
             tracing::info!(busy = agent.is_busy(), "stop word");
             self.hush();
             if agent.is_busy() {
                 agent.cancel();
             }
             self.pending_request = None;
+            if self.wake_enabled {
+                self.sleep();
+            } else {
+                self.ending = true;
+            }
             return;
         }
         if self.turn_active && continues {
@@ -189,7 +238,9 @@ impl Pipeline {
     }
 
     fn derive_state(&self, vad: &Vad) -> VoiceState {
-        if vad.is_active() {
+        if !self.awake {
+            VoiceState::Dormant
+        } else if vad.is_active() {
             VoiceState::Hearing
         } else if self.audio.is_playing() {
             VoiceState::Speaking
@@ -210,7 +261,14 @@ impl Pipeline {
 }
 
 impl VoiceManager {
-    pub(super) async fn run_local(self: &Arc<Self>, cfg: VoiceSettings, cancel: CancellationToken) -> AppResult<()> {
+    /// `dormant`: start by waiting for the name (Settings → «Откликаться на имя»).
+    pub(super) async fn run_local(
+        self: &Arc<Self>,
+        cfg: VoiceSettings,
+        cancel: CancellationToken,
+        mut ctl_rx: mpsc::UnboundedReceiver<Ctl>,
+        dormant: bool,
+    ) -> AppResult<()> {
         let (asr, silero) = (models::asset("gigaam-v3").expect("catalog"), models::asset("silero-vad").expect("catalog"));
         if !asr.installed() || !silero.installed() {
             return Err(AppError::invalid("Модель распознавания речи не скачана — откройте Настройки → Голос"));
@@ -237,8 +295,11 @@ impl VoiceManager {
         .map_err(|e| AppError::internal(e.to_string()))??;
         let speaker = Arc::new(speaker);
         let (audio, mut mic) = AudioIo::start(&cfg.input_device, &cfg.output_device)?;
-        self.set_state(VoiceState::Listening, None, Some((&audio.input_device, &audio.output_device)));
-        tracing::info!(voice = %speaker.name(), "local voice session started");
+        self.listener_failures.store(0, std::sync::atomic::Ordering::Relaxed);
+        let initial = if dormant { VoiceState::Dormant } else { VoiceState::Listening };
+        self.set_state(initial, None, Some((&audio.input_device, &audio.output_device)));
+        tracing::info!(voice = %speaker.name(), dormant, "local voice session started");
+        let address_vy = store.settings().persona.address == "vy";
 
         let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<Ev>();
         // Phrases are synthesised one at a time, in order.
@@ -266,6 +327,11 @@ impl VoiceManager {
 
         let mut pl = Pipeline {
             vm: Arc::clone(self),
+            awake: !dormant,
+            wake_enabled: cfg.wake_word,
+            address_vy,
+            last_activity: Instant::now(),
+            ending: false,
             audio: audio.clone(),
             ev_tx: ev_tx.clone(),
             synth_tx,
@@ -285,7 +351,7 @@ impl VoiceManager {
             queued_phrases: 0,
             speech_end_at: None,
             first_audio_pending: false,
-            shown: VoiceState::Listening,
+            shown: initial,
         };
         let mut level_tick = tokio::time::interval(Duration::from_millis(33));
         // A voice user is not looking at the screen: say it aloud when an
@@ -311,6 +377,9 @@ impl VoiceManager {
                     for event in vad.push(&pcm) { match event {
                         VadEvent::Started => {
                             pl.hearing_continues = pl.last_ended.is_some_and(|e| e.elapsed() < CONTINUATION_GAP);
+                            if pl.awake {
+                                pl.last_activity = Instant::now();
+                            }
                             if pl.audio.is_playing() || pl.queued_phrases > 0 {
                                 let t = Instant::now();
                                 pl.hush();
@@ -344,7 +413,26 @@ impl VoiceManager {
                                 let words = t.text.split_whitespace().count();
                                 tracing::info!(ms = t.ms, words, "speech recognised");
                                 if !stt::is_meaningful(&t.text) {
-                                    tracing::debug!("ignored non-speech: {:?}", t.text);
+                                    tracing::debug!("ignored non-speech");
+                                } else if !pl.awake {
+                                    // Waiting for the name: phrases not addressed to JARVIS
+                                    // are dropped here — not shown, logged or sent.
+                                    match super::wake::addressed(&t.text) {
+                                        Some(a) => {
+                                            tracing::info!(only_name = a.only_name, "voice: called by name");
+                                            pl.wake();
+                                            pl.emit_transcript("user", &t.text, true);
+                                            if a.only_name {
+                                                let ack = acknowledgement(pl.address_vy);
+                                                pl.say(ack);
+                                            } else {
+                                                pl.speech_end_at = Some(ended);
+                                                pl.first_audio_pending = true;
+                                                pl.on_request(t.text, false);
+                                            }
+                                        }
+                                        None => tracing::debug!(words, "voice: not addressed"),
+                                    }
                                 } else {
                                     pl.emit_transcript("user", &t.text, true);
                                     pl.speech_end_at = Some(ended);
@@ -420,8 +508,26 @@ impl VoiceManager {
                         pl.refresh_state(&vad);
                     }
                 }
+                Some(c) = ctl_rx.recv() => {
+                    match c {
+                        Ctl::Wake => pl.wake(),
+                        Ctl::Sleep => pl.sleep(),
+                    }
+                    pl.refresh_state(&vad);
+                }
                 _ = level_tick.tick() => {
-                    let _ = self.app.emit(EVT_LEVEL, LevelEvent { input: audio.levels.input(), output: audio.levels.output() });
+                    // Levels only drive the open voice view; none while waiting.
+                    if pl.awake {
+                        let _ = self.app.emit(EVT_LEVEL, LevelEvent { input: audio.levels.input(), output: audio.levels.output() });
+                        if pl.audio.is_playing() || pl.turn_active || pl.transcribing > 0 || pl.queued_phrases > 0 {
+                            pl.last_activity = Instant::now();
+                        } else if pl.wake_enabled && !vad.is_active() && pl.last_activity.elapsed() >= SLEEP_AFTER {
+                            pl.sleep();
+                        }
+                    }
+                    if pl.ending {
+                        break Ok(());
+                    }
                     pl.refresh_state(&vad);
                 }
             }
@@ -456,6 +562,8 @@ mod tests {
     #[test]
     fn stop_words() {
         assert!(is_stop("Стоп."));
+        assert!(is_stop("Stop."));
+        assert!(is_stop("Джар, стоп!"));
         assert!(is_stop("Джарвис, хватит!"));
         assert!(!is_stop("Стоп, открой калькулятор"));
         assert!(!is_stop("Открой браузер"));

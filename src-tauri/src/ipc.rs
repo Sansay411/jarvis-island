@@ -163,18 +163,12 @@ pub struct VoiceStatus {
 
 #[tauri::command]
 pub fn voice_toggle(voice: State<'_, std::sync::Arc<crate::voice::VoiceManager>>) -> AppResult<bool> {
-    if voice.is_active() {
-        voice.stop();
-        Ok(false)
-    } else {
-        voice.start()?;
-        Ok(true)
-    }
+    voice.toggle()
 }
 
 #[tauri::command]
 pub fn voice_stop(voice: State<'_, std::sync::Arc<crate::voice::VoiceManager>>) {
-    voice.stop();
+    voice.end_conversation();
 }
 
 #[tauri::command]

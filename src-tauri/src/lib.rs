@@ -107,12 +107,27 @@ fn handle_cli(app: &tauri::AppHandle, argv: &[String]) -> bool {
         }
         return true;
     }
-    // `--command toggle-workspace|open-workspace|toggle-voice|cancel-task` lets
-    // launchers, Stream Deck buttons and scripts drive the island.
+    // `--conversation ID`: continue that conversation (tests restore the
+    // user's own after running in a fresh one).
+    if let Some(pos) = argv.iter().position(|a| a == "--conversation") {
+        if let Some(id) = argv.get(pos + 1) {
+            if let Err(e) = app.state::<Arc<agent::Agent>>().use_conversation(id.clone()) {
+                tracing::warn!("--conversation: {e}");
+            }
+        }
+        return true;
+    }
+    // `--command toggle-workspace|open-workspace|toggle-voice|cancel-task|
+    // new-conversation` lets launchers, Stream Deck buttons and scripts
+    // drive the island.
     if let Some(pos) = argv.iter().position(|a| a == "--command") {
         if let Some(cmd) = argv.get(pos + 1) {
             if cmd == "cancel-task" {
                 app.state::<Arc<agent::Agent>>().cancel();
+            } else if cmd == "new-conversation" {
+                if let Err(e) = app.state::<Arc<agent::Agent>>().new_conversation() {
+                    tracing::warn!("new-conversation: {e}");
+                }
             } else if matches!(cmd.as_str(), "toggle-workspace" | "open-workspace" | "toggle-voice") {
                 app.state::<AppState>().island.set_user_hidden(false);
                 emit_command(app, cmd);
@@ -138,6 +153,12 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // A second launch (Start menu, shortcut, `jarvis.exe --settings`)
             // surfaces the running instance instead of starting another.
+            // One that arrives while this instance is still starting would
+            // reach state that is not managed yet (it crashed the app).
+            if app.try_state::<Arc<voice::VoiceManager>>().is_none() {
+                tracing::warn!(?argv, "second launch ignored: JARVIS is still starting");
+                return;
+            }
             if !handle_cli(app, &argv) {
                 app.state::<AppState>().island.set_user_hidden(false);
                 emit_command(app, "open-workspace");
@@ -168,6 +189,14 @@ pub fn run() {
             app.manage(agent::Agent::new(app.handle().clone(), registry));
             app.manage(jobs::JobManager::new(app.handle().clone()));
             app.manage(voice::VoiceManager::new(app.handle().clone()));
+            // Start listening for «Джарвис» if that is on (after start-up settles).
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(4)).await;
+                    handle.state::<Arc<voice::VoiceManager>>().apply_settings();
+                });
+            }
 
             window.show()?;
             island.spawn_tracker();

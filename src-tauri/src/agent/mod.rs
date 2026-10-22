@@ -31,6 +31,35 @@ use events::{AgentEvent, EVT_AGENT};
 
 /// Messages of history sent to the model (older ones stay in SQLite).
 const HISTORY_WINDOW: usize = 48;
+
+/// Result given to tool calls that never ran (the turn was cancelled or
+/// failed first), so the model does not take them for done — it once told
+/// the user it had pressed Enter after a cancelled confirmation.
+const NOT_EXECUTED: &str = r#"{"ok":false,"code":"not_executed","error":"Не выполнено: задачу остановили до этого действия."}"#;
+
+/// Every assistant tool call followed by a result, as providers expect.
+fn answer_dangling_calls(msgs: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let mut out = Vec::with_capacity(msgs.len());
+    let mut it = msgs.into_iter().peekable();
+    while let Some(m) = it.next() {
+        let calls: Vec<String> = m.tool_calls.iter().map(|c| c.id.clone()).collect();
+        out.push(m);
+        if calls.is_empty() {
+            continue;
+        }
+        let mut answered = HashSet::new();
+        while let Some(next) = it.next_if(|n| n.role == Role::Tool) {
+            if let Some(id) = &next.tool_call_id {
+                answered.insert(id.clone());
+            }
+            out.push(next);
+        }
+        for id in calls.iter().filter(|id| !answered.contains(*id)) {
+            out.push(ChatMessage::tool_result(id, NOT_EXECUTED));
+        }
+    }
+    out
+}
 /// Tool results larger than this are cut before going back to the model.
 const MAX_TOOL_RESULT: usize = 14_000;
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(300);
@@ -208,6 +237,29 @@ impl Agent {
         i.conversation_id = uuid::Uuid::new_v4().to_string();
         i.history.clear();
         i.loaded = true;
+        i.approved_tools.clear();
+        let id = i.conversation_id.clone();
+        drop(i);
+        // Recorded now, so a restart continues the new conversation.
+        if self.state().store.settings().privacy.store_history {
+            self.state().store.create_conversation(&id)?;
+        }
+        Ok(())
+    }
+
+    pub fn conversation_id(&self) -> String {
+        self.inner.lock().conversation_id.clone()
+    }
+
+    /// Continue an existing conversation (tests return the user to theirs).
+    pub fn use_conversation(&self, id: String) -> AppResult<()> {
+        let mut i = self.inner.lock();
+        if i.active.is_some() {
+            return Err(AppError::invalid("Дождитесь окончания текущей задачи"));
+        }
+        i.conversation_id = id;
+        i.history.clear();
+        i.loaded = false;
         i.approved_tools.clear();
         Ok(())
     }
@@ -416,7 +468,7 @@ impl Agent {
                 out.push(m.clone());
             }
         }
-        out
+        answer_dangling_calls(out)
     }
 
     fn push_history(&self, conversation_id: &str, msg: ChatMessage, tool_title: Option<&str>, tool_ok: Option<bool>, persist: bool) {
@@ -458,6 +510,23 @@ impl Agent {
             let _ = store.task_finished(&turn.id, status, steps, error.as_deref());
         }
         tracing::info!(turn = %turn.id, status, steps, ms = started.elapsed().as_millis() as u64, "turn finished");
+        if outcome.is_err() {
+            // Record that the requested actions did not happen.
+            let unanswered: Vec<ToolCall> = {
+                let i = self.inner.lock();
+                match i.history.iter().rposition(|m| m.role == Role::Assistant && !m.tool_calls.is_empty()) {
+                    Some(pos) => {
+                        let done: HashSet<&str> = i.history[pos + 1..].iter().filter_map(|m| m.tool_call_id.as_deref()).collect();
+                        i.history[pos].tool_calls.iter().filter(|c| !done.contains(c.id.as_str())).cloned().collect()
+                    }
+                    None => Vec::new(),
+                }
+            };
+            for call in unanswered {
+                let title = self.title_for(&call);
+                self.push_history(&conversation_id, ChatMessage::tool_result(&call.id, NOT_EXECUTED), Some(&title), Some(false), persist);
+            }
+        }
         let final_text = {
             let i = self.inner.lock();
             i.history.iter().rev().find(|m| m.role == Role::Assistant && !m.joined_text().trim().is_empty()).map(ChatMessage::joined_text)
@@ -772,7 +841,27 @@ impl Agent {
 
 #[cfg(test)]
 mod tests {
-    use super::truncate_chars;
+    use super::{answer_dangling_calls, truncate_chars, NOT_EXECUTED};
+    use crate::ai::types::{ChatMessage, Role, ToolCall};
+
+    #[test]
+    fn calls_without_results_are_answered_not_executed() {
+        let call = |id: &str| ToolCall { id: id.into(), name: "input_key".into(), arguments: "{}".into() };
+        let mut asked = ChatMessage::text(Role::Assistant, "");
+        asked.tool_calls = vec![call("a"), call("b")];
+        let msgs = vec![
+            ChatMessage::text(Role::User, "нажми enter"),
+            asked,
+            ChatMessage::tool_result("a", "{\"ok\":true}"),
+            ChatMessage::text(Role::User, "привет"),
+        ];
+        let out = answer_dangling_calls(msgs);
+        assert_eq!(out.len(), 5);
+        assert_eq!(out[2].tool_call_id.as_deref(), Some("a"));
+        assert_eq!(out[3].tool_call_id.as_deref(), Some("b"));
+        assert_eq!(out[3].joined_text(), NOT_EXECUTED);
+        assert_eq!(out[4].role, Role::User);
+    }
 
     #[test]
     fn truncation_respects_char_boundaries() {

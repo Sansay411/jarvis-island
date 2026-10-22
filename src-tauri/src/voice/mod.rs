@@ -20,6 +20,7 @@ pub mod ru_speech;
 pub mod stt;
 pub mod tts;
 pub mod vad;
+pub mod wake;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -71,6 +72,8 @@ const INSTRUCTIONS: &str = "Ты — Джарвис, голосовой асси
 #[serde(rename_all = "lowercase")]
 pub enum VoiceState {
     Idle,
+    /// Local engine waiting for its name; the island stays closed.
+    Dormant,
     Connecting,
     Listening,
     Hearing,
@@ -128,13 +131,31 @@ pub struct VoiceMetrics {
     pub connect_ms: Option<u64>,
 }
 
+/// Commands to a running local session.
+pub enum Ctl {
+    /// Start a conversation (the user clicked or pressed the shortcut).
+    Wake,
+    /// Back to waiting for the name.
+    Sleep,
+}
+
+struct Session {
+    cancel: CancellationToken,
+    /// Local engine only.
+    ctl: Option<mpsc::UnboundedSender<Ctl>>,
+}
+
 pub struct VoiceManager {
     app: AppHandle,
-    session: Mutex<Option<CancellationToken>>,
+    session: Mutex<Option<Session>>,
+    /// A conversation is on (not just waiting for the name).
+    awake: std::sync::atomic::AtomicBool,
     state: Mutex<VoiceState>,
     pub metrics: Mutex<VoiceMetrics>,
     stt: Arc<local::SttEngine>,
     download: Mutex<Option<CancellationToken>>,
+    /// Failed starts of the name listener in a row (retry back-off).
+    listener_failures: std::sync::atomic::AtomicU32,
 }
 
 impl VoiceManager {
@@ -142,10 +163,12 @@ impl VoiceManager {
         Arc::new(VoiceManager {
             app,
             session: Mutex::new(None),
+            awake: std::sync::atomic::AtomicBool::new(false),
             state: Mutex::new(VoiceState::Idle),
             metrics: Mutex::new(VoiceMetrics::default()),
             stt: Arc::new(local::SttEngine::default()),
             download: Mutex::new(None),
+            listener_failures: std::sync::atomic::AtomicU32::new(0),
         })
     }
 
@@ -166,17 +189,75 @@ impl VoiceManager {
         );
     }
 
+    /// A conversation is on (waiting for the name does not count).
     pub fn is_active(&self) -> bool {
-        self.session.lock().is_some()
+        self.session.lock().is_some() && self.awake.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    fn set_awake(&self, v: bool) {
+        self.awake.store(v, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn wake_word_on(&self) -> bool {
+        let v = self.app.state::<AppState>().store.settings().voice;
+        v.enabled && v.wake_word && v.engine != "realtime"
+    }
+
+    /// Close the microphone completely.
     pub fn stop(&self) {
-        if let Some(c) = self.session.lock().take() {
-            c.cancel();
+        if let Some(s) = self.session.lock().take() {
+            s.cancel.cancel();
         }
     }
 
-    pub fn start(self: &Arc<Self>) -> AppResult<()> {
+    /// End the conversation: back to waiting for the name when that is on,
+    /// otherwise voice off.
+    pub fn end_conversation(&self) {
+        let ctl = self.session.lock().as_ref().and_then(|s| s.ctl.clone());
+        match ctl {
+            Some(ctl) if self.wake_word_on() => {
+                let _ = ctl.send(Ctl::Sleep);
+            }
+            _ => self.stop(),
+        }
+    }
+
+    /// Shortcut, mic button: start a conversation or end it.
+    pub fn toggle(self: &Arc<Self>) -> AppResult<bool> {
+        if self.is_active() {
+            self.end_conversation();
+            return Ok(false);
+        }
+        let ctl = self.session.lock().as_ref().and_then(|s| s.ctl.clone());
+        match ctl {
+            Some(ctl) => {
+                let _ = ctl.send(Ctl::Wake);
+            }
+            None => self.start(false)?,
+        }
+        Ok(true)
+    }
+
+    /// Keep the name listener in line with the settings (app start, saving
+    /// settings, models downloaded).
+    pub fn apply_settings(self: &Arc<Self>) {
+        let has_session = self.session.lock().is_some();
+        if self.wake_word_on() {
+            if !has_session {
+                let ready = ["gigaam-v3", "silero-vad"].iter().all(|id| models::asset(id).is_some_and(|a| a.installed()));
+                if ready {
+                    if let Err(e) = self.start(true) {
+                        tracing::warn!("wake word listener not started: {e}");
+                    }
+                }
+            }
+        } else if has_session && !self.is_active() {
+            self.stop();
+        }
+    }
+
+    /// `dormant`: wait for the name instead of starting a conversation.
+    pub fn start(self: &Arc<Self>, dormant: bool) -> AppResult<()> {
         let settings = self.app.state::<AppState>().store.settings();
         if !settings.voice.enabled {
             return Err(AppError::invalid("Голосовой режим выключен в настройках"));
@@ -190,25 +271,44 @@ impl VoiceManager {
         } else {
             None
         };
+        let (ctl_tx, ctl_rx) = mpsc::unbounded_channel::<Ctl>();
         let cancel = {
             let mut s = self.session.lock();
             if s.is_some() {
                 return Ok(());
             }
             let c = CancellationToken::new();
-            *s = Some(c.clone());
+            *s = Some(Session { cancel: c.clone(), ctl: (!realtime).then_some(ctl_tx) });
             c
         };
-        self.set_state(VoiceState::Connecting, None, None);
+        let dormant = dormant && !realtime;
+        self.set_awake(!dormant);
+        if !dormant {
+            self.set_state(VoiceState::Connecting, None, None);
+        }
         let me = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
             let res = match key {
                 Some(key) => me.run_realtime(settings.voice.clone(), key, cancel.clone()).await,
-                None => me.run_local(settings.voice.clone(), cancel.clone()).await,
+                None => me.run_local(settings.voice.clone(), cancel.clone(), ctl_rx, dormant).await,
             };
             *me.session.lock() = None;
+            let was_awake = me.awake.swap(false, std::sync::atomic::Ordering::Relaxed);
             match res {
                 Ok(()) | Err(AppError::Cancelled) => me.set_state(VoiceState::Idle, None, None),
+                // The background name listener failed (a wedged microphone):
+                // no error on the island, try again later.
+                Err(e) if !was_awake => {
+                    let n = me.listener_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let wait = Duration::from_secs((30u64 << n.min(4)).min(300));
+                    tracing::warn!("name listener failed ({e}); retrying in {} s", wait.as_secs());
+                    me.set_state(VoiceState::Idle, None, None);
+                    let again = Arc::clone(&me);
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(wait).await;
+                        again.apply_settings();
+                    });
+                }
                 Err(e) => {
                     tracing::warn!("voice session ended with error: {e}");
                     me.set_state(VoiceState::Error, Some(e.to_string()), None);
@@ -254,6 +354,9 @@ impl VoiceManager {
             };
             tracing::info!(model = m.id, state, "speech model download finished");
             let _ = me.app.emit(EVT_MODEL, ModelEvent { id: m.id, done: 0, total: m.size, state, error });
+            if state == "done" {
+                me.apply_settings();
+            }
         });
         Ok(())
     }

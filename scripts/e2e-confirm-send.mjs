@@ -28,6 +28,25 @@ settings.provider = { ...(settings.provider ?? {}), preset: "ollama", baseUrl: `
 settings.agent = { ...(settings.agent ?? {}), confirmModerate: true };
 db.prepare("INSERT INTO kv(key, value) VALUES('settings', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(JSON.stringify(settings));
 
+// Run in a conversation of its own and put the user back in theirs after:
+// test turns must never become part of the user's chat or the model's context.
+const testStart = new Date().toISOString();
+const userConversation = db.prepare("SELECT conversation_id AS id FROM messages ORDER BY id DESC LIMIT 1").get()?.id ?? null;
+execFileSync(exe, ["--command", "new-conversation"]);
+function restoreConversation() {
+  const ids = db
+    .prepare("SELECT DISTINCT conversation_id AS id FROM messages WHERE created_at >= ?")
+    .all(testStart)
+    .map((r) => r.id)
+    .filter((id) => id !== userConversation);
+  for (const id of ids) {
+    db.prepare("DELETE FROM messages WHERE conversation_id = ?").run(id);
+    db.prepare("DELETE FROM tasks WHERE conversation_id = ?").run(id);
+    db.prepare("DELETE FROM conversations WHERE id = ?").run(id);
+  }
+  execFileSync(exe, userConversation ? ["--conversation", userConversation] : ["--command", "new-conversation"]);
+}
+
 const server = spawn(process.execPath, [path.join(import.meta.dirname, "mock-llm.mjs"), String(port), path.join(work, "mock.jsonl")], { stdio: "ignore" });
 
 // The fake messenger: a PowerShell copy named telegram.exe with a text box.
@@ -82,6 +101,7 @@ try {
 } catch (e) {
   check("harness", false, String(e));
 } finally {
+  restoreConversation();
   fakeProc.kill();
   server.kill();
   if (backup !== null) db.prepare("UPDATE kv SET value = ? WHERE key = 'settings'").run(backup);
