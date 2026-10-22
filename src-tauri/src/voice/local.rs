@@ -63,6 +63,12 @@ impl SttEngine {
     }
 }
 
+/// Speech that resumes this soon after the VAD closed the previous phrase
+/// continues it: the actual pause was under ~2 s (the VAD reports the end
+/// 0.9 s after the last word and the start 0.25 s after the first). Live
+/// speech pauses between sentences longer than the end-of-utterance silence.
+const CONTINUATION_GAP: Duration = Duration::from_millis(1300);
+
 const STOP_WORDS: &[&str] = &["стоп", "хватит", "отмена", "отмени", "замолчи", "тихо", "стой"];
 
 fn is_stop(text: &str) -> bool {
@@ -72,7 +78,8 @@ fn is_stop(text: &str) -> bool {
 }
 
 enum Ev {
-    Transcribed(AppResult<Transcript>, Instant),
+    /// Result, when the phrase ended, whether it continues the previous one.
+    Transcribed(AppResult<Transcript>, Instant, bool),
     Delta(u64, String),
     TurnDone(u64, AppResult<String>),
     Audio(u64, AppResult<Vec<i16>>),
@@ -87,6 +94,13 @@ struct Pipeline {
     transcribing: usize,
     turn_seq: u64,
     turn_active: bool,
+    /// What the running turn was asked (phrase merging).
+    turn_text: String,
+    /// When the VAD closed the last phrase, and whether the phrase being
+    /// heard now continues it.
+    last_ended: Option<Instant>,
+    hearing_continues: bool,
+    turn_finished: Option<Instant>,
     pending_request: Option<String>,
     splitter: PhraseSplitter,
     reply: String,
@@ -119,6 +133,7 @@ impl Pipeline {
     fn start_turn(&mut self, text: String) {
         self.turn_seq += 1;
         self.turn_active = true;
+        self.turn_text = text.clone();
         self.splitter = PhraseSplitter::default();
         self.reply.clear();
         self.spoken_any = false;
@@ -138,7 +153,7 @@ impl Pipeline {
         });
     }
 
-    fn on_request(&mut self, text: String) {
+    fn on_request(&mut self, text: String, continues: bool) {
         let agent = self.vm.app.state::<Arc<Agent>>().inner().clone();
         if is_stop(&text) {
             tracing::info!(busy = agent.is_busy(), "stop word");
@@ -149,7 +164,20 @@ impl Pipeline {
             self.pending_request = None;
             return;
         }
-        if self.turn_active {
+        if self.turn_active && continues {
+            // The user paused mid-thought and went on: one request, not two
+            // answers (their speech already hushed any reply).
+            tracing::info!("phrase merged into the running voice turn");
+            self.pending_request = Some(format!("{} {}", self.turn_text, text));
+            agent.cancel();
+        } else if continues && !self.turn_active && !self.turn_text.is_empty() && self.turn_finished.is_some_and(|t| t.elapsed() < Duration::from_secs(6)) {
+            // The answer came while the user was still talking, and their
+            // speech cut it off: ask again with the whole thought.
+            tracing::info!("phrase merged with the just-answered one");
+            self.hush();
+            let whole = format!("{} {}", self.turn_text, text);
+            self.start_turn(whole);
+        } else if self.turn_active {
             // Runs after the current turn; a newer request replaces it.
             tracing::info!("request queued behind the running voice turn");
             self.pending_request = Some(text);
@@ -221,9 +249,16 @@ impl VoiceManager {
             tauri::async_runtime::spawn(async move {
                 while let Some((gen, phrase)) = synth_rx.recv().await {
                     let sp = speaker.clone();
-                    let pcm = tokio::task::spawn_blocking(move || sp.synthesize(&phrase, SPEAKER_RATE))
-                        .await
-                        .unwrap_or_else(|e| Err(AppError::internal(e.to_string())));
+                    let pcm = tokio::task::spawn_blocking(move || {
+                        // A breath after each sentence, longer after «?» and «…».
+                        sp.synthesize(&phrase, SPEAKER_RATE).map(|mut pcm| {
+                            let pause = super::ru_speech::pause_after_ms(&phrase) as usize * SPEAKER_RATE as usize / 1000;
+                            pcm.resize(pcm.len() + pause, 0);
+                            pcm
+                        })
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(AppError::internal(e.to_string())));
                     let _ = ev_tx.send(Ev::Audio(gen, pcm));
                 }
             });
@@ -238,6 +273,10 @@ impl VoiceManager {
             transcribing: 0,
             turn_seq: 0,
             turn_active: false,
+            turn_text: String::new(),
+            last_ended: None,
+            hearing_continues: false,
+            turn_finished: None,
             pending_request: None,
             splitter: PhraseSplitter::default(),
             reply: String::new(),
@@ -271,6 +310,7 @@ impl VoiceManager {
                     vad.echo_guard = pl.audio.is_playing();
                     for event in vad.push(&pcm) { match event {
                         VadEvent::Started => {
+                            pl.hearing_continues = pl.last_ended.is_some_and(|e| e.elapsed() < CONTINUATION_GAP);
                             if pl.audio.is_playing() || pl.queued_phrases > 0 {
                                 let t = Instant::now();
                                 pl.hush();
@@ -282,19 +322,21 @@ impl VoiceManager {
                         VadEvent::Ended(utterance) => {
                             pl.transcribing += 1;
                             let ended = Instant::now();
+                            pl.last_ended = Some(ended);
+                            let continues = std::mem::take(&mut pl.hearing_continues);
                             let engine = self.stt.clone();
                             let path = pl.model_path.clone();
                             let tx = ev_tx.clone();
                             tokio::task::spawn_blocking(move || {
                                 let res = engine.transcribe(&path, &utterance);
-                                let _ = tx.send(Ev::Transcribed(res, ended));
+                                let _ = tx.send(Ev::Transcribed(res, ended, continues));
                             });
                         }
                     } }
                     pl.refresh_state(&vad);
                 }
                 Some(ev) = ev_rx.recv() => match ev {
-                    Ev::Transcribed(res, ended) => {
+                    Ev::Transcribed(res, ended, continues) => {
                         pl.transcribing = pl.transcribing.saturating_sub(1);
                         match res {
                             Ok(t) => {
@@ -307,7 +349,7 @@ impl VoiceManager {
                                     pl.emit_transcript("user", &t.text, true);
                                     pl.speech_end_at = Some(ended);
                                     pl.first_audio_pending = true;
-                                    pl.on_request(t.text);
+                                    pl.on_request(t.text, continues);
                                 }
                             }
                             Err(e) => {
@@ -327,6 +369,7 @@ impl VoiceManager {
                     Ev::Delta(..) => {}
                     Ev::TurnDone(seq, res) if seq == pl.turn_seq => {
                         pl.turn_active = false;
+                        pl.turn_finished = Some(Instant::now());
                         match res {
                             Ok(final_text) => {
                                 if let Some(rest) = pl.splitter.finish() {

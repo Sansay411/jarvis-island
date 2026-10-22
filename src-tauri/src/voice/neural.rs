@@ -73,9 +73,9 @@ impl NeuralVoice {
             let mut extra = HashMap::new();
             extra.insert("lang".to_string(), serde_json::json!("ru"));
             gen.extra = Some(extra);
-            // Flow-matching steps. Measured on a 3 s phrase: 8 → 950 ms,
-            // 5 → 657 ms with the same text read back; 3 shifts the pitch.
-            gen.num_steps = 5;
+            // Flow-matching steps: quality over ~0.3 s of latency. Measured on a
+            // 3 s phrase: 8 → 950 ms, 5 → 657 ms; 3 shifts the pitch.
+            gen.num_steps = 8;
         } else {
             model.vits = OfflineTtsVitsModelConfig {
                 model: file(&dir, "ru_RU", ".onnx")?,

@@ -102,7 +102,10 @@ impl Speaker {
     }
 
     /// Synthesise `text` to PCM16 mono at `out_rate` (`SPEAKER_RATE` for playback).
+    /// Russian text is normalised first (numbers, names, symbols in words).
     pub fn synthesize(&self, text: &str, out_rate: u32) -> AppResult<Vec<i16>> {
+        let text = super::ru_speech::normalize(text);
+        let text = text.as_str();
         let (rate, mono) = match self {
             Speaker::Neural(v) => v.synthesize(text)?,
             Speaker::Windows(w) => w.synthesize_raw(text)?,

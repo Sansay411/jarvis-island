@@ -211,11 +211,30 @@ impl Default for AgentSettings {
     }
 }
 
+/// How JARVIS talks to the user (Settings → Характер).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PersonaSettings {
+    /// What JARVIS calls the user; empty = no name.
+    pub user_name: String,
+    /// "ty" or "vy".
+    pub address: String,
+    /// "witty", "warm" or "concise".
+    pub style: String,
+}
+
+impl Default for PersonaSettings {
+    fn default() -> Self {
+        PersonaSettings { user_name: String::new(), address: "ty".into(), style: "witty".into() }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub provider: ProviderSettings,
     pub voice: VoiceSettings,
+    pub persona: PersonaSettings,
     pub shortcuts: ShortcutSettings,
     pub privacy: PrivacySettings,
     pub agent: AgentSettings,

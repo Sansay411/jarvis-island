@@ -193,11 +193,11 @@ pub async fn settings_open(app: AppHandle) -> AppResult<()> {
     }
     WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("index.html".into()))
         .title("JARVIS — настройки")
-        .inner_size(820.0, 640.0)
-        .min_inner_size(680.0, 520.0)
+        .inner_size(960.0, 700.0)
+        .min_inner_size(780.0, 560.0)
         .center()
         .theme(Some(tauri::Theme::Dark))
-        .background_color(tauri::webview::Color(12, 12, 14, 255))
+        .background_color(tauri::webview::Color(8, 8, 10, 255))
         .build()?;
     Ok(())
 }
