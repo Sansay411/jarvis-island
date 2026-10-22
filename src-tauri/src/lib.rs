@@ -237,6 +237,7 @@ pub fn run() {
             ipc::stt_download,
             ipc::stt_download_cancel,
             ipc::tts_voices,
+            ipc::tts_preview,
             ipc::job_cancel,
             ipc_agent::agent_status,
             ipc_agent::agent_send,

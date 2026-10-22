@@ -18,20 +18,13 @@ SQLite · Windows Credential Manager. Без Python, Electron и фоновог�
 | Computer use | снимки экрана/окна/области, UI Automation (список элементов и действия Invoke/Value/Toggle/Select…), клики, ввод текста, сочетания клавиш, прокрутка |
 | Браузер | вкладки (список, переключение, закрытие) и текст страницы в Chrome, Edge, Яндекс Браузере, Brave, Opera, Vivaldi, Firefox — через UI Automation, без расширений и remote debugging |
 | Разработка | VS Code (открыть проект/файл, недавние проекты), Claude Code и Codex как фоновые задачи с потоковым выводом, терминал, PowerShell с классификацией риска |
-| Голос | **на этом компьютере** (по умолчанию): Silero VAD + Whisper (whisper.cpp) на CPU → тот же агент с инструментами → голос Windows (Irina, Pavel); ответ звучит с первой готовой фразы, перебивание голосом, «стоп»/«хватит». Либо **Qwen Omni Realtime** (ключ DashScope) |
+| Голос | **на этом компьютере** (по умолчанию, sherpa-onnx): Silero VAD → распознавание GigaAM v3 (русская речь, с пунктуацией) → тот же агент с инструментами → нейросетевой голос Supertonic 3 или Piper; ответ звучит с первой готовой фразы, перебивание голосом, «стоп»/«хватит». Либо **Qwen Omni Realtime** (ключ DashScope) |
 | Файлы | поиск по имени/типу/дате в папках пользователя, чтение текста и изображений, буфер обмена, перетаскивание файлов на остров |
 
 ## Сборка
 
 Требования: Windows 10/11 x64, Rust (stable, MSVC), Visual Studio Build Tools
-с «Desktop development with C++» и Windows SDK, CMake, Node.js 20+, WebView2 Runtime.
-
-CMake нужен для whisper.cpp. Он входит в Build Tools; если `cmake` нет в PATH,
-укажите его в переменной `CMAKE`:
-
-```bash
-export CMAKE="/c/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe"
-```
+с «Desktop development with C++» и Windows SDK, Node.js 20+, WebView2 Runtime.
 
 ```bash
 npm install
@@ -40,18 +33,20 @@ npm run tauri build     # установщик NSIS в src-tauri/target/release/
 ```
 
 Релиз собирается только через `tauri build`: голый `cargo build --release`
-грузит интерфейс с dev-сервера. Флаги оптимизации whisper.cpp для MSVC и
-привязки без libclang настроены в `src-tauri/.cargo/config.toml` и
-`src-tauri/vendor/whisper-rs-sys` (см. `JARVIS-PATCH.md`).
+грузит интерфейс с dev-сервера. При первой сборке `sherpa-onnx-sys`
+скачивает официальные статические библиотеки sherpa-onnx (релиз на GitHub);
+они собраны со статическим CRT, поэтому всё приложение линкуется с
+`+crt-static` (`src-tauri/.cargo/config.toml`) — VC++ Redistributable не нужен.
 
 ## Первый запуск
 
 1. Откройте настройки: пункт «Настройки» в меню трея или `jarvis.exe --settings`.
 2. «Модель»: провайдер **Qwen3.8 — Alem AI** (по умолчанию) или другой,
    вставьте API-ключ, нажмите «Проверить подключение».
-3. «Голос»: скачайте модель распознавания **Whisper small** (264 МБ, вместе с
-   ней — Silero VAD 0,9 МБ) и сохраните. Голос Джарвиса — любой русский голос
-   Windows. Для Qwen Omni Realtime выберите этот движок и ключ Model Studio.
+3. «Голос»: скачайте распознавание **GigaAM v3** (170 МБ, вместе с ним —
+   Silero VAD 0,6 МБ) и голос **Supertonic 3** (129 МБ, 10 голосов) или Piper.
+   Кнопка «Прослушать» озвучит образец. Без скачанного голоса Джарвис говорит
+   голосом Windows. Для Qwen Omni Realtime выберите этот движок и ключ Model Studio.
 
 ## Управление
 
@@ -95,9 +90,11 @@ jarvis.exe --command toggle-voice
   мониторы, задержки голоса.
 * Проверка нативных интеграций без UI:
   `cargo run --example probe -- audio|brightness|media|windows|apps код|uia Окно|browser|devtools|audio-test|cpal-steps`
-* Голос без UI: `probe tts-wav "текст" out.wav` (синтез голосом Windows,
-  16 кГц), `probe stt-file small out.wav` (распознавание с замером),
-  `probe stt-download small` (загрузка модели тем же кодом, что в настройках).
+* Голос без UI: `probe model-dl gigaam-v3` (загрузка модели тем же кодом, что
+  в настройках), `probe asr a.wav b.wav` (распознавание с замером),
+  `TTS_VOICE=supertonic-3:6 probe tts-wav "текст" out.wav` (синтез),
+  `probe tts-eval supertonic-3:6 "текст"` (скорость, тон и разборчивость:
+  GigaAM читает результат обратно).
 * Сквозной тест голоса без человека (только отладочная сборка):
   `JARVIS_VOICE_INPUT_WAV="a.wav;b.wav"` заменяет микрофон WAV-файлами 16 кГц
   (`JARVIS_VOICE_INPUT_GAP_S` — пауза после каждого, по умолчанию 25 с),

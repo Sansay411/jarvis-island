@@ -68,8 +68,8 @@ interface VoiceStatus {
 
 interface SpeechModel {
   id: string;
+  kind: "stt" | "vad" | "tts";
   label: string;
-  file: string;
   size: number;
   installed: boolean;
 }
@@ -90,16 +90,19 @@ interface TtsVoice {
 
 const mb = (bytes: number) => `${Math.round(bytes / 1_000_000)} МБ`;
 
-/** Whisper models: pick one, download it with live progress. */
-function SpeechModels({ selected, onSelect }: { selected: string; onSelect: (id: string) => void }) {
+/** Downloadable speech models of the given kind, with live progress. */
+function ModelList({ kind, onInstalled }: { kind: SpeechModel["kind"]; onInstalled?: () => void }) {
   const [models, setModels] = useState<SpeechModel[]>([]);
   const [progress, setProgress] = useState<ModelProgress | null>(null);
-  const refresh = () => void invoke<SpeechModel[]>("stt_models").then(setModels);
+  const refresh = () => void invoke<SpeechModel[]>("stt_models").then((all) => setModels(all.filter((m) => m.kind === kind)));
   useEffect(() => {
     refresh();
     const un = listen<ModelProgress>("voice:model", (e) => {
       setProgress(e.payload);
-      if (e.payload.state !== "downloading") refresh();
+      if (e.payload.state !== "downloading") {
+        refresh();
+        if (e.payload.state === "done") onInstalled?.();
+      }
     });
     return () => void un.then((f) => f());
   }, []);
@@ -116,25 +119,23 @@ function SpeechModels({ selected, onSelect }: { selected: string; onSelect: (id:
     <div className="models">
       {models.map((m) => {
         const mine = progress?.id === m.id ? progress : null;
+        const pct = mine ? Math.min(100, (mine.done / Math.max(1, mine.total)) * 100) : 0;
         return (
-          <div key={m.id} className={`model${selected === m.id ? " is-selected" : ""}`}>
-            <button role="radio" aria-checked={selected === m.id} className="model-pick" onClick={() => onSelect(m.id)}>
-              <span className="radio" />
+          <div key={m.id} className="model">
+            <span className="model-pick">
               <span>
                 <span className="field-label">{m.label}</span>
-                <span className="field-hint">
-                  {m.file} · {mb(m.size)}
-                </span>
+                <span className="field-hint">{mb(m.size)}</span>
               </span>
-            </button>
+            </span>
             {m.installed ? (
               <span className="key-set">Скачана</span>
             ) : mine?.state === "downloading" ? (
               <span className="model-progress">
                 <span className="meter">
-                  <i style={{ width: `${Math.min(100, (mine.done / Math.max(1, mine.total)) * 100)}%` }} />
+                  <i style={{ width: `${pct}%` }} />
                 </span>
-                <span className="mono">{Math.floor((mine.done / Math.max(1, mine.total)) * 100)}%</span>
+                <span className="mono">{pct >= 100 ? "распаковка" : `${Math.floor(pct)}%`}</span>
                 <button className="btn btn-quiet" onClick={() => void invoke("stt_download_cancel")}>
                   Отмена
                 </button>
@@ -148,6 +149,30 @@ function SpeechModels({ selected, onSelect }: { selected: string; onSelect: (id:
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** Synthesise a sample with the chosen voice and play it here. */
+function PreviewButton({ voice, rate }: { voice: string; rate: number }) {
+  const [state, setState] = useState<"idle" | "busy" | string>("idle");
+  const play = async () => {
+    setState("busy");
+    try {
+      const url = await invoke<string>("tts_preview", { voice, rate });
+      const audio = new Audio(url);
+      audio.onended = () => setState("idle");
+      await audio.play();
+    } catch (e) {
+      setState(errorMessage(e));
+    }
+  };
+  return (
+    <div className="row">
+      <button className="btn btn-quiet" disabled={state === "busy"} onClick={() => void play()}>
+        {state === "busy" ? "Озвучиваю…" : "Прослушать"}
+      </button>
+      {state !== "idle" && state !== "busy" && <span className="field-hint danger-text">{state}</span>}
     </div>
   );
 }
@@ -415,29 +440,32 @@ export default function SettingsApp() {
             <Toggle checked={draft.voice.enabled} onChange={(v) => set((s) => ({ ...s, voice: { ...s.voice, enabled: v } }))} label="Голосовой режим" />
             <Field label="Как работает голос">
               <select value={draft.voice.engine} onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, engine: e.target.value as Settings["voice"]["engine"] } }))}>
-                <option value="local">На этом компьютере — Whisper, ваша модель и голос Windows</option>
+                <option value="local">На этом компьютере — GigaAM, ваша модель и нейросетевой голос</option>
                 <option value="realtime">Qwen Omni Realtime — нужен ключ Model Studio</option>
               </select>
             </Field>
             {draft.voice.engine === "local" ? (
               <>
                 <p className="lead">
-                  Речь распознаётся на этом компьютере и никуда не отправляется: модели уходит только распознанный текст. Джарвис отвечает голосом Windows и выполняет
-                  команды тем же агентом, что и в чате.
+                  Речь распознаётся на этом компьютере и никуда не отправляется: модели уходит только распознанный текст. Джарвис отвечает нейросетевым голосом и
+                  выполняет команды тем же агентом, что и в чате.
                 </p>
                 <Field
                   label="Распознавание речи"
-                  hint="Модели скачиваются из официального репозитория whisper.cpp на Hugging Face и проверяются по SHA-256. Вместе с первой моделью скачивается Silero VAD (0,9 МБ) — он отсеивает шум и музыку. Без видеокарты точная модель распознаёт фразу ~18 с, быстрая — ~1 с."
+                  hint="GigaAM от Сбера обучена на русской речи, работает на процессоре. Вместе с ней скачивается Silero VAD (0,6 МБ) — он отличает речь от шума и музыки. Модели берутся из релизов sherpa-onnx на GitHub и проверяются по SHA-256."
                 >
-                  <SpeechModels selected={draft.voice.sttModel} onSelect={(id) => set((s) => ({ ...s, voice: { ...s.voice, sttModel: id } }))} />
+                  <ModelList kind="stt" />
+                </Field>
+                <Field label="Голоса" hint="Нейросетевые голоса работают на этом компьютере. В Supertonic 3 несколько голосов в одной модели.">
+                  <ModelList kind="tts" onInstalled={() => void invoke<TtsVoice[]>("tts_voices").then(setTtsVoices)} />
                 </Field>
                 <div className="grid2">
-                  <Field label="Голос Джарвиса" hint="Голоса, установленные в Windows">
+                  <Field label="Голос Джарвиса">
                     <select value={draft.voice.ttsVoice} onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, ttsVoice: e.target.value } }))}>
-                      <option value="">Первый русский голос</option>
+                      <option value="">Лучший скачанный</option>
                       {ttsVoices.map((v) => (
                         <option key={v.id} value={v.id}>
-                          {v.name} ({v.language})
+                          {v.name}
                         </option>
                       ))}
                     </select>
@@ -453,6 +481,7 @@ export default function SettingsApp() {
                     />
                   </Field>
                 </div>
+                <PreviewButton voice={draft.voice.ttsVoice} rate={draft.voice.ttsRate} />
               </>
             ) : (
               <>

@@ -148,11 +148,11 @@ tone max_out_level={max_out:.2} still_queued_after_500ms={playing_after}", io.in
                 }
             })
         }
-        "stt-download" => {
-            // stt-download turbo|small — same code path as Settings → Voice.
-            let m = jarvis_lib::voice::stt::model(args.get(1).map(String::as_str).unwrap_or("turbo"));
+        "model-dl" => {
+            // model-dl ID — download a speech model, same code as Settings → Voice.
+            let a = jarvis_lib::voice::models::asset(&args[1]).expect("unknown model id");
             let rt = tokio::runtime::Runtime::new().unwrap();
-            let res = rt.block_on(jarvis_lib::voice::stt::download(m, Default::default(), |d, t| {
+            let res = rt.block_on(jarvis_lib::voice::models::download(a, Default::default(), |d, t| {
                 eprintln!("{:.1}% ({d}/{t})", d as f64 * 100.0 / t as f64);
             }));
             format!("{:?}", res.map(|p| p.display().to_string()))
@@ -232,48 +232,74 @@ tone max_out_level={max_out:.2} still_queued_after_500ms={playing_after}", io.in
             }
             format!("{out}scanned {files} files")
         }
-        "tts-voices" => serde_json::to_string_pretty(&jarvis_lib::voice::tts::voices()).unwrap(),
+        "tts-eval" => {
+            // tts-eval VOICE "текст" [OUT.wav] — synthesis time, pitch (male ≈85–155 Hz,
+            // female ≈165–255 Hz) and intelligibility: GigaAM reads the result back.
+            let t = std::time::Instant::now();
+            let sp = jarvis_lib::voice::tts::Speaker::new(&args[1], 1.0).unwrap();
+            let load = t.elapsed().as_millis();
+            let t = std::time::Instant::now();
+            let pcm = sp.synthesize(&args[2], 16_000).unwrap();
+            let synth = t.elapsed().as_millis();
+            let f: Vec<f32> = pcm.iter().map(|s| *s as f32 / 32768.0).collect();
+            // Median F0 by autocorrelation over loud 40 ms frames.
+            let mut f0s = Vec::new();
+            for frame in f.chunks(640) {
+                let e: f32 = frame.iter().map(|x| x * x).sum::<f32>() / frame.len() as f32;
+                if frame.len() < 640 || e < 1e-3 {
+                    continue;
+                }
+                let (mut best, mut lag) = (0f32, 0usize);
+                for l in 16_000 / 400..=16_000 / 70 {
+                    let c: f32 = (0..frame.len() - l).map(|i| frame[i] * frame[i + l]).sum();
+                    if c > best {
+                        best = c;
+                        lag = l;
+                    }
+                }
+                if lag > 0 {
+                    f0s.push(16_000.0 / lag as f32);
+                }
+            }
+            f0s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let f0 = f0s.get(f0s.len() / 2).copied().unwrap_or(0.0);
+            let r = jarvis_lib::voice::stt::Recognizer::load_default().unwrap();
+            let back = r.transcribe(&f).unwrap();
+            if let Some(out) = args.get(3) {
+                std::fs::write(out, jarvis_lib::voice::tts::wav_bytes(&pcm, 16_000)).unwrap();
+            }
+            format!(
+                "{} | load {load} ms, synth {synth} ms for {:.2} s (RTF {:.2}) | F0 {f0:.0} Hz | heard: {}",
+                sp.name(),
+                f.len() as f64 / 16000.0,
+                synth as f64 / 1000.0 / (f.len() as f64 / 16000.0),
+                back.text
+            )
+        }
+        "tts-voices" =>serde_json::to_string_pretty(&jarvis_lib::voice::tts::voices()).unwrap(),
         "tts-wav" => {
             // tts-wav "текст" OUT.wav [RATE] — synthesise with the first Russian voice.
             let rate: u32 = args.get(3).and_then(|r| r.parse().ok()).unwrap_or(16_000);
-            let sp = jarvis_lib::voice::tts::Speaker::new(&std::env::var("TTS_VOICE").unwrap_or_default(), 1.0).unwrap();
+            let sp = jarvis_lib::voice::tts::Speaker::new(&std::env::var("TTS_VOICE").unwrap_or_default(), std::env::var("TTS_RATE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0)).unwrap();
             let t = std::time::Instant::now();
             let pcm = sp.synthesize(&args[1], rate).unwrap();
             let ms = t.elapsed().as_millis();
-            let data: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
-            let mut w = Vec::new();
-            w.extend_from_slice(b"RIFF");
-            w.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
-            w.extend_from_slice(b"WAVEfmt ");
-            for v in [16u32.to_le_bytes(), [1, 0, 1, 0], rate.to_le_bytes(), (rate * 2).to_le_bytes(), [2, 0, 16, 0]] {
-                w.extend_from_slice(&v);
-            }
-            w.extend_from_slice(b"data");
-            w.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            w.extend_from_slice(&data);
+            let w = jarvis_lib::voice::tts::wav_bytes(&pcm, rate);
             std::fs::write(&args[2], w).unwrap();
-            format!("voice={} synth {ms} ms, {:.2} s of audio", sp.voice, pcm.len() as f64 / rate as f64)
+            format!("voice={} synth {ms} ms, {:.2} s of audio", sp.name(), pcm.len() as f64 / rate as f64)
         }
-        "stt-file" => {
-            // stt-file turbo|small FILE.wav — transcribe a 16 kHz mono PCM16 WAV.
-            let m = jarvis_lib::voice::stt::model(&args[1]);
-            let bytes = std::fs::read(&args[2]).unwrap();
-            let pcm: Vec<f32> = bytes[44..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
-            if std::env::var("STT_LOG").is_ok() { tracing_subscriber::fmt().with_env_filter("debug").init(); }
+        "asr" => {
+            // asr FILE.wav... — GigaAM on 16 kHz mono PCM16 WAV files.
             let t = std::time::Instant::now();
-            let mut r = jarvis_lib::voice::stt::Recognizer::load(jarvis_lib::voice::stt::model_path(m)).unwrap();
-            let load = t.elapsed().as_millis();
-            if let Ok(v) = std::env::var("STT_THREADS") { r.threads = v.parse().unwrap(); }
-            if let Ok(v) = std::env::var("STT_CTX") { r.audio_ctx = v.parse().unwrap(); }
-            if std::env::var("STT_BENCH").is_ok() {
-                let mut padded = pcm.clone();
-                padded.resize(16_000 * 30, 0.0);
-                let th = r.threads;
-                return println!("threads {th} — mel/encode ms: {:?}", r.bench_encode(&padded));
-            }
-            let mut out = format!("{}\nload {load} ms, audio {:.2} s, threads {}\n", whisper_rs::print_system_info(), pcm.len() as f64 / 16000.0, r.threads);
-            for _ in 0..std::env::var("STT_RUNS").ok().and_then(|v| v.parse().ok()).unwrap_or(2) {
-                out.push_str(&format!("{:?}\n", r.transcribe(&pcm)));
+            let r = jarvis_lib::voice::stt::Recognizer::load_default().unwrap();
+            let mut out = format!("load {} ms
+", t.elapsed().as_millis());
+            for f in &args[1..] {
+                let (rate, pcm) = jarvis_lib::voice::tts::parse_wav(&std::fs::read(f).unwrap()).unwrap();
+                let tr = r.transcribe_at(rate as i32, &pcm).unwrap();
+                let name = std::path::Path::new(f).file_name().unwrap().to_string_lossy().to_string();
+                out.push_str(&format!("{name}: {:.2} s audio, {} ms → {}
+", pcm.len() as f64 / rate as f64, tr.ms, tr.text));
             }
             out
         }

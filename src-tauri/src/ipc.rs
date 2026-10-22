@@ -190,8 +190,8 @@ pub async fn audio_devices() -> AppResult<crate::voice::audio::AudioDevices> {
 }
 
 #[tauri::command]
-pub fn stt_models() -> Vec<crate::voice::stt::ModelInfo> {
-    crate::voice::stt::list()
+pub fn stt_models() -> Vec<crate::voice::models::AssetInfo> {
+    crate::voice::models::list()
 }
 
 #[tauri::command]
@@ -207,6 +207,20 @@ pub fn stt_download_cancel(voice: State<'_, std::sync::Arc<crate::voice::VoiceMa
 #[tauri::command]
 pub async fn tts_voices() -> AppResult<Vec<crate::voice::tts::TtsVoice>> {
     platform::blocking(crate::voice::tts::voices).await
+}
+
+/// Speak a sample phrase with `voice` (Settings → Voice → «Прослушать»);
+/// returns a WAV data URL the settings page plays itself.
+#[tauri::command]
+pub async fn tts_preview(voice: String, rate: f32) -> AppResult<String> {
+    use base64::Engine;
+    platform::blocking(move || {
+        let sp = crate::voice::tts::Speaker::new(&voice, rate as f64)?;
+        let pcm = sp.synthesize("Добрый день. Я Джарвис. Громкость тридцать процентов, браузер открыт — чем ещё помочь?", 24_000)?;
+        let wav = crate::voice::tts::wav_bytes(&pcm, 24_000);
+        Ok(format!("data:audio/wav;base64,{}", base64::engine::general_purpose::STANDARD.encode(wav)))
+    })
+    .await
 }
 
 #[tauri::command]

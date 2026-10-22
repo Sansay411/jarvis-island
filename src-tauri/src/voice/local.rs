@@ -1,10 +1,12 @@
-//! Local voice pipeline: microphone → VAD → whisper.cpp → the text agent
-//! (same model, tools, confirmations and chat history as typed requests) →
-//! Windows speech synthesis → speakers.
+//! Local voice pipeline: microphone → Silero VAD → GigaAM (sherpa-onnx) →
+//! the text agent (same model, tools, confirmations and chat history as typed
+//! requests) → neural speech synthesis → speakers.
 //!
 //! Speech starts with the first complete sentence of the reply. Speaking
-//! over JARVIS clears queued speech at once (barge-in); a new request while a
-//! voice turn is still running cancels it and runs the new one.
+//! over JARVIS clears queued speech at once (barge-in). A new request while a
+//! voice turn is still running waits for it (the latest one wins); only
+//! «стоп»/«хватит» cancel — live use showed that cancelling on every remark
+//! («спасибо») killed long tasks.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::audio::{AudioIo, SPEAKER_RATE};
 use super::phrases::PhraseSplitter;
+use super::models;
 use super::stt::{self, Recognizer, Transcript};
 use super::tts::Speaker;
 use super::vad::{Vad, VadEvent};
@@ -32,15 +35,15 @@ pub struct SttEngine {
     last_used: Mutex<Option<Instant>>,
 }
 
-/// Free the model after this long without a voice session (≈0.4–1 GB).
+/// Free the model after this long without a voice session.
 const UNLOAD_AFTER: Duration = Duration::from_secs(180);
 
 impl SttEngine {
-    fn ensure(&self, path: &Path) -> AppResult<()> {
+    fn ensure(&self, dir: &Path) -> AppResult<()> {
         let mut g = self.loaded.lock();
-        if g.as_ref().map(|r| r.path != path).unwrap_or(true) {
+        if g.as_ref().map(|r| r.dir != dir).unwrap_or(true) {
             *g = None; // free the old model before loading another
-            *g = Some(Recognizer::load(path.to_path_buf())?);
+            *g = Some(Recognizer::load(dir)?);
         }
         Ok(())
     }
@@ -48,14 +51,14 @@ impl SttEngine {
     fn transcribe(&self, path: &Path, pcm: &[f32]) -> AppResult<Transcript> {
         self.ensure(path)?;
         *self.last_used.lock() = Some(Instant::now());
-        let mut g = self.loaded.lock();
-        g.as_mut().ok_or_else(|| AppError::internal("model not loaded"))?.transcribe(pcm)
+        let g = self.loaded.lock();
+        g.as_ref().ok_or_else(|| AppError::internal("model not loaded"))?.transcribe(pcm)
     }
 
     pub fn unload_if_idle(&self) {
         let idle = self.last_used.lock().map(|t| t.elapsed() >= UNLOAD_AFTER).unwrap_or(true);
         if idle && self.loaded.lock().take().is_some() {
-            tracing::info!("whisper model unloaded after idle");
+            tracing::info!("speech recogniser unloaded after idle");
         }
     }
 }
@@ -147,10 +150,9 @@ impl Pipeline {
             return;
         }
         if self.turn_active {
-            // A new request replaces the one still running.
-            tracing::info!("new request replaces the running voice turn");
+            // Runs after the current turn; a newer request replaces it.
+            tracing::info!("request queued behind the running voice turn");
             self.pending_request = Some(text);
-            agent.cancel();
         } else if agent.is_busy() {
             self.say("Сейчас я выполняю задачу из чата. Скажите ещё раз, когда я закончу.".into());
         } else {
@@ -181,14 +183,12 @@ impl Pipeline {
 
 impl VoiceManager {
     pub(super) async fn run_local(self: &Arc<Self>, cfg: VoiceSettings, cancel: CancellationToken) -> AppResult<()> {
-        let model = stt::model(&cfg.stt_model);
-        if !stt::is_installed(model) {
-            return Err(AppError::invalid(format!(
-                "Модель распознавания речи ({}) не скачана — откройте Настройки → Голос",
-                model.label
-            )));
+        let (asr, silero) = (models::asset("gigaam-v3").expect("catalog"), models::asset("silero-vad").expect("catalog"));
+        if !asr.installed() || !silero.installed() {
+            return Err(AppError::invalid("Модель распознавания речи не скачана — откройте Настройки → Голос"));
         }
-        let model_path = stt::model_path(model);
+        let model_path = asr.path();
+        let mut vad = Vad::new(&silero.path())?;
         let store = &self.app.state::<crate::state::AppState>().store;
         crate::ai::client_from_settings(&store.settings(), store)?;
 
@@ -198,13 +198,19 @@ impl VoiceManager {
         let preload = tokio::task::spawn_blocking(move || engine.ensure(&p));
 
         let (voice, rate) = (cfg.tts_voice.clone(), cfg.tts_rate as f64);
-        let speaker = tokio::task::spawn_blocking(move || Speaker::new(&voice, rate))
-            .await
-            .map_err(|e| AppError::internal(e.to_string()))??;
+        let speaker = tokio::task::spawn_blocking(move || {
+            Speaker::new(&voice, rate).or_else(|e| {
+                // A missing or broken neural voice must not silence JARVIS.
+                tracing::warn!("voice {voice:?} unavailable, using Windows voice: {e}");
+                Speaker::new(super::tts::WINDOWS_PREFIX, rate)
+            })
+        })
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))??;
         let speaker = Arc::new(speaker);
         let (audio, mut mic) = AudioIo::start(&cfg.input_device, &cfg.output_device)?;
         self.set_state(VoiceState::Listening, None, Some((&audio.input_device, &audio.output_device)));
-        tracing::info!(voice = %speaker.voice, model = model.id, "local voice session started");
+        tracing::info!(voice = %speaker.name(), "local voice session started");
 
         let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<Ev>();
         // Phrases are synthesised one at a time, in order.
@@ -242,7 +248,6 @@ impl VoiceManager {
             first_audio_pending: false,
             shown: VoiceState::Listening,
         };
-        let mut vad = Vad::default();
         let mut level_tick = tokio::time::interval(Duration::from_millis(33));
 
         let result: AppResult<()> = loop {
@@ -252,9 +257,9 @@ impl VoiceManager {
                     let Some(chunk) = chunk else { break Err(AppError::platform("Микрофон перестал отвечать")) };
                     let pcm: Vec<f32> = chunk.iter().map(|s| *s as f32 / 32768.0).collect();
                     // Our own voice through speakers must be louder to count.
-                    vad.margin_boost_db = if pl.audio.is_playing() { 12.0 } else { 0.0 };
-                    match vad.push(&pcm) {
-                        Some(VadEvent::Started) => {
+                    vad.echo_guard = pl.audio.is_playing();
+                    for event in vad.push(&pcm) { match event {
+                        VadEvent::Started => {
                             if pl.audio.is_playing() || pl.queued_phrases > 0 {
                                 let t = Instant::now();
                                 pl.hush();
@@ -263,7 +268,7 @@ impl VoiceManager {
                                 tracing::info!(ms, "barge-in: speech cleared");
                             }
                         }
-                        Some(VadEvent::Ended(utterance)) => {
+                        VadEvent::Ended(utterance) => {
                             pl.transcribing += 1;
                             let ended = Instant::now();
                             let engine = self.stt.clone();
@@ -274,8 +279,7 @@ impl VoiceManager {
                                 let _ = tx.send(Ev::Transcribed(res, ended));
                             });
                         }
-                        Some(VadEvent::Discarded) | None => {}
-                    }
+                    } }
                     pl.refresh_state(&vad);
                 }
                 Some(ev) = ev_rx.recv() => match ev {
@@ -285,8 +289,8 @@ impl VoiceManager {
                             Ok(t) => {
                                 self.metrics.lock().last_stt_ms = Some(t.ms);
                                 let words = t.text.split_whitespace().count();
-                                tracing::info!(ms = t.ms, no_speech = t.no_speech, words, "speech recognised");
-                                if stt::is_hallucination(&t.text) || (t.no_speech > 0.6 && words < 3) {
+                                tracing::info!(ms = t.ms, words, "speech recognised");
+                                if !stt::is_meaningful(&t.text) {
                                     tracing::debug!("ignored non-speech: {:?}", t.text);
                                 } else {
                                     pl.emit_transcript("user", &t.text, true);

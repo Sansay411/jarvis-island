@@ -39,8 +39,12 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 dirs = "6"
 cpal = "0.18"
 tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
-whisper-rs = { version = "0.16", features = ["tracing_backend"] }
 sha2 = "0.11"
+# Speech: GigaAM recognition, Silero VAD, neural TTS (static, CRT-static libs).
+sherpa-onnx = "1.13.8"
+# Model archives from the sherpa-onnx releases are .tar.bz2.
+bzip2 = "0.4"
+tar = "0.4"
 url = "2"
 
 [target.'cfg(windows)'.dependencies]
@@ -95,6 +99,3 @@ strip = true
 [profile.dev.package."*"]
 opt-level = 2
 
-# whisper-rs-sys with Windows-compatible bundled bindings (see vendor/whisper-rs-sys/JARVIS-PATCH.md).
-[patch.crates-io]
-whisper-rs-sys = { path = "vendor/whisper-rs-sys" }

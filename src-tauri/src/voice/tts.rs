@@ -1,6 +1,7 @@
-//! Speech synthesis with the voices installed in Windows (WinRT
-//! `SpeechSynthesizer`: OneCore voices such as Microsoft Irina / Pavel for
-//! ru-RU). Produces PCM16 mono at the playback rate of `AudioIo`.
+//! Speech synthesis for the local voice engine. Neural voices (sherpa-onnx:
+//! Supertonic 3, Piper) by default; the voices installed in Windows (WinRT
+//! `SpeechSynthesizer`, OneCore Irina / Pavel) remain as a fallback that
+//! needs no download. Produces PCM16 mono at the playback rate of `AudioIo`.
 
 use serde::Serialize;
 use windows::core::HSTRING;
@@ -8,6 +9,8 @@ use windows::Media::SpeechSynthesis::{SpeechAppendedSilence, SpeechPunctuationSi
 use windows::Storage::Streams::DataReader;
 
 use super::audio::Resampler;
+use super::models::{self, Kind};
+use super::neural::NeuralVoice;
 use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,8 +25,97 @@ fn platform(e: windows::core::Error) -> AppError {
     AppError::platform(format!("Синтез речи: {}", e.message()))
 }
 
-/// Installed voices, Russian first.
+/// Prefix of Windows voice ids in settings (`windows:<WinRT voice id>`).
+pub const WINDOWS_PREFIX: &str = "windows:";
+
+/// Supertonic 3 speakers (sid → name), default first. Male/female by median
+/// pitch of a test phrase (sids 5–9: 94–128 Hz; 0–4: 170–200 Hz); all ten
+/// were read back word for word by GigaAM.
+pub const SUPERTONIC_SPEAKERS: &[(i32, &str)] = &[
+    (6, "Мужской 7, низкий"),
+    (9, "Мужской 10, низкий"),
+    (5, "Мужской 6"),
+    (7, "Мужской 8"),
+    (8, "Мужской 9"),
+    (0, "Женский 1"),
+    (1, "Женский 2"),
+    (2, "Женский 3"),
+    (3, "Женский 4"),
+    (4, "Женский 5"),
+];
+
+/// Voices for Settings: installed neural voices first, then Windows voices.
 pub fn voices() -> AppResult<Vec<TtsVoice>> {
+    let mut out = Vec::new();
+    for a in models::ASSETS.iter().filter(|a| a.kind == Kind::Tts && a.installed()) {
+        if a.id.starts_with("supertonic") {
+            for (sid, name) in SUPERTONIC_SPEAKERS {
+                out.push(TtsVoice { id: format!("{}:{sid}", a.id), name: format!("{name} (Supertonic)"), language: "ru-RU".into() });
+            }
+        } else {
+            out.push(TtsVoice { id: a.id.into(), name: format!("{} (Piper)", a.label.trim_start_matches("Piper ")), language: "ru-RU".into() });
+        }
+    }
+    out.extend(windows_voices()?.into_iter().map(|v| TtsVoice { id: format!("{WINDOWS_PREFIX}{}", v.id), name: format!("{} (Windows)", v.name), ..v }));
+    Ok(out)
+}
+
+/// The best voice available without a choice: a downloaded neural voice,
+/// else the first Russian Windows voice.
+pub fn default_voice() -> String {
+    if models::asset("supertonic-3").is_some_and(|a| a.installed()) {
+        if let Some((sid, _)) = SUPERTONIC_SPEAKERS.first() {
+            return format!("supertonic-3:{sid}");
+        }
+    }
+    models::ASSETS
+        .iter()
+        .find(|a| a.kind == Kind::Tts && a.id.starts_with("piper") && a.installed())
+        .map(|a| a.id.to_string())
+        .unwrap_or_else(|| WINDOWS_PREFIX.to_string())
+}
+
+pub enum Speaker {
+    Neural(NeuralVoice),
+    Windows(WindowsSpeaker),
+}
+
+impl Speaker {
+    /// `voice`: an id from `voices()`; empty = `default_voice()`. Legacy
+    /// settings stored a bare WinRT id.
+    pub fn new(voice: &str, rate: f64) -> AppResult<Speaker> {
+        let voice = if voice.trim().is_empty() { default_voice() } else { voice.trim().to_string() };
+        if let Some(id) = voice.strip_prefix(WINDOWS_PREFIX) {
+            return Ok(Speaker::Windows(WindowsSpeaker::new(id, rate)?));
+        }
+        if voice.starts_with("HKEY_") {
+            return Ok(Speaker::Windows(WindowsSpeaker::new(&voice, rate)?));
+        }
+        Ok(Speaker::Neural(NeuralVoice::load(&voice, rate as f32)?))
+    }
+
+    pub fn name(&self) -> String {
+        match self {
+            Speaker::Neural(v) => v.name.clone(),
+            Speaker::Windows(w) => format!("{} (Windows)", w.voice),
+        }
+    }
+
+    /// Synthesise `text` to PCM16 mono at `out_rate` (`SPEAKER_RATE` for playback).
+    pub fn synthesize(&self, text: &str, out_rate: u32) -> AppResult<Vec<i16>> {
+        let (rate, mono) = match self {
+            Speaker::Neural(v) => v.synthesize(text)?,
+            Speaker::Windows(w) => w.synthesize_raw(text)?,
+        };
+        let mono = trim_leading_silence(&mono, rate);
+        let mut out = Vec::with_capacity(mono.len() * out_rate as usize / rate as usize + 8);
+        Resampler::new(rate, out_rate).process(mono, &mut out);
+        Ok(out.iter().map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).collect())
+    }
+}
+
+/// Voices installed in Windows, Russian first.
+pub fn windows_voices() -> AppResult<Vec<TtsVoice>> {
     crate::platform::com::ensure_mta();
     let mut out: Vec<TtsVoice> = SpeechSynthesizer::AllVoices()
         .map_err(platform)?
@@ -40,14 +132,14 @@ pub fn voices() -> AppResult<Vec<TtsVoice>> {
     Ok(out)
 }
 
-pub struct Speaker {
+pub struct WindowsSpeaker {
     synth: SpeechSynthesizer,
     pub voice: String,
 }
 
-impl Speaker {
+impl WindowsSpeaker {
     /// `voice_id` empty → the first Russian voice, else the system default.
-    pub fn new(voice_id: &str, rate: f64) -> AppResult<Speaker> {
+    pub fn new(voice_id: &str, rate: f64) -> AppResult<WindowsSpeaker> {
         crate::platform::com::ensure_mta();
         let synth = SpeechSynthesizer::new().map_err(platform)?;
         let all: Vec<_> = SpeechSynthesizer::AllVoices().map_err(platform)?.into_iter().collect();
@@ -67,23 +159,39 @@ impl Speaker {
         // Short pauses: sentences are synthesised one by one and queued.
         let _ = opts.SetAppendedSilence(SpeechAppendedSilence::Min);
         let _ = opts.SetPunctuationSilence(SpeechPunctuationSilence::Min);
-        Ok(Speaker { synth, voice })
+        Ok(WindowsSpeaker { synth, voice })
     }
 
-    /// Synthesise `text` to PCM16 mono at `out_rate` (`SPEAKER_RATE` for playback).
-    pub fn synthesize(&self, text: &str, out_rate: u32) -> AppResult<Vec<i16>> {
+    /// Mono samples and their rate.
+    pub fn synthesize_raw(&self, text: &str) -> AppResult<(u32, Vec<f32>)> {
         let stream = self.synth.SynthesizeTextToStreamAsync(&HSTRING::from(text)).and_then(|op| op.join()).map_err(platform)?;
         let size = stream.Size().map_err(platform)? as u32;
         let reader = DataReader::CreateDataReader(&stream.GetInputStreamAt(0).map_err(platform)?).map_err(platform)?;
         reader.LoadAsync(size).and_then(|op| op.join()).map_err(platform)?;
         let mut wav = vec![0u8; size as usize];
         reader.ReadBytes(&mut wav).map_err(platform)?;
-        let (rate, mono) = parse_wav(&wav)?;
-        let mono = trim_leading_silence(&mono, rate);
-        let mut out = Vec::with_capacity(mono.len() * out_rate as usize / rate as usize + 8);
-        Resampler::new(rate, out_rate).process(mono, &mut out);
-        Ok(out.iter().map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).collect())
+        parse_wav(&wav)
     }
+}
+
+/// A PCM16 mono RIFF/WAVE file.
+pub fn wav_bytes(pcm: &[i16], rate: u32) -> Vec<u8> {
+    let data_len = (pcm.len() * 2) as u32;
+    let mut w = Vec::with_capacity(44 + data_len as usize);
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + data_len).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    w.extend_from_slice(&1u16.to_le_bytes()); // mono
+    w.extend_from_slice(&rate.to_le_bytes());
+    w.extend_from_slice(&(rate * 2).to_le_bytes());
+    w.extend_from_slice(&2u16.to_le_bytes());
+    w.extend_from_slice(&16u16.to_le_bytes());
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&data_len.to_le_bytes());
+    w.extend(pcm.iter().flat_map(|s| s.to_le_bytes()));
+    w
 }
 
 /// Parse a PCM16 RIFF/WAVE file into (sample rate, mono samples).
@@ -165,6 +273,12 @@ mod tests {
         let (_, st) = parse_wav(&wav(16_000, 2, &[16384, 0, -16384, -16384])).unwrap();
         assert_eq!(st, vec![0.25, -0.5]);
         assert!(parse_wav(b"not a wav file").is_err());
+    }
+
+    #[test]
+    fn wav_round_trip() {
+        let (rate, s) = parse_wav(&wav_bytes(&[0, 16384, -16384], 24_000)).unwrap();
+        assert_eq!((rate, s), (24_000, vec![0.0, 0.5, -0.5]));
     }
 
     #[test]

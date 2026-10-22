@@ -198,6 +198,7 @@ impl AudioIo {
                     return;
                 }
                 let host = cpal::default_host();
+                let opened = std::time::Instant::now();
                 let result = (|| -> AppResult<(Option<cpal::Stream>, cpal::Stream, u32, String, String)> {
                     let input = find_device(&host, &in_name, true).ok_or_else(|| AppError::not_found("Микрофон не найден"))?;
                     let output = find_device(&host, &out_name, false).ok_or_else(|| AppError::not_found("Устройство вывода звука не найдено"))?;
@@ -311,6 +312,9 @@ impl AudioIo {
                 })();
                 match result {
                     Ok((in_stream, out_stream, out_rate, in_dev, out_dev)) => {
+                        // Logged even when the caller already gave up waiting:
+                        // shows how slow a device really was.
+                        tracing::info!(ms = opened.elapsed().as_millis() as u64, input = %in_dev, output = %out_dev, "audio devices opened");
                         let _ = ready_tx.send(Ok((out_rate, in_dev, out_dev)));
                         // Keep streams alive until told to stop.
                         let _ = cmd_rx.recv();
@@ -326,7 +330,8 @@ impl AudioIo {
             .map_err(|e| AppError::internal(format!("audio thread: {e}")))?;
 
         let (out_rate, input_device, output_device) = ready_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
+            // A USB microphone right after reconnecting took over 5 s to open.
+            .recv_timeout(std::time::Duration::from_secs(10))
             .map_err(|_| AppError::Timeout(format!("{} не отвечает — переподключите устройство или выберите другое в Настройках → Голос", stage.lock())))??;
         Ok((
             Arc::new(AudioIo {

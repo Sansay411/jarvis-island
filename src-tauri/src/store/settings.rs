@@ -131,9 +131,9 @@ pub struct VoiceSettings {
     /// "local": Whisper on this PC + the chat model + a Windows voice.
     /// "realtime": Qwen Omni Realtime (DashScope key).
     pub engine: String,
-    /// Whisper model id from `voice::stt::MODELS`.
+    /// Recognition model id from `voice::models::ASSETS`.
     pub stt_model: String,
-    /// Windows voice id; empty = first Russian voice.
+    /// Voice id from `voice::tts::voices()`; empty = best downloaded voice.
     pub tts_voice: String,
     /// Speaking rate, 0.5–2.0.
     pub tts_rate: f32,
@@ -152,7 +152,7 @@ impl Default for VoiceSettings {
         VoiceSettings {
             enabled: true,
             engine: "local".into(),
-            stt_model: "small".into(),
+            stt_model: "gigaam-v3".into(),
             tts_voice: String::new(),
             tts_rate: 1.1,
             realtime_url: "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime".into(),

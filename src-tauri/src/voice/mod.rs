@@ -1,6 +1,6 @@
 //! Voice conversation. Two engines share the island UI and events:
-//! - local (default): Whisper on this PC → the text agent → a Windows voice
-//!   (`local.rs`);
+//! - local (default): Silero VAD + GigaAM on this PC → the text agent →
+//!   neural voice (sherpa-onnx) (`local.rs`);
 //! - realtime: Qwen Omni Realtime over WebSocket (below).
 //!
 //! State machine: idle → connecting → listening ⇄ hearing (speech detected)
@@ -13,6 +13,8 @@
 
 pub mod audio;
 mod local;
+pub mod models;
+pub mod neural;
 pub mod phrases;
 pub mod stt;
 pub mod tts;
@@ -215,9 +217,10 @@ impl VoiceManager {
         Ok(())
     }
 
-    /// Download a Whisper model in the background, reporting `voice:model`.
+    /// Download a speech model in the background, reporting `voice:model`.
+    /// Recognition also needs Silero VAD, which comes along with it.
     pub fn download_model(self: &Arc<Self>, id: &str) -> AppResult<()> {
-        let m = stt::model(id);
+        let m = models::asset(id).ok_or_else(|| AppError::invalid(format!("Неизвестная модель: {id}")))?;
         let cancel = {
             let mut d = self.download.lock();
             if d.is_some() {
@@ -233,7 +236,15 @@ impl VoiceManager {
             let progress = |done, total| {
                 let _ = app.emit(EVT_MODEL, ModelEvent { id: m.id, done, total, state: "downloading", error: None });
             };
-            let res = stt::download(m, cancel, progress).await;
+            let mut res = Ok(m.path());
+            if m.kind == models::Kind::Stt {
+                if let Some(vad) = models::asset("silero-vad") {
+                    res = models::download(vad, cancel.clone(), |_, _| {}).await;
+                }
+            }
+            if res.is_ok() {
+                res = models::download(m, cancel, progress).await;
+            }
             *me.download.lock() = None;
             let (state, error) = match res {
                 Ok(_) => ("done", None),
