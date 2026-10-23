@@ -118,10 +118,6 @@ pub fn default_voice() -> String {
     if super::azure::configured() {
         return format!("{}{}", super::azure::PREFIX, super::azure::VOICES[0].0);
     }
-    // A natural local engine (Silero) beats the bundled neural voices.
-    if let Some(v) = super::sapi::voices().into_iter().find(|v| v.russian() && v.name.to_lowercase().contains("silero")) {
-        return format!("{}{}", super::sapi::PREFIX, v.id);
-    }
     if models::asset("supertonic-3").is_some_and(|a| a.installed()) {
         if let Some((sid, _)) = SUPERTONIC_SPEAKERS.first() {
             return format!("supertonic-3:{sid}");

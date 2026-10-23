@@ -22,7 +22,13 @@ fn main() {
             let v = jarvis_lib::voice::sapi::SapiVoice::new(&args[1], 1.1).expect("voice");
             let t0 = std::time::Instant::now();
             let pcm = v.synthesize(&args[2]).expect("synth");
-            let ms = t0.elapsed().as_millis();
+            let first = t0.elapsed().as_millis();
+            let t1 = std::time::Instant::now();
+            let _ = v.synthesize("Готово.");
+            let t2 = std::time::Instant::now();
+            let again = v.synthesize(&args[2]).expect("synth");
+            eprintln!("warm full phrase: {:.2} s of audio in {} ms", again.len() as f64 / 24000.0, t2.elapsed().as_millis());
+            let ms = format!("{first} ms (first, includes engine warm-up); a short phrase after that {} ms", t1.elapsed().as_millis());
             std::fs::write(&args[3], jarvis_lib::voice::tts::wav_bytes(&pcm, 24_000)).unwrap();
             format!("{} — {:.2} s of audio in {ms} ms", v.name, pcm.len() as f64 / 24000.0)
         }
