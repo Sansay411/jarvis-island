@@ -29,7 +29,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 tokio-util = "0.7"
 futures-util = "0.3"
 parking_lot = "0.12"
-reqwest = { version = "0.13", default-features = false, features = ["native-tls", "http2", "charset", "json", "stream", "system-proxy"] }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "http2", "charset", "json", "stream", "system-proxy", "blocking"] }
 eventsource-stream = "0.2"
 rusqlite = { version = "0.40", features = ["bundled"] }
 uuid = { version = "1", features = ["v4", "serde"] }

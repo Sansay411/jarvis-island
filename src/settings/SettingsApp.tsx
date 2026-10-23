@@ -51,6 +51,7 @@ interface SettingsView {
   presets: Preset[];
   hasLlmKey: boolean;
   hasVoiceKey: boolean;
+  hasAzureKey: boolean;
   logPath: string | null;
   dataPath: string | null;
 }
@@ -289,7 +290,39 @@ function Keycaps({ value }: { value: string }) {
   );
 }
 
-function KeyField({ kind, has, onChanged, baseUrl, notify }: { kind: "llm" | "voice"; has: boolean; onChanged: () => void; baseUrl?: string; notify: (tone: Tone, text: string) => void }) {
+/** Microsoft neural voices through the user's own free Azure Speech (F0). */
+function AzureVoice({ has, notify, onChanged, onUse }: { has: boolean; notify: (tone: Tone, text: string) => void; onChanged: () => void; onUse: (id: string) => void }) {
+  const [region, setRegion] = useState("westeurope");
+  return (
+    <>
+      <p className="note">
+        Живые голоса Microsoft — Дмитрий, Светлана, Дарья. Бесплатный тариф Azure Speech (F0) — 500 000 символов в месяц, этого хватает с большим запасом. Наружу уходит
+        только текст ответа, распознавание речи остаётся на компьютере. Без интернета говорит локальный голос.
+      </p>
+      <p className="note">
+        Как получить ключ: portal.azure.com → «Создать ресурс» → Speech → тариф Free F0, регион, например West Europe. Затем «Ключи и конечная точка»: скопируйте
+        ключ 1 и регион.
+      </p>
+      {!has && (
+        <Row label="Регион" hint="Как в Azure, латиницей: westeurope, eastus, swedencentral…">
+          <input className="mono" value={region} spellCheck={false} onChange={(e) => setRegion(e.target.value.trim().toLowerCase())} />
+        </Row>
+      )}
+      <KeyField
+        kind="azure"
+        has={has}
+        baseUrl={region}
+        notify={notify}
+        onChanged={() => {
+          onChanged();
+          onUse("azure:ru-RU-DmitryNeural");
+        }}
+      />
+    </>
+  );
+}
+
+function KeyField({ kind, has, onChanged, baseUrl, notify }: { kind: "llm" | "voice" | "azure"; has: boolean; onChanged: () => void; baseUrl?: string; notify: (tone: Tone, text: string) => void }) {
   const [value, setValue] = useState("");
   const [editing, setEditing] = useState(!has);
   useEffect(() => setEditing(!has), [has]);
@@ -617,6 +650,10 @@ export default function SettingsApp() {
                         <DownloadControl model={m} progress={progress} onDownload={() => void download(m.id)} />
                       </Row>
                     ))}
+                  </Group>
+
+                  <Group title="Голос Microsoft — бесплатно">
+                    <AzureVoice has={view.hasAzureKey} notify={notify} onChanged={() => { void load(); loadVoices(); }} onUse={(id) => set((s) => ({ ...s, voice: { ...s.voice, ttsVoice: id } }))} />
                   </Group>
 
                   <Group title="Голос">

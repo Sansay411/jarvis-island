@@ -53,6 +53,7 @@ pub struct SettingsView {
     pub presets: &'static [ProviderPreset],
     pub has_llm_key: bool,
     pub has_voice_key: bool,
+    pub has_azure_key: bool,
     pub log_path: Option<String>,
     pub data_path: Option<String>,
 }
@@ -65,6 +66,7 @@ pub fn settings_get(app: AppHandle, state: State<'_, AppState>) -> SettingsView 
         presets: PRESETS,
         has_llm_key: secrets::exists(secrets::LLM_API_KEY),
         has_voice_key: secrets::exists(secrets::VOICE_API_KEY),
+        has_azure_key: crate::voice::azure::configured(),
         log_path: log_dir,
         data_path: app.path().app_local_data_dir().ok().map(|p| p.display().to_string()),
     }
@@ -95,12 +97,15 @@ pub fn settings_save(app: AppHandle, state: State<'_, AppState>, settings: Setti
 pub enum SecretKind {
     Llm,
     Voice,
+    /// Azure Speech key; `base_url` carries its region.
+    Azure,
 }
 
 fn target(kind: &SecretKind) -> &'static str {
     match kind {
         SecretKind::Llm => secrets::LLM_API_KEY,
         SecretKind::Voice => secrets::VOICE_API_KEY,
+        SecretKind::Azure => secrets::AZURE_SPEECH_KEY,
     }
 }
 
@@ -111,6 +116,13 @@ pub fn secret_set(app: AppHandle, state: State<'_, AppState>, kind: SecretKind, 
     let v = value.trim();
     if v.is_empty() {
         return Err(AppError::invalid("Пустой ключ"));
+    }
+    if matches!(kind, SecretKind::Azure) {
+        let region = base_url.as_deref().unwrap_or("").trim().to_lowercase();
+        if region.is_empty() || !region.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err(AppError::invalid("Укажите регион ресурса Azure, например westeurope"));
+        }
+        secrets::set(secrets::AZURE_SPEECH_REGION, &region)?;
     }
     if matches!(kind, SecretKind::Llm) {
         let url = base_url.filter(|u| !u.trim().is_empty()).unwrap_or_else(|| state.store.settings().provider.effective_base_url());
@@ -127,6 +139,9 @@ pub fn secret_set(app: AppHandle, state: State<'_, AppState>, kind: SecretKind, 
 #[tauri::command]
 pub fn secret_clear(app: AppHandle, state: State<'_, AppState>, kind: SecretKind) -> AppResult<()> {
     secrets::delete(target(&kind))?;
+    if matches!(kind, SecretKind::Azure) {
+        let _ = secrets::delete(secrets::AZURE_SPEECH_REGION);
+    }
     if matches!(kind, SecretKind::Llm) {
         state.store.kv_set(ai::KEY_ORIGIN, "")?;
     }

@@ -89,6 +89,11 @@ pub const SUPERTONIC_SPEAKERS: &[(i32, &str)] = &[
 /// Voices for Settings: installed neural voices first, then Windows voices.
 pub fn voices() -> AppResult<Vec<TtsVoice>> {
     let mut out = Vec::new();
+    if super::azure::configured() {
+        for (id, name) in super::azure::VOICES {
+            out.push(TtsVoice { id: format!("{}{id}", super::azure::PREFIX), name: format!("{name} (Microsoft)"), language: "ru-RU".into() });
+        }
+    }
     for a in models::ASSETS.iter().filter(|a| a.kind == Kind::Tts && a.installed()) {
         if a.id.starts_with("supertonic") {
             for (sid, name) in SUPERTONIC_SPEAKERS {
@@ -105,6 +110,9 @@ pub fn voices() -> AppResult<Vec<TtsVoice>> {
 /// The best voice available without a choice: a downloaded neural voice,
 /// else the first Russian Windows voice.
 pub fn default_voice() -> String {
+    if super::azure::configured() {
+        return format!("{}{}", super::azure::PREFIX, super::azure::VOICES[0].0);
+    }
     if models::asset("supertonic-3").is_some_and(|a| a.installed()) {
         if let Some((sid, _)) = SUPERTONIC_SPEAKERS.first() {
             return format!("supertonic-3:{sid}");
@@ -120,6 +128,22 @@ pub fn default_voice() -> String {
 pub enum Speaker {
     Neural(NeuralVoice),
     Windows(WindowsSpeaker),
+    /// Microsoft neural voice; the local one speaks when the network fails.
+    Azure(super::azure::AzureVoice, std::sync::OnceLock<Option<Box<Speaker>>>, f64),
+}
+
+/// The best local voice (no network needed).
+fn local_voice() -> String {
+    if models::asset("supertonic-3").is_some_and(|a| a.installed()) {
+        if let Some((sid, _)) = SUPERTONIC_SPEAKERS.first() {
+            return format!("supertonic-3:{sid}");
+        }
+    }
+    models::ASSETS
+        .iter()
+        .find(|a| a.kind == Kind::Tts && a.id.starts_with("piper") && a.installed())
+        .map(|a| a.id.to_string())
+        .unwrap_or_else(|| WINDOWS_PREFIX.to_string())
 }
 
 impl Speaker {
@@ -127,6 +151,9 @@ impl Speaker {
     /// settings stored a bare WinRT id.
     pub fn new(voice: &str, rate: f64) -> AppResult<Speaker> {
         let voice = if voice.trim().is_empty() { default_voice() } else { voice.trim().to_string() };
+        if let Some(id) = voice.strip_prefix(super::azure::PREFIX) {
+            return Ok(Speaker::Azure(super::azure::AzureVoice::new(id, rate)?, std::sync::OnceLock::new(), rate));
+        }
         if let Some(id) = voice.strip_prefix(WINDOWS_PREFIX) {
             return Ok(Speaker::Windows(WindowsSpeaker::new(id, rate)?));
         }
@@ -140,6 +167,7 @@ impl Speaker {
         match self {
             Speaker::Neural(v) => v.name.clone(),
             Speaker::Windows(w) => format!("{} (Windows)", w.voice),
+            Speaker::Azure(a, ..) => format!("{} (Microsoft)", a.voice),
         }
     }
 
@@ -151,6 +179,18 @@ impl Speaker {
         let (rate, mono) = match self {
             Speaker::Neural(v) => v.synthesize(text)?,
             Speaker::Windows(w) => w.synthesize_raw(text)?,
+            Speaker::Azure(a, fallback, speed) => match a.synthesize(text) {
+                Ok(pcm) if out_rate == 24_000 => return Ok(pcm),
+                Ok(pcm) => (24_000, pcm.iter().map(|s| *s as f32 / 32768.0).collect()),
+                Err(e) => {
+                    tracing::warn!("{e}; local voice speaks instead");
+                    let local = fallback.get_or_init(|| Speaker::new(&local_voice(), *speed).ok().map(Box::new));
+                    return match local {
+                        Some(s) => s.synthesize(text, out_rate),
+                        None => Err(e),
+                    };
+                }
+            },
         };
         let mono = trim_leading_silence(&mono, rate);
         let mut out = Vec::with_capacity(mono.len() * out_rate as usize / rate as usize + 8);

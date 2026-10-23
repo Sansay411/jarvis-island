@@ -12,6 +12,7 @@
 //! work is delegated to the text agent (`delegate_to_agent`).
 
 pub mod audio;
+pub mod azure;
 mod local;
 pub mod models;
 pub mod neural;
