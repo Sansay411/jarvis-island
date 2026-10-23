@@ -4,6 +4,9 @@
 //! needs no download. Produces PCM16 mono at the playback rate of `AudioIo`.
 
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::Arc;
+use parking_lot::Mutex;
 use windows::core::HSTRING;
 use windows::Media::SpeechSynthesis::{SpeechAppendedSilence, SpeechPunctuationSilence, SpeechSynthesizer};
 use windows::Storage::Streams::DataReader;
@@ -12,6 +15,45 @@ use super::audio::Resampler;
 use super::models::{self, Kind};
 use super::neural::NeuralVoice;
 use crate::error::{AppError, AppResult};
+
+#[derive(Default)]
+pub struct PcmCache(Mutex<HashMap<String,Vec<i16>>>);
+
+impl PcmCache {
+    pub fn render(&self, text: &str, synth: impl FnOnce()->AppResult<Vec<i16>>) -> AppResult<Vec<i16>> {
+        if text.chars().count()>64 { return synth(); }
+        if let Some(pcm)=self.0.lock().get(text).cloned() { return Ok(pcm); }
+        let pcm=synth()?;
+        let mut cache=self.0.lock();
+        if cache.len()<16 { cache.insert(text.into(),pcm.clone()); }
+        Ok(pcm)
+    }
+}
+
+pub struct CachedSpeaker { pub speaker:Speaker, cache:PcmCache }
+impl CachedSpeaker {
+    pub fn synthesize(&self,text:&str)->AppResult<Vec<i16>> {
+        self.cache.render(text,||self.speaker.synthesize(text,super::audio::SPEAKER_RATE))
+    }
+}
+
+#[derive(Default)]
+pub struct SpeechEngine(Mutex<Option<(String,u32,Arc<CachedSpeaker>)>>);
+impl SpeechEngine {
+    pub fn get(&self,voice:&str,rate:f32)->AppResult<Arc<CachedSpeaker>> {
+        let mut slot=self.0.lock();
+        if let Some((id,r,speaker))=slot.as_ref() {
+            if id==voice && *r==rate.to_bits() { return Ok(speaker.clone()); }
+        }
+        let speaker=Speaker::new(voice,rate as f64).or_else(|e| {
+            tracing::warn!("selected voice unavailable, using Windows voice: {e}");
+            Speaker::new(WINDOWS_PREFIX,rate as f64)
+        })?;
+        let cached=Arc::new(CachedSpeaker {speaker,cache:PcmCache::default()});
+        *slot=Some((voice.into(),rate.to_bits(),cached.clone()));
+        Ok(cached)
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -248,6 +290,18 @@ fn trim_leading_silence(s: &[f32], rate: u32) -> &[f32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_short_reply_uses_audio_cache_but_long_answers_are_not_retained() {
+        let cache=PcmCache::default();
+        let calls=std::cell::Cell::new(0);
+        for _ in 0..2 {
+            assert_eq!(cache.render("Слушаю.",|| {calls.set(calls.get()+1);Ok(vec![7,8])}).unwrap(),vec![7,8]);
+        }
+        assert_eq!(calls.get(),1);
+        for _ in 0..2 { cache.render(&"x".repeat(100),|| {calls.set(calls.get()+1);Ok(vec![1])}).unwrap(); }
+        assert_eq!(calls.get(),3);
+    }
 
     fn wav(rate: u32, channels: u16, samples: &[i16]) -> Vec<u8> {
         let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();

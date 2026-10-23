@@ -2,11 +2,11 @@
 //!
 //! Streams live on a dedicated thread (cpal streams are not Send). The mic
 //! path downmixes to mono, low-pass/resamples to 16 kHz PCM16 and hands
-//! 100 ms chunks to the session; the speaker path plays 24 kHz PCM16 from the
+//! 32 ms chunks to the session; the speaker path plays 24 kHz PCM16 from the
 //! model through a queue that can be cleared instantly for barge-in. Real RMS
 //! levels of both directions are published for the island's visualiser.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -20,12 +20,27 @@ use crate::error::{AppError, AppResult};
 
 pub const MIC_RATE: u32 = 16_000;
 
-/// An audio thread is still opening devices. When Windows' capture stack is
-/// wedged, IAudioClient::Initialize never returns; starting more attempts
-/// would only pile up stuck threads.
-static OPENING: AtomicBool = AtomicBool::new(false);
+/// Do not pile up stuck threads for a wedged endpoint, but allow selecting
+/// another microphone/output while the old Windows call has not returned.
+#[derive(Default)]
+struct OpeningDevices(Mutex<HashSet<(String, String)>>);
+impl OpeningDevices {
+    fn acquire(&self, input: &str, output: &str) -> Option<OpeningGuard<'_>> {
+        let key = (input.to_owned(), output.to_owned());
+        self.0.lock().insert(key.clone()).then(|| OpeningGuard { devices: self, key })
+    }
+}
+struct OpeningGuard<'a> { devices: &'a OpeningDevices, key: (String, String) }
+impl Drop for OpeningGuard<'_> {
+    fn drop(&mut self) { self.devices.0.lock().remove(&self.key); }
+}
+static OPENING: std::sync::LazyLock<OpeningDevices> = std::sync::LazyLock::new(OpeningDevices::default);
 pub const SPEAKER_RATE: u32 = 24_000;
-const CHUNK: usize = 1600; // 100 ms at 16 kHz
+const CHUNK: usize = 512; // Silero window: 32 ms at 16 kHz
+// About 1 s: a short stall of the session loop must not drop the start of
+// «Джарвис…»; older audio is still discarded (never seconds of old commands).
+const MIC_QUEUE: usize = 32;
+const MAX_MIC_DELAY: std::time::Duration = std::time::Duration::from_millis(1000);
 
 #[derive(Default)]
 pub struct Levels {
@@ -137,10 +152,37 @@ pub struct AudioIo {
     play_resampler: Mutex<Resampler>,
     pub input_device: String,
     pub output_device: String,
+    /// Output goes to headphones: JARVIS cannot hear itself, so no echo
+    /// gating — the user may interrupt at normal loudness.
+    pub headphones: bool,
+}
+
+/// Headphones and headsets by the endpoint name Windows shows.
+pub fn is_headphones(name: &str) -> bool {
+    let n = name.to_lowercase();
+    ["наушник", "headphone", "headset", "гарнитур", "earphone", "airpods", "buds", "головной телефон", "hands-free"].iter().any(|k| n.contains(k))
 }
 
 pub struct MicStream {
-    pub rx: mpsc::Receiver<Vec<i16>>,
+    rx: mpsc::Receiver<CapturedChunk>,
+    pub stale_chunks: u64,
+}
+
+struct CapturedChunk {
+    samples: Vec<i16>,
+    captured_at: std::time::Instant,
+}
+
+impl MicStream {
+    pub async fn recv(&mut self) -> Option<Vec<i16>> {
+        while let Some(chunk) = self.rx.recv().await {
+            if chunk.captured_at.elapsed() <= MAX_MIC_DELAY {
+                return Some(chunk.samples);
+            }
+            self.stale_chunks += 1;
+        }
+        None
+    }
 }
 
 fn find_device(host: &cpal::Host, name: &str, input: bool) -> Option<cpal::Device> {
@@ -155,13 +197,11 @@ fn find_device(host: &cpal::Host, name: &str, input: bool) -> Option<cpal::Devic
 
 impl AudioIo {
     pub fn start(input_name: &str, output_name: &str) -> AppResult<(Arc<AudioIo>, MicStream)> {
-        if OPENING.swap(true, Ordering::AcqRel) {
-            return Err(AppError::Timeout(
-                "Микрофон всё ещё не ответил на прошлую попытку открыть его — переподключите его или перезапустите службу «Windows Audio»".into(),
-            ));
-        }
+        let opening = OPENING.acquire(input_name, output_name).ok_or_else(|| AppError::Timeout(
+            "Это аудиоустройство всё ещё не ответило на прошлую попытку подключения. Переподключите его или выберите другой микрофон в настройках голоса.".into(),
+        ))?;
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
-        let (mic_tx, mic_rx) = mpsc::channel::<Vec<i16>>(64);
+        let (mic_tx, mic_rx) = mpsc::channel::<CapturedChunk>(MIC_QUEUE);
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<AppResult<(u32, String, String)>>();
         let playback = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(SPEAKER_RATE as usize * 4)));
         let levels = Arc::new(Levels::default());
@@ -193,7 +233,7 @@ impl AudioIo {
             .name("voice-audio".into())
             .spawn(move || {
                 if null_output {
-                    OPENING.store(false, Ordering::Release);
+                    drop(opening);
                     let _ = ready_tx.send(Ok((SPEAKER_RATE, "тестовые WAV-файлы".into(), "без устройства (тест)".into())));
                     let frames = SPEAKER_RATE as usize / 50; // 20 ms
                     while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = cmd_rx.recv_timeout(std::time::Duration::from_millis(20)) {
@@ -227,6 +267,7 @@ impl AudioIo {
                     let mut pending: Vec<i16> = Vec::with_capacity(CHUNK * 2);
                     let lv_in = lv.clone();
                     let sp_in = sp.clone();
+                    let phones_in = is_headphones(&dev_name(&output));
                     let mut on_input = move |frame_iter: &mut dyn Iterator<Item = f32>| {
                         mono.clear();
                         let mut acc = 0.0;
@@ -246,7 +287,7 @@ impl AudioIo {
                         // pickup is replaced by silence so the server VAD does not
                         // interrupt on our own voice; real barge-in is louder.
                         let out_level = f32::from_bits(lv_in.output.load(Ordering::Relaxed));
-                        let gated = sp_in.load(Ordering::Relaxed) && perceptual(level) < out_level * 0.85;
+                        let gated = !phones_in && sp_in.load(Ordering::Relaxed) && perceptual(level) < out_level * 0.85;
                         resampled.clear();
                         rs.process(&mono, &mut resampled);
                         for &s in &resampled {
@@ -255,7 +296,7 @@ impl AudioIo {
                         }
                         while pending.len() >= CHUNK {
                             let chunk: Vec<i16> = pending.drain(..CHUNK).collect();
-                            let _ = mic_tx.try_send(chunk);
+                            let _ = mic_tx.try_send(CapturedChunk { samples:chunk,captured_at:std::time::Instant::now() });
                         }
                     };
                     let err = |e| tracing::warn!("mic stream error: {e}");
@@ -322,7 +363,7 @@ impl AudioIo {
                     Ok((in_stream, out_stream, out_rate, dev_name(&input), dev_name(&output)))
                 })();
                 // Devices answered (opened or failed): another attempt may start.
-                OPENING.store(false, Ordering::Release);
+                drop(opening);
                 match result {
                     Ok((in_stream, out_stream, out_rate, in_dev, out_dev)) => {
                         // Logged even when the caller already gave up waiting:
@@ -354,10 +395,11 @@ impl AudioIo {
                 out_rate,
                 levels,
                 play_resampler: Mutex::new(Resampler::new(SPEAKER_RATE, out_rate)),
+                headphones: is_headphones(&output_device),
                 input_device,
                 output_device,
             }),
-            MicStream { rx: mic_rx },
+            MicStream { rx: mic_rx,stale_chunks:0 },
         ))
     }
 
@@ -373,6 +415,23 @@ impl AudioIo {
         while q.len() > cap {
             q.pop_front();
         }
+    }
+
+    /// A soft two-note cue (~150 ms) played the moment JARVIS hears its
+    /// name, before the command is finished and recognised.
+    pub fn chime() -> Vec<i16> {
+        let rate = SPEAKER_RATE as f32;
+        let mut out = Vec::new();
+        for (freq, ms) in [(880.0f32, 60.0f32), (1318.5, 90.0)] {
+            let n = (rate * ms / 1000.0) as usize;
+            for i in 0..n {
+                let t = i as f32 / rate;
+                // Raised-cosine envelope: no clicks at either end.
+                let env = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / n as f32).cos();
+                out.push((0.16 * env * (2.0 * std::f32::consts::PI * freq * t).sin() * i16::MAX as f32) as i16);
+            }
+        }
+        out
     }
 
     /// Barge-in: drop everything not yet played.
@@ -392,18 +451,19 @@ impl AudioIo {
 /// See `JARVIS_VOICE_INPUT_WAV` in `AudioIo::start`. 2 s of silence, then
 /// each file followed by `JARVIS_VOICE_INPUT_GAP_S` (default 25) seconds of
 /// silence so the agent can answer, then silence until the session ends.
-fn spawn_test_feeder(files: Vec<std::path::PathBuf>, tx: mpsc::Sender<Vec<i16>>, levels: Arc<Levels>) {
-    let gap: usize = std::env::var("JARVIS_VOICE_INPUT_GAP_S").ok().and_then(|v| v.parse().ok()).unwrap_or(25) * 10;
+fn spawn_test_feeder(files: Vec<std::path::PathBuf>, tx: mpsc::Sender<CapturedChunk>, levels: Arc<Levels>) {
+    let chunks_per_second = MIC_RATE as usize / CHUNK;
+    let gap: usize = std::env::var("JARVIS_VOICE_INPUT_GAP_S").ok().and_then(|v| v.parse().ok()).unwrap_or(25) * chunks_per_second;
     tracing::warn!(?files, "voice test input: microphone replaced by WAV files");
     let _ = std::thread::Builder::new().name("voice-test-input".into()).spawn(move || {
         let send = |chunk: Vec<i16>| -> bool {
             let f: Vec<f32> = chunk.iter().map(|s| *s as f32 / 32768.0).collect();
             Levels::set(&levels.input, perceptual(rms(&f)));
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            tx.blocking_send(chunk).is_ok()
+            std::thread::sleep(std::time::Duration::from_secs_f64(CHUNK as f64 / MIC_RATE as f64));
+            tx.blocking_send(CapturedChunk { samples:chunk,captured_at:std::time::Instant::now() }).is_ok()
         };
         let silence = || vec![0i16; CHUNK];
-        for _ in 0..20 {
+        for _ in 0..chunks_per_second * 2 {
             if !send(silence()) {
                 return;
             }
@@ -436,7 +496,31 @@ impl Drop for AudioIo {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_stalled_device_blocks_duplicate_attempts_but_not_switching_devices() {
+        let devices = super::OpeningDevices::default();
+        let first = devices.acquire("USB", "speakers").unwrap();
+        assert!(devices.acquire("USB", "speakers").is_none());
+        assert!(devices.acquire("USB", "speakers").is_none());
+        let other = devices.acquire("built-in", "speakers").unwrap();
+        drop(other);
+        assert!(devices.acquire("USB", "speakers").is_none());
+        drop(first);
+        assert!(devices.acquire("USB", "speakers").is_some());
+    }
     use super::*;
+
+    #[tokio::test]
+    async fn delayed_audio_is_discarded_instead_of_replayed_seconds_later() {
+        let (tx,rx)=mpsc::channel(8);
+        tx.send(CapturedChunk { samples:vec![1;512],captured_at:std::time::Instant::now()-std::time::Duration::from_secs(2) }).await.unwrap();
+        tx.send(CapturedChunk { samples:vec![2;512],captured_at:std::time::Instant::now() }).await.unwrap();
+        drop(tx);
+        let mut mic=MicStream {rx,stale_chunks:0};
+        assert_eq!(mic.recv().await,Some(vec![2;512]));
+        assert_eq!(mic.stale_chunks,1);
+        assert!(mic.recv().await.is_none());
+    }
 
     #[test]
     fn resampler_ratios() {

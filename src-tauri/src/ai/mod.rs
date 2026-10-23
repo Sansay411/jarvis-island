@@ -66,9 +66,9 @@ mod tests {
 
     #[test]
     fn origins() {
-        assert_eq!(origin_of("https://llm.alem.ai/v1"), "https://llm.alem.ai");
-        assert_eq!(origin_of("https://LLM.alem.ai/v1/"), "https://llm.alem.ai");
+        assert_eq!(origin_of("https://api.deepseek.com/v1"), "https://api.deepseek.com");
+        assert_eq!(origin_of("https://API.deepseek.com/v1/"), "https://api.deepseek.com");
         assert_eq!(origin_of("http://localhost:11434/v1"), "http://localhost:11434");
-        assert_ne!(origin_of("https://api.openai.com/v1"), origin_of("https://llm.alem.ai/v1"));
+        assert_ne!(origin_of("https://api.openai.com/v1"), origin_of("https://api.deepseek.com/v1"));
     }
 }

@@ -63,6 +63,16 @@ CREATE TABLE IF NOT EXISTS memories (
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS reminders (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    due_at     TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    fired_at   TEXT,
+    done       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS reminders_due ON reminders(done, due_at);
 "#;
 
 pub struct Store {
@@ -84,6 +94,20 @@ pub struct Memory {
     pub id: i64,
     pub text: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Reminder {
+    pub id: i64,
+    /// reminder | timer
+    pub kind: String,
+    pub text: String,
+    /// RFC 3339, UTC.
+    pub due_at: String,
+    pub created_at: String,
+    pub fired_at: Option<String>,
+    pub done: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -129,7 +153,20 @@ impl Store {
             .optional()
             .ok()
             .flatten();
-        raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        let mut settings: Settings = raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        // Do not rebind the old credential: client_from_settings must reject
+        // it until a DeepSeek key is saved explicitly.
+        let old_host = url::Url::parse(&settings.provider.base_url).ok()
+            .is_some_and(|u| u.host_str() == Some("llm.alem.ai"));
+        if settings.provider.preset == "alem" || old_host {
+            if self.kv_get("llm_key_origin").unwrap_or_default().is_empty() {
+                // Older installs had unbound keys. Mark theirs as legacy
+                // before returning migrated settings, never as DeepSeek's.
+                let _ = self.kv_set("llm_key_origin", "https://llm.alem.ai");
+            }
+            settings.provider = Default::default();
+        }
+        settings
     }
 
     pub fn save_settings(&self, s: &Settings) -> AppResult<()> {
@@ -285,6 +322,38 @@ impl Store {
         self.conn.lock().execute("DELETE FROM memories WHERE id = ?1", params![id])?;
         Ok(())
     }
+
+    // ---------- reminders and timers ----------
+
+    pub fn add_reminder(&self, kind: &str, text: &str, due_at: &str) -> AppResult<i64> {
+        let conn = self.conn.lock();
+        conn.execute("INSERT INTO reminders(kind, text, due_at, created_at) VALUES(?1, ?2, ?3, ?4)", params![kind, text, due_at, now()])?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Not finished yet (pending or fired and waiting for «Готово»).
+    pub fn open_reminders(&self) -> AppResult<Vec<Reminder>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT id, kind, text, due_at, created_at, fired_at, done FROM reminders WHERE done = 0 ORDER BY due_at")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Reminder { id: r.get(0)?, kind: r.get(1)?, text: r.get(2)?, due_at: r.get(3)?, created_at: r.get(4)?, fired_at: r.get(5)?, done: r.get::<_, i64>(6)? != 0 })
+        })?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    /// Mark fired once; returns false if it already was (no double alerts).
+    pub fn mark_fired(&self, id: i64) -> AppResult<bool> {
+        Ok(self.conn.lock().execute("UPDATE reminders SET fired_at = ?2 WHERE id = ?1 AND fired_at IS NULL", params![id, now()])? == 1)
+    }
+
+    pub fn finish_reminder(&self, id: i64) -> AppResult<bool> {
+        Ok(self.conn.lock().execute("UPDATE reminders SET done = 1 WHERE id = ?1 AND done = 0", params![id])? == 1)
+    }
+
+    /// Move to a new time and arm it again.
+    pub fn reschedule_reminder(&self, id: i64, due_at: &str) -> AppResult<bool> {
+        Ok(self.conn.lock().execute("UPDATE reminders SET due_at = ?2, fired_at = NULL, done = 0 WHERE id = ?1", params![id, due_at])? == 1)
+    }
 }
 
 #[cfg(test)]
@@ -293,10 +362,31 @@ mod tests {
     use crate::ai::types::Role;
 
     #[test]
+    fn legacy_provider_is_replaced_without_rebinding_its_key_or_losing_preferences() {
+        let s = Store::in_memory().unwrap();
+        s.kv_set("settings", r#"{"provider":{"preset":"alem","model":"qwen3-8","baseUrl":"https://llm.alem.ai/v1"},"persona":{"userName":"Павел"},"voice":{"wakeWord":true}}"#).unwrap();
+        s.kv_set("llm_key_origin", "https://llm.alem.ai").unwrap();
+        let cfg = s.settings();
+        assert_eq!(cfg.provider.model, "deepseek-flash");
+        assert_eq!(cfg.provider.effective_base_url(), "https://api.deepseek.com/v1");
+        assert_eq!(cfg.persona.user_name, "Павел");
+        assert!(cfg.voice.wake_word);
+        assert_eq!(s.kv_get("llm_key_origin").as_deref(), Some("https://llm.alem.ai"));
+    }
+
+    #[test]
+    fn unbound_legacy_key_cannot_be_mistaken_for_a_deepseek_key() {
+        let s = Store::in_memory().unwrap();
+        s.kv_set("settings", r#"{"provider":{"preset":"alem","model":"qwen3-8"}}"#).unwrap();
+        assert_eq!(s.settings().provider.model, "deepseek-flash");
+        assert_eq!(s.kv_get("llm_key_origin").as_deref(), Some("https://llm.alem.ai"));
+    }
+
+    #[test]
     fn settings_roundtrip_and_defaults() {
         let s = Store::in_memory().unwrap();
         let mut cfg = s.settings();
-        assert_eq!(cfg.provider.model, "qwen3-8");
+        assert_eq!(cfg.provider.model, "deepseek-flash");
         cfg.provider.model = "qwen3.8-max".into();
         s.save_settings(&cfg).unwrap();
         assert_eq!(s.settings().provider.model, "qwen3.8-max");

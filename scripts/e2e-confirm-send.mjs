@@ -75,7 +75,9 @@ $timer.Add_Tick({ $f.Close() })
 $timer.Start()
 [void]$f.ShowDialog()
 `;
-const fakeProc = spawn(fake, ["-NoProfile", "-Command", form], { stdio: "ignore" });
+const fakeProc = spawn(fake, ["-NoProfile", "-Command", form], { stdio: ["ignore", "pipe", "pipe"] });
+let fakeOutput = "";
+for (const stream of [fakeProc.stdout, fakeProc.stderr]) stream.on("data", (chunk) => { fakeOutput = (fakeOutput + chunk.toString()).slice(-3000); });
 
 const results = [];
 const check = (name, ok, detail = "") => results.push({ name, ok: !!ok, detail });
@@ -83,7 +85,7 @@ const check = (name, ok, detail = "") => results.push({ name, ok: !!ok, detail }
 try {
   // Never send the test Enter anywhere but the fake window.
   for (let i = 0; i < 40 && !fs.existsSync(active); i++) await sleep(250);
-  if (!fs.existsSync(active)) throw new Error("the fake messenger window did not get the foreground — not asking");
+  if (!fs.existsSync(active)) throw new Error(`the fake messenger window did not get the foreground — not asking (exit=${fakeProc.exitCode}; output=${fakeOutput})`);
   const logStart = fs.statSync(logFile).size;
   execFileSync(exe, ["--ask", "нажми enter", "--quiet"]);
   let line = null;
@@ -106,6 +108,7 @@ try {
   server.kill();
   if (backup !== null) db.prepare("UPDATE kv SET value = ? WHERE key = 'settings'").run(backup);
   await sleep(300);
+  if (path.dirname(path.resolve(work)) !== path.resolve(os.tmpdir()) || !path.basename(work).startsWith("jarvis-confirm-")) throw new Error("Unsafe test cleanup path");
   fs.rmSync(work, { recursive: true, force: true });
 }
 

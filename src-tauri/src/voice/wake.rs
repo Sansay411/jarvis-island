@@ -11,7 +11,7 @@
 /// GigaAM test (7 voices): «Джарвис» 6×, once in Latin «Javis».
 const NAMES: &[&str] = &[
     "джарвис", "джарвиз", "джарвиса", "джарвису", "джарвисом", "джарвисе", "джарви", "джарвес", "джервис", "джарбис",
-    "джар", "джарр", "jarvis", "javis", "jarvi",
+    "джарес", "джарис", "джар", "джарр", "жарвис", "чарвис", "джавис", "джарвиш", "jarvis", "javis", "jarvi", "jarviz",
 ];
 
 /// Words that may come before the name: «эй, Джарвис», «окей, Джар».
@@ -31,12 +31,26 @@ pub struct Addressed {
 }
 
 fn words(text: &str) -> Vec<String> {
-    text.to_lowercase()
+    let raw: Vec<String> = text
+        .to_lowercase()
         .replace('ё', "е")
         .split(|c: char| !c.is_alphabetic())
         .filter(|w| !w.is_empty())
         .map(str::to_string)
-        .collect()
+        .collect();
+    // The recogniser sometimes splits the name: «Джар Вис», «Джа Рвис».
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    for w in raw {
+        if let Some(prev) = out.last_mut() {
+            let joined = format!("{prev}{w}");
+            if matches!(joined.as_str(), "джарвис" | "джарвиз" | "джарвиса") {
+                *prev = joined;
+                continue;
+            }
+        }
+        out.push(w);
+    }
+    out
 }
 
 /// The name, or a greeting glued to it («Эйджарвис» — 2 of 7 voices).
@@ -49,13 +63,8 @@ pub fn addressed(text: &str) -> Option<Addressed> {
     if w.is_empty() || w.len() > MAX_WORDS {
         return None;
     }
-    let first = if is_name(&w[0]) {
-        Some(0)
-    } else if w.len() > 1 && LEADS.contains(&w[0].as_str()) && is_name(&w[1]) {
-        Some(1)
-    } else {
-        None
-    };
+    let first = w.iter().take(4).position(|word| !LEADS.contains(&word.as_str()))
+        .filter(|at| is_name(&w[*at]));
     let last = (w.len() <= MAX_WORDS_NAME_LAST && is_name(&w[w.len() - 1])).then(|| w.len() - 1);
     let at = first.or(last)?;
     let rest = w.iter().enumerate().filter(|(i, word)| *i != at && !is_name(word) && !LEADS.contains(&word.as_str())).count();
@@ -81,6 +90,17 @@ mod tests {
         assert!(yes("Джарвиз, ты тут?"));
         assert_eq!(addressed("Эйджарвис."), Some(Addressed { only_name: true }));
         assert_eq!(addressed("Javis"), Some(Addressed { only_name: true }));
+        assert_eq!(addressed("Джар Вис, открой почту."), Some(Addressed { only_name: false }));
+        assert_eq!(addressed("Джа рвис!"), Some(Addressed { only_name: true }));
+    }
+
+    #[test]
+    fn short_lead_chains_and_recognition_variants_wake_but_mentions_do_not() {
+        assert_eq!(addressed("А ну, Джарвис!"), Some(Addressed { only_name:true }));
+        assert!(yes("Эй, слушай, Джарес, какая громкость?"));
+        assert!(yes("Джарис, ты здесь?"));
+        assert!(!yes("Я рассказал, что Джарес помогает мне работать"));
+        assert!(!yes("А ну, Дарвин, привет"));
     }
 
     #[test]

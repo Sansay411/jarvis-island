@@ -16,7 +16,7 @@ export function shoulderFor(h: number): number {
   return Math.min(SHOULDER, Math.max(4, h * 0.6));
 }
 
-export type IslandMode = "compact" | "peek" | "workspace" | "voice" | "drop";
+export type IslandMode = "compact" | "peek" | "workspace" | "voice" | "drop" | "files" | "notice";
 
 export interface Dims {
   w: number;
@@ -32,6 +32,8 @@ export interface DimsContext {
   lip: boolean;
   /** A confirmation is waiting (shown inline in the voice view). */
   confirm: boolean;
+  /** Measured height of the file card. */
+  filesH?: number;
 }
 
 export function dimsFor(mode: IslandMode, ctx: DimsContext): Dims {
@@ -45,6 +47,10 @@ export function dimsFor(mode: IslandMode, ctx: DimsContext): Dims {
       return { w: 380, h: ctx.confirm ? 178 : 132 };
     case "drop":
       return { w: 440, h: 132 };
+    case "notice":
+      return { w: 420, h: 124 };
+    case "files":
+      return { w: 480, h: Math.min(440, Math.max(150, Math.round(ctx.filesH ?? 0))) };
     case "workspace":
       return { w: 528, h: 492 };
   }

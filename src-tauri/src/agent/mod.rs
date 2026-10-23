@@ -8,6 +8,7 @@
 
 pub mod events;
 mod prompt;
+mod fast;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -553,10 +554,42 @@ impl Agent {
     }
 
     async fn turn_loop(&self, turn: &Turn, conversation_id: &str, client: &OpenAiCompatible, steps: &mut u32) -> AppResult<()> {
-        let specs = self.registry.specs();
-        let names = self.registry.names();
+        let mut specs = self.registry.specs();
+        if !client.supports_web() { specs.retain(|s| !matches!(s.name.as_str(), "web_search" | "web_fetch")); }
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
         let vision_model = turn.settings.provider.vision_model.trim().to_string();
         let persist = turn.settings.privacy.store_history;
+        // Whole-utterance matching only. Execute through the normal registry
+        // so cancellation, verification, events and risk policy stay intact.
+        if turn.attachments.is_empty() {
+            let text = self.inner.lock().history.last().map(ChatMessage::joined_text).unwrap_or_default();
+            if let Some(call) = fast::command(&text) {
+                *steps += 1;
+                let mut request = ChatMessage::text(Role::Assistant, "");
+                request.tool_calls.push(call.clone());
+                self.push_history(conversation_id, request, None, None, persist);
+                self.emit(AgentEvent::Phase { turn_id:turn.id.clone(), phase:"acting" });
+                let results = self.execute_calls(turn, &[call]).await?;
+                for (call, result) in results {
+                    let title = self.title_for(&call);
+                    let output = match result {
+                        Ok(out) => out,
+                        Err(AppError::Cancelled) => return Err(AppError::Cancelled),
+                        Err(e) => ToolOutput::fail(e.to_string(), json!({})),
+                    };
+                    let body = json!({"ok":output.ok,"summary":output.summary,"data":output.data});
+                    self.push_history(conversation_id, ChatMessage::tool_result(&call.id, body.to_string()), Some(&title), Some(output.ok), persist);
+                    if output.ok {
+                        let answer = fast::answer(&call.name,&output.summary,&output.data);
+                        if let Some(tx) = &turn.deltas { let _ = tx.send(answer.clone()); }
+                        self.emit(AgentEvent::TextDelta { turn_id:turn.id.clone(),text:answer.clone() });
+                        self.push_history(conversation_id, ChatMessage::text(Role::Assistant,answer), None,None,persist);
+                        return Ok(());
+                    }
+                    // Let the model recover from a failed native action.
+                }
+            }
+        }
         loop {
             if *steps >= turn.settings.agent.max_steps.max(1) {
                 return Err(AppError::internal(format!(

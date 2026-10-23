@@ -3,9 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Known OpenAI-compatible endpoints. Model ids for DashScope come from the
-/// Model Studio model list (qwen3.8-flash / qwen3.8-max, Oct 2026); other
-/// presets leave the model for the user to choose.
+/// Known OpenAI-compatible endpoints. DeepSeek Flash is the default agent.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderPreset {
@@ -19,14 +17,11 @@ pub struct ProviderPreset {
 }
 
 pub const PRESETS: &[ProviderPreset] = &[
-    // Alem AI: LiteLLM proxy in front of vLLM serving Qwen3.8 27B (text +
-    // images, streamed tool calls, reasoning in `reasoning_content`).
-    // LiteLLM rejects unknown parameters, so nothing provider-specific is sent.
     ProviderPreset {
-        id: "alem",
-        label: "Qwen3.8 — Alem AI",
-        base_url: "https://llm.alem.ai/v1",
-        default_model: "qwen3-8",
+        id: "deepseek",
+        label: "DeepSeek V4.1 Flash",
+        base_url: "https://api.deepseek.com/v1",
+        default_model: "deepseek-flash",
         needs_key: true,
         dashscope: false,
     },
@@ -128,7 +123,7 @@ impl ProviderSettings {
 #[serde(rename_all = "camelCase", default)]
 pub struct VoiceSettings {
     pub enabled: bool,
-    /// "local": Whisper on this PC + the chat model + a Windows voice.
+    /// "local": GigaAM on this PC + the chat model + neural speech.
     /// "realtime": Qwen Omni Realtime (DashScope key).
     pub engine: String,
     /// Recognition model id from `voice::models::ASSETS`.

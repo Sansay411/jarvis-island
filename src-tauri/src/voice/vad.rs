@@ -16,7 +16,8 @@ use super::models::native_path;
 use crate::error::{AppError, AppResult};
 
 const END_SILENCE_S: f32 = 0.9;
-const MIN_SPEECH_S: f32 = 0.25;
+// Short «Стоп», «Джар» and the first word before a pause must survive.
+const MIN_SPEECH_S: f32 = 0.12;
 const MAX_SPEECH_S: f32 = 20.0;
 /// Extra loudness over the room needed while JARVIS speaks.
 const ECHO_MARGIN_DB: f32 = 12.0;
@@ -34,6 +35,8 @@ pub enum VadEvent {
     Started,
     /// Utterance finished: mono 16 kHz samples.
     Ended(Vec<f32>),
+    /// Early local-only recognition while waiting for the wake name.
+    Preview(Vec<f32>),
 }
 
 pub fn chunk_db(chunk: &[f32]) -> f32 {
@@ -75,9 +78,15 @@ pub struct Vad {
     accepted: bool,
     /// JARVIS is speaking: apply the echo guard.
     pub echo_guard: bool,
+    pub wake_preview: bool,
+    utterance_start: usize,
+    last_preview: usize,
     /// Recent samples; `history[0]` is sample number `history_base`.
     history: VecDeque<f32>,
     history_base: usize,
+    /// Absolute sample index where the last `Ended` audio begins (padding
+    /// included) — subtitles of transcribed files.
+    pub last_segment_start: usize,
 }
 
 impl Vad {
@@ -100,7 +109,7 @@ impl Vad {
         };
         let det = VoiceActivityDetector::create(&cfg, MAX_SPEECH_S + 10.0)
             .ok_or_else(|| AppError::platform("Не удалось загрузить детектор речи"))?;
-        Ok(Vad { det, floor: Floor::default(), in_speech: false, accepted: false, echo_guard: false, history: VecDeque::with_capacity(HISTORY), history_base: 0 })
+        Ok(Vad { det, floor: Floor::default(), in_speech: false, accepted: false, echo_guard: false, wake_preview:false, utterance_start:0,last_preview:0,history: VecDeque::with_capacity(HISTORY), history_base: 0, last_segment_start: 0 })
     }
 
     pub fn floor_db(&self) -> f32 {
@@ -123,7 +132,9 @@ impl Vad {
         // Finished segments first: each closes the utterance it belongs to.
         while let Some(seg) = self.det.front() {
             if self.accepted {
-                events.push(VadEvent::Ended(self.padded(seg.start().max(0) as usize, seg.samples())));
+                let start = seg.start().max(0) as usize;
+                self.last_segment_start = start.saturating_sub(PAD_BEFORE).max(self.history_base);
+                events.push(VadEvent::Ended(self.padded(start, seg.samples())));
             }
             self.det.pop();
             self.accepted = false;
@@ -132,7 +143,19 @@ impl Vad {
         if detected {
             if !self.accepted && (!self.echo_guard || self.floor.passes_echo_guard(db)) {
                 self.accepted = true;
+                self.utterance_start = (self.history_base+self.history.len()).saturating_sub((MIN_SPEECH_S*16_000.) as usize);
+                self.last_preview = self.utterance_start;
                 events.push(VadEvent::Started);
+            }
+            // Decode only a short prefix while waiting for the name. This
+            // opens the listening UI before the user finishes the command;
+            // actions still wait for the normal, pause-tolerant final VAD.
+            let seen=self.history_base+self.history.len();
+            let length=seen.saturating_sub(self.utterance_start);
+            if self.accepted && self.wake_preview && !self.echo_guard && (8_000..=40_000).contains(&length) && seen.saturating_sub(self.last_preview)>=5_120 {
+                let from=self.utterance_start.saturating_sub(PAD_BEFORE).max(self.history_base);
+                events.push(VadEvent::Preview(self.history.range(from-self.history_base..).copied().collect()));
+                self.last_preview=seen;
             }
         } else {
             self.floor.learn(db);

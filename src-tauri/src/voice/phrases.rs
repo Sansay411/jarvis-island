@@ -6,7 +6,13 @@
 #[derive(Default)]
 pub struct PhraseSplitter {
     buf: String,
+    /// The first phrase was cut: later ones wait for sentence ends.
+    started: bool,
 }
+
+/// The first phrase may end at a comma or dash: synthesis time grows with
+/// length, and the first sound is what the user waits for.
+const MIN_FIRST_CLAUSE: usize = 18;
 
 /// Short fragments are held back and joined with the next sentence so
 /// speech doesn't stutter phrase by phrase.
@@ -21,18 +27,22 @@ impl PhraseSplitter {
             let mut cut = None;
             for (i, &(pos, c)) in chars.iter().enumerate() {
                 let next = chars.get(i + 1).map(|&(_, n)| n);
+                let spaced = next.is_some_and(char::is_whitespace);
+                let len = || self.buf[..pos].chars().count() + 1;
                 let boundary = match c {
                     '\n' => true,
-                    '.' | '!' | '?' | '…' | ';' => next.is_some_and(char::is_whitespace),
+                    '.' | '!' | '?' | '…' | ';' => spaced && len() >= MIN_PHRASE,
+                    ',' | ':' | '—' => spaced && !self.started && len() >= MIN_FIRST_CLAUSE,
                     _ => false,
                 };
-                if boundary && (c == '\n' || self.buf[..pos].chars().count() + 1 >= MIN_PHRASE) {
+                if boundary {
                     cut = Some(pos + c.len_utf8());
                     break;
                 }
             }
             let Some(at) = cut else { break };
             let phrase: String = self.buf.drain(..at).collect();
+            self.started = true;
             let s = speakable(&phrase);
             if !s.is_empty() {
                 out.push(s);
@@ -130,6 +140,14 @@ mod tests {
         assert!(p.push("Громкость теперь 30 проц").is_empty());
         assert_eq!(p.push("ентов. Калькулятор открыт"), vec!["Громкость теперь 30 процентов."]);
         assert_eq!(p.finish().as_deref(), Some("Калькулятор открыт"));
+    }
+
+    #[test]
+    fn first_phrase_may_end_at_a_clause_but_later_ones_wait_for_the_sentence() {
+        let mut p = PhraseSplitter::default();
+        assert_eq!(p.push("Отличный вопрос, честно говоря, давно думаю об этом. "), vec!["Отличный вопрос, честно говоря,"]);
+        assert!(p.push("Ну что ж, ").is_empty());
+        assert_eq!(p.finish().as_deref(), Some("давно думаю об этом. Ну что ж,"));
     }
 
     #[test]

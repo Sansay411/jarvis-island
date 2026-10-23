@@ -12,10 +12,13 @@
 pub mod agent;
 pub mod ai;
 pub mod error;
+pub mod filekit;
 mod ipc;
+mod ipc_files;
 pub mod jobs;
 mod ipc_agent;
 pub mod platform;
+pub mod reminders;
 mod shortcuts;
 mod state;
 pub mod store;
@@ -124,6 +127,13 @@ fn handle_cli(app: &tauri::AppHandle, argv: &[String]) -> bool {
         if let Some(cmd) = argv.get(pos + 1) {
             if cmd == "cancel-task" {
                 app.state::<Arc<agent::Agent>>().cancel();
+            } else if cmd == "quit" {
+                app.state::<Arc<voice::VoiceManager>>().stop();
+                app.state::<Arc<agent::Agent>>().cancel();
+                let handle=app.clone();
+                tauri::async_runtime::spawn(async move {tokio::time::sleep(Duration::from_millis(500)).await;handle.exit(0);});
+            } else if cmd == "stop-voice" {
+                app.state::<Arc<voice::VoiceManager>>().stop();
             } else if cmd == "new-conversation" {
                 if let Err(e) = app.state::<Arc<agent::Agent>>().new_conversation() {
                     tracing::warn!("new-conversation: {e}");
@@ -153,16 +163,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // A second launch (Start menu, shortcut, `jarvis.exe --settings`)
             // surfaces the running instance instead of starting another.
-            // One that arrives while this instance is still starting would
-            // reach state that is not managed yet (it crashed the app).
-            if app.try_state::<Arc<voice::VoiceManager>>().is_none() {
-                tracing::warn!(?argv, "second launch ignored: JARVIS is still starting");
-                return;
-            }
-            if !handle_cli(app, &argv) {
-                app.state::<AppState>().island.set_user_hidden(false);
-                emit_command(app, "open-workspace");
-            }
+            shortcuts::launch(app, argv);
         }))
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .plugin(shortcuts::plugin())
@@ -189,11 +190,15 @@ pub fn run() {
             app.manage(agent::Agent::new(app.handle().clone(), registry));
             app.manage(jobs::JobManager::new(app.handle().clone()));
             app.manage(voice::VoiceManager::new(app.handle().clone()));
+            app.manage(Arc::new(filekit::FileJobs::default()));
+            let reminders = reminders::Reminders::new(app.handle().clone());
+            app.manage(reminders.clone());
+            reminders.spawn();
             // Start listening for «Джарвис» if that is on (after start-up settles).
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(4)).await;
+                    tokio::time::sleep(Duration::from_millis(600)).await;
                     handle.state::<Arc<voice::VoiceManager>>().apply_settings();
                 });
             }
@@ -215,11 +220,7 @@ pub fn run() {
             // First launch with CLI arguments: act once the island UI is listening.
             let argv: Vec<String> = std::env::args().collect();
             if argv.len() > 1 {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(1500)).await;
-                    handle_cli(&handle, &argv);
-                });
+                shortcuts::launch(app.handle(), argv);
             }
             for p in shortcuts::apply(app.handle(), &settings.shortcuts) {
                 tracing::warn!("{p}");
@@ -239,6 +240,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            shortcuts::island_frontend_ready,
             ipc::island_set_shape,
             ipc::island_begin_input,
             ipc::island_end_input,
@@ -270,6 +272,13 @@ pub fn run() {
             ipc::tts_voices,
             ipc::tts_preview,
             ipc::job_cancel,
+            ipc_files::files_inspect,
+            ipc_files::files_action,
+            ipc_files::files_cancel,
+            ipc_files::files_clear,
+            ipc_files::reminders_list,
+            ipc_files::reminder_done,
+            ipc_files::reminder_snooze,
             ipc_agent::agent_status,
             ipc_agent::agent_send,
             ipc_agent::agent_cancel,

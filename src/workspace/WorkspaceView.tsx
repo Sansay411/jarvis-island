@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../ui/Icon";
 import { useAgent } from "../store/agent";
@@ -22,7 +22,7 @@ function useSecondsLeft(until: number | null): number {
   return until ? Math.max(0, Math.ceil((until - Date.now()) / 1000)) : 0;
 }
 
-function Composer() {
+function Composer({visible}:{visible:boolean}) {
   const [text, setText] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
   const active = useAgent((s) => s.activeTurn);
@@ -32,10 +32,12 @@ function Composer() {
   const setIsland = useIsland((s) => s.set);
 
   useEffect(() => {
-    // The window becomes focusable a moment after the workspace opens.
-    const id = window.setTimeout(() => ref.current?.focus(), 80);
-    return () => window.clearTimeout(id);
-  }, []);
+    if(!visible) return;
+    const focus=()=>ref.current?.focus();
+    window.addEventListener("jarvis:input-ready",focus);
+    const id=window.requestAnimationFrame(focus);
+    return ()=>{window.cancelAnimationFrame(id);window.removeEventListener("jarvis:input-ready",focus);};
+  }, [visible]);
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -127,7 +129,7 @@ function EmptyState() {
   );
 }
 
-export function WorkspaceView() {
+export const WorkspaceView=memo(function WorkspaceView({visible=true}:{visible?:boolean}) {
   const items = useAgent((s) => s.items);
   const phase = useAgent((s) => s.phase);
   const active = useAgent((s) => s.activeTurn);
@@ -140,8 +142,8 @@ export function WorkspaceView() {
 
   useLayoutEffect(() => {
     const el = body.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [items]);
+    if (visible && el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [items,visible]);
 
   return (
     <div className="view view-workspace">
@@ -218,7 +220,7 @@ export function WorkspaceView() {
       </div>
 
       <JobsStrip />
-      <Composer />
+      <Composer visible={visible}/>
     </div>
   );
-}
+});

@@ -47,6 +47,13 @@ pub const EVT_LEVEL: &str = "voice:level";
 pub const EVT_TRANSCRIPT: &str = "voice:transcript";
 pub const EVT_MODEL: &str = "voice:model";
 
+fn reusable_voice_key(owner: &str, realtime_url: &str) -> bool {
+    let Ok(mut url) = url::Url::parse(realtime_url) else { return false };
+    if url.scheme() != "wss" || url.set_scheme("https").is_err() { return false; }
+    let host = url.host_str().unwrap_or("");
+    host.ends_with(".aliyuncs.com") && !owner.is_empty() && owner == url.origin().ascii_serialization()
+}
+
 /// Tools exposed to the realtime model directly (fast, conversational).
 const VOICE_TOOLS: &[&str] = &[
     "system_volume",
@@ -129,6 +136,7 @@ pub struct VoiceMetrics {
     /// speech_started → playback cleared.
     pub last_barge_in_ms: Option<u64>,
     pub connect_ms: Option<u64>,
+    pub last_wake_ms: Option<u64>,
 }
 
 /// Commands to a running local session.
@@ -137,12 +145,24 @@ pub enum Ctl {
     Wake,
     /// Back to waiting for the name.
     Sleep,
+    /// End the conversation without the name listener: keep the opened
+    /// devices for a few minutes (the fifine takes ~5 s to open) but hear
+    /// nothing; the session closes by itself afterwards.
+    Rest,
+    /// Speak a line (reminders, timers) without starting a conversation.
+    Say(String),
 }
 
 struct Session {
+    id:u64,
     cancel: CancellationToken,
     /// Local engine only.
     ctl: Option<mpsc::UnboundedSender<Ctl>>,
+}
+
+fn finish_session(slot:&Mutex<Option<Session>>,id:u64)->bool {
+    let mut current=slot.lock();
+    if current.as_ref().is_some_and(|s|s.id==id) { current.take();true } else { false }
 }
 
 pub struct VoiceManager {
@@ -153,9 +173,11 @@ pub struct VoiceManager {
     state: Mutex<VoiceState>,
     pub metrics: Mutex<VoiceMetrics>,
     stt: Arc<local::SttEngine>,
+    speech: Arc<tts::SpeechEngine>,
     download: Mutex<Option<CancellationToken>>,
     /// Failed starts of the name listener in a row (retry back-off).
     listener_failures: std::sync::atomic::AtomicU32,
+    session_seq:std::sync::atomic::AtomicU64,
 }
 
 impl VoiceManager {
@@ -167,8 +189,10 @@ impl VoiceManager {
             state: Mutex::new(VoiceState::Idle),
             metrics: Mutex::new(VoiceMetrics::default()),
             stt: Arc::new(local::SttEngine::default()),
+            speech: Arc::new(tts::SpeechEngine::default()),
             download: Mutex::new(None),
             listener_failures: std::sync::atomic::AtomicU32::new(0),
+            session_seq:std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -208,6 +232,8 @@ impl VoiceManager {
         if let Some(s) = self.session.lock().take() {
             s.cancel.cancel();
         }
+        self.set_awake(false);
+        self.set_state(VoiceState::Idle,None,None);
     }
 
     /// End the conversation: back to waiting for the name when that is on,
@@ -218,8 +244,29 @@ impl VoiceManager {
             Some(ctl) if self.wake_word_on() => {
                 let _ = ctl.send(Ctl::Sleep);
             }
-            _ => self.stop(),
+            Some(ctl) => {
+                self.set_awake(false);
+                if ctl.send(Ctl::Rest).is_err() {
+                    self.stop();
+                }
+            }
+            None => self.stop(),
         }
+    }
+
+    /// Recognise a whole recording (16 kHz mono): Silero cuts it into
+    /// phrases, GigaAM reads each. Returns (start s, end s, text) per phrase.
+    /// Uses the same loaded model as the live voice session.
+    pub fn transcribe_long(&self, pcm: &[f32], progress: impl FnMut(f32) -> bool) -> AppResult<Vec<(f64, f64, String)>> {
+        let path = models::asset("gigaam-v3").expect("catalog").path();
+        transcribe_segments(pcm, |seg| self.stt.transcribe(&path, seg), progress)
+    }
+
+    /// Say a line through the open voice session (reminders, timers).
+    /// Returns false when no local session is running.
+    pub fn say(&self, text: &str) -> bool {
+        let ctl = self.session.lock().as_ref().and_then(|s| s.ctl.clone());
+        ctl.is_some_and(|c| c.send(Ctl::Say(text.to_string())).is_ok())
     }
 
     /// Shortcut, mic button: start a conversation or end it.
@@ -264,6 +311,12 @@ impl VoiceManager {
         }
         let realtime = settings.voice.engine == "realtime";
         let key = if realtime {
+            if settings.voice.reuse_llm_key {
+                let owner = self.app.state::<AppState>().store.kv_get(crate::ai::KEY_ORIGIN).unwrap_or_default();
+                if !reusable_voice_key(&owner, &settings.voice.realtime_url) {
+                    return Err(AppError::invalid("Для Qwen Omni нужен отдельный ключ Model Studio. Ключ DeepSeek используется для локального голосового режима."));
+                }
+            }
             let key_name = if settings.voice.reuse_llm_key { secrets::LLM_API_KEY } else { secrets::VOICE_API_KEY };
             Some(secrets::get(key_name)?.filter(|k| !k.trim().is_empty()).ok_or_else(|| {
                 AppError::invalid("Для голоса Qwen Omni нужен API-ключ Model Studio — добавьте его в настройках")
@@ -272,13 +325,14 @@ impl VoiceManager {
             None
         };
         let (ctl_tx, ctl_rx) = mpsc::unbounded_channel::<Ctl>();
+        let session_id=self.session_seq.fetch_add(1,std::sync::atomic::Ordering::Relaxed)+1;
         let cancel = {
             let mut s = self.session.lock();
             if s.is_some() {
                 return Ok(());
             }
             let c = CancellationToken::new();
-            *s = Some(Session { cancel: c.clone(), ctl: (!realtime).then_some(ctl_tx) });
+            *s = Some(Session { id:session_id,cancel: c.clone(), ctl: (!realtime).then_some(ctl_tx) });
             c
         };
         let dormant = dormant && !realtime;
@@ -292,7 +346,7 @@ impl VoiceManager {
                 Some(key) => me.run_realtime(settings.voice.clone(), key, cancel.clone()).await,
                 None => me.run_local(settings.voice.clone(), cancel.clone(), ctl_rx, dormant).await,
             };
-            *me.session.lock() = None;
+            if !finish_session(&me.session,session_id) { return; }
             let was_awake = me.awake.swap(false, std::sync::atomic::Ordering::Relaxed);
             match res {
                 Ok(()) | Err(AppError::Cancelled) => me.set_state(VoiceState::Idle, None, None),
@@ -300,9 +354,9 @@ impl VoiceManager {
                 // no error on the island, try again later.
                 Err(e) if !was_awake => {
                     let n = me.listener_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let wait = Duration::from_secs((30u64 << n.min(4)).min(300));
+                    let wait = Duration::from_secs((5u64 << n.min(3)).min(30));
                     tracing::warn!("name listener failed ({e}); retrying in {} s", wait.as_secs());
-                    me.set_state(VoiceState::Idle, None, None);
+                    me.set_state(VoiceState::Dormant, Some(format!("Не слышу микрофон. Повторяю подключение: {e}")), None);
                     let again = Arc::clone(&me);
                     tauri::async_runtime::spawn(async move {
                         tokio::time::sleep(wait).await;
@@ -312,6 +366,10 @@ impl VoiceManager {
                 Err(e) => {
                     tracing::warn!("voice session ended with error: {e}");
                     me.set_state(VoiceState::Error, Some(e.to_string()), None);
+                    if me.wake_word_on() {
+                        let again=me.clone();
+                        tauri::async_runtime::spawn(async move {tokio::time::sleep(Duration::from_secs(5)).await;again.apply_settings();});
+                    }
                 }
             }
         });
@@ -436,7 +494,7 @@ impl VoiceManager {
         let result: AppResult<()> = loop {
             tokio::select! {
                 _ = cancel.cancelled() => break Err(AppError::Cancelled),
-                Some(chunk) = mic.rx.recv() => {
+                Some(chunk) = mic.recv() => {
                     let bytes: Vec<u8> = chunk.iter().flat_map(|s| s.to_le_bytes()).collect();
                     let msg = json!({ "type": "input_audio_buffer.append", "audio": b64.encode(bytes) });
                     if let Err(e) = sink.send(Message::Text(msg.to_string().into())).await {
@@ -575,3 +633,56 @@ impl VoiceManager {
         result
     }
 }
+
+#[cfg(test)]
+mod key_tests {
+    use super::reusable_voice_key;
+    #[test]
+    fn old_session_finishing_cannot_remove_a_new_microphone_session() {
+        let slot=super::Mutex::new(Some(super::Session {id:2,cancel:Default::default(),ctl:None}));
+        assert!(!super::finish_session(&slot,1));
+        assert_eq!(slot.lock().as_ref().map(|s|s.id),Some(2));
+        assert!(super::finish_session(&slot,2));
+        assert!(slot.lock().is_none());
+    }
+    #[test]
+    fn deepseek_key_is_never_forwarded_to_qwen_realtime() {
+        let url = "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime";
+        assert!(!reusable_voice_key("https://api.deepseek.com", url));
+        assert!(!reusable_voice_key("", url));
+        assert!(reusable_voice_key("https://dashscope-intl.aliyuncs.com", url));
+        assert!(!reusable_voice_key("https://dashscope.aliyuncs.com", url));
+    }
+}
+
+/// Cut a recording into phrases with Silero and recognise each with `recognise`.
+pub fn transcribe_segments(
+    pcm: &[f32],
+    mut recognise: impl FnMut(&[f32]) -> AppResult<stt::Transcript>,
+    mut progress: impl FnMut(f32) -> bool,
+) -> AppResult<Vec<(f64, f64, String)>> {
+    let (asr, silero) = (models::asset("gigaam-v3").expect("catalog"), models::asset("silero-vad").expect("catalog"));
+        if !asr.installed() || !silero.installed() {
+            return Err(AppError::invalid("Для расшифровки нужна модель распознавания речи — скачайте её в Настройках → Голос"));
+        }
+        let mut vad = vad::Vad::new(&silero.path())?;
+        let mut out = Vec::new();
+        let tail = vec![0.0f32; 16_000 * 2];
+        let total = pcm.len().max(1);
+        for (i, chunk) in pcm.chunks(512).chain(tail.chunks(512)).enumerate() {
+            if i % 64 == 0 && !progress(((i * 512) as f32 / total as f32).min(1.0)) {
+                return Err(AppError::Cancelled);
+            }
+            for ev in vad.push(chunk) {
+                if let vad::VadEvent::Ended(seg) = ev {
+                    let start = vad.last_segment_start as f64 / 16_000.0;
+                    let end = start + seg.len() as f64 / 16_000.0;
+                    let t = recognise(&seg)?;
+                    if stt::is_meaningful(&t.text) {
+                        out.push((start, end, t.text));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }

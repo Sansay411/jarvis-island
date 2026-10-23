@@ -21,7 +21,6 @@ use super::audio::{AudioIo, SPEAKER_RATE};
 use super::phrases::PhraseSplitter;
 use super::models;
 use super::stt::{self, Recognizer, Transcript};
-use super::tts::Speaker;
 use super::vad::{Vad, VadEvent};
 use super::{Ctl, LevelEvent, TranscriptEvent, VoiceManager, VoiceState, EVT_LEVEL, EVT_TRANSCRIPT};
 use crate::agent::Agent;
@@ -48,7 +47,7 @@ impl SttEngine {
         Ok(())
     }
 
-    fn transcribe(&self, path: &Path, pcm: &[f32]) -> AppResult<Transcript> {
+    pub(super) fn transcribe(&self, path: &Path, pcm: &[f32]) -> AppResult<Transcript> {
         self.ensure(path)?;
         *self.last_used.lock() = Some(Instant::now());
         let g = self.loaded.lock();
@@ -69,15 +68,15 @@ impl SttEngine {
 /// speech pauses between sentences longer than the end-of-utterance silence.
 const CONTINUATION_GAP: Duration = Duration::from_millis(1300);
 
+fn continues_thought(gap:Duration,awaiting_first_audio:bool)->bool { awaiting_first_audio && gap<CONTINUATION_GAP }
+
 /// A conversation with no speech for this long goes back to waiting for
 /// the name (when that is on).
 const SLEEP_AFTER: Duration = Duration::from_secs(60);
 
 /// What JARVIS says when called by name alone.
 fn acknowledgement(vy: bool) -> String {
-    let options: &[&str] = if vy { &["Слушаю вас.", "Да?", "Я здесь."] } else { &["Слушаю.", "Да?", "Я здесь.", "Слушаю тебя."] };
-    let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos() as usize).unwrap_or(0);
-    options[n % options.len()].to_string()
+    if vy { "Слушаю вас." } else { "Слушаю." }.into()
 }
 
 /// GigaAM writes a lone «стоп» in Latin («Stop.») — seen live.
@@ -89,12 +88,42 @@ fn is_stop(text: &str) -> bool {
     !words.is_empty() && words.len() <= 2 && words.iter().all(|w| STOP_WORDS.contains(w))
 }
 
+/// Words that cut JARVIS off without its name.
+const INTERRUPT_WORDS: &[&str] = &["подожди", "погоди", "постой", "секунду", "нет", "не", "отмена", "тише", "замолчи", "wait"];
+
+/// Speech heard while JARVIS talks. Through speakers the microphone also
+/// hears JARVIS itself («Слушаю вас.» came back as a «command»), so only the
+/// user's own signals count: a stop word, the name, «подожди…», or the rest of
+/// the thought they were saying. In headphones there is no echo: any words do.
+fn is_reply_interruption(text: &str, continues: bool, headphones: bool) -> bool {
+    if !stt::is_meaningful(text) {
+        return false;
+    }
+    if headphones || continues || is_stop(text) || super::wake::addressed(text).is_some() {
+        return true;
+    }
+    let first: String = text.to_lowercase().chars().take_while(|c| c.is_alphabetic()).collect();
+    INTERRUPT_WORDS.contains(&first.as_str())
+}
+
+/// Silence after a conversation ended without the name listener: the
+/// devices stay open this long for an instant restart, then close.
+const REST_FOR: Duration = Duration::from_secs(180);
+
+/// While waiting for the name, long phrases (TV, a call, a talk in the room)
+/// are checked by their opening only: the name must open a call, and a full
+/// decode of 20 s of someone else's speech took 5 s and delayed the next
+/// «Джарвис».
+const DORMANT_FULL_DECODE: usize = 16_000 * 4;
+const DORMANT_HEAD: usize = 16_000 * 3;
+
 enum Ev {
     /// Result, when the phrase ended, whether it continues the previous one.
     Transcribed(AppResult<Transcript>, Instant, bool),
     Delta(u64, String),
     TurnDone(u64, AppResult<String>),
     Audio(u64, AppResult<Vec<i16>>),
+    WakePreview(u64, AppResult<Transcript>),
 }
 
 struct Pipeline {
@@ -125,10 +154,20 @@ struct Pipeline {
     reply: String,
     spoken_any: bool,
     speech_gen: u64,
+    synth_generation:Arc<std::sync::atomic::AtomicU64>,
     queued_phrases: usize,
     speech_end_at: Option<Instant>,
     first_audio_pending: bool,
     shown: VoiceState,
+    utterance_seq: u64,
+    preview_job: Option<u64>,
+    hearing_since: Option<Instant>,
+    playback_pending: bool,
+    /// Speech generation whose only queued line is «Слушаю»: words spoken
+    /// over it are the command it invited, not an interruption.
+    ack_gen: Option<u64>,
+    /// Ended without the name listener: hear nothing, close after `REST_FOR`.
+    resting_since: Option<Instant>,
 }
 
 impl Pipeline {
@@ -143,6 +182,7 @@ impl Pipeline {
     }
 
     fn wake(&mut self) {
+        self.resting_since = None;
         if !self.awake {
             self.awake = true;
             self.vm.set_awake(true);
@@ -155,6 +195,7 @@ impl Pipeline {
     fn sleep(&mut self) {
         self.hush();
         self.pending_request = None;
+        self.utterance_seq += 1;
         if self.turn_active {
             self.vm.app.state::<Arc<Agent>>().cancel();
         }
@@ -165,15 +206,32 @@ impl Pipeline {
         }
     }
 
+    /// The conversation is over and nobody listens for the name: keep the
+    /// devices warm, hear nothing.
+    fn rest(&mut self) {
+        self.sleep();
+        self.resting_since = Some(Instant::now());
+        tracing::info!("voice: resting, microphone kept open without listening");
+    }
+
+    /// The acknowledgement after the bare name is the only thing playing.
+    fn ack_only(&self) -> bool {
+        self.ack_gen == Some(self.speech_gen) && !self.turn_active
+    }
+
     /// Drop everything queued or playing.
     fn hush(&mut self) {
+        self.ack_gen = None;
         self.audio.clear_playback();
         self.speech_gen += 1;
+        self.synth_generation.store(self.speech_gen,std::sync::atomic::Ordering::Release);
         self.queued_phrases = 0;
+        self.playback_pending = false;
     }
 
     fn start_turn(&mut self, text: String) {
         self.turn_seq += 1;
+        self.ack_gen = None;
         self.turn_active = true;
         self.turn_text = text.clone();
         self.splitter = PhraseSplitter::default();
@@ -209,7 +267,7 @@ impl Pipeline {
             if self.wake_enabled {
                 self.sleep();
             } else {
-                self.ending = true;
+                self.rest();
             }
             return;
         }
@@ -283,36 +341,42 @@ impl VoiceManager {
         let p = model_path.clone();
         let preload = tokio::task::spawn_blocking(move || engine.ensure(&p));
 
-        let (voice, rate) = (cfg.tts_voice.clone(), cfg.tts_rate as f64);
+        let (voice, rate) = (cfg.tts_voice.clone(), cfg.tts_rate);
+        let speech=self.speech.clone();
         let speaker = tokio::task::spawn_blocking(move || {
-            Speaker::new(&voice, rate).or_else(|e| {
-                // A missing or broken neural voice must not silence JARVIS.
-                tracing::warn!("voice {voice:?} unavailable, using Windows voice: {e}");
-                Speaker::new(super::tts::WINDOWS_PREFIX, rate)
-            })
+            speech.get(&voice,rate)
         })
         .await
         .map_err(|e| AppError::internal(e.to_string()))??;
-        let speaker = Arc::new(speaker);
-        let (audio, mut mic) = AudioIo::start(&cfg.input_device, &cfg.output_device)?;
+        let (input,output)=(cfg.input_device.clone(),cfg.output_device.clone());
+        let opening=tokio::task::spawn_blocking(move || AudioIo::start(&input,&output));
+        let (audio, mut mic) = tokio::select! {
+            _=cancel.cancelled()=>return Err(AppError::Cancelled),
+            res=opening=>res.map_err(|e|AppError::internal(e.to_string()))??,
+        };
         self.listener_failures.store(0, std::sync::atomic::Ordering::Relaxed);
         let initial = if dormant { VoiceState::Dormant } else { VoiceState::Listening };
         self.set_state(initial, None, Some((&audio.input_device, &audio.output_device)));
-        tracing::info!(voice = %speaker.name(), dormant, "local voice session started");
+        tracing::info!(voice = %speaker.speaker.name(), dormant, "local voice session started");
         let address_vy = store.settings().persona.address == "vy";
+        let ready_speaker=speaker.clone();
+        tokio::task::spawn_blocking(move || {let _=ready_speaker.synthesize(&acknowledgement(address_vy));});
 
         let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<Ev>();
         // Phrases are synthesised one at a time, in order.
         let (synth_tx, mut synth_rx) = mpsc::unbounded_channel::<(u64, String)>();
+        let synth_generation=Arc::new(std::sync::atomic::AtomicU64::new(0));
         {
             let ev_tx = ev_tx.clone();
             let speaker = speaker.clone();
+            let generation=synth_generation.clone();
             tauri::async_runtime::spawn(async move {
                 while let Some((gen, phrase)) = synth_rx.recv().await {
+                    if gen!=generation.load(std::sync::atomic::Ordering::Acquire) { continue; }
                     let sp = speaker.clone();
                     let pcm = tokio::task::spawn_blocking(move || {
                         // A breath after each sentence, longer after «?» and «…».
-                        sp.synthesize(&phrase, SPEAKER_RATE).map(|mut pcm| {
+                        sp.synthesize(&phrase).map(|mut pcm| {
                             let pause = super::ru_speech::pause_after_ms(&phrase) as usize * SPEAKER_RATE as usize / 1000;
                             pcm.resize(pcm.len() + pause, 0);
                             pcm
@@ -348,12 +412,19 @@ impl VoiceManager {
             reply: String::new(),
             spoken_any: false,
             speech_gen: 0,
+            synth_generation,
             queued_phrases: 0,
             speech_end_at: None,
             first_audio_pending: false,
             shown: initial,
+            utterance_seq:0,preview_job:None,hearing_since:None,
+            playback_pending:false,
+            ack_gen: None,
+            resting_since: None,
         };
         let mut level_tick = tokio::time::interval(Duration::from_millis(33));
+        let mut last_mic=Instant::now();
+        let mut stale_seen=0;
         // A voice user is not looking at the screen: say it aloud when an
         // action waits for confirmation (given only by clicking on the island —
         // a misheard «да» must not send a message).
@@ -369,25 +440,32 @@ impl VoiceManager {
         let result: AppResult<()> = loop {
             tokio::select! {
                 _ = cancel.cancelled() => break Err(AppError::Cancelled),
-                chunk = mic.rx.recv() => {
+                chunk = mic.recv() => {
                     let Some(chunk) = chunk else { break Err(AppError::platform("Микрофон перестал отвечать")) };
+                    last_mic=Instant::now();
+                    if mic.stale_chunks!=stale_seen {
+                        tracing::warn!(dropped=mic.stale_chunks-stale_seen,"discarded delayed microphone audio");
+                        stale_seen=mic.stale_chunks;
+                        vad.reset();
+                    }
                     let pcm: Vec<f32> = chunk.iter().map(|s| *s as f32 / 32768.0).collect();
                     // Our own voice through speakers must be louder to count.
-                    vad.echo_guard = pl.audio.is_playing();
+                    vad.echo_guard = pl.audio.is_playing() && !pl.audio.headphones;
+                    vad.wake_preview = !pl.awake && pl.wake_enabled && pl.resting_since.is_none();
                     for event in vad.push(&pcm) { match event {
                         VadEvent::Started => {
-                            pl.hearing_continues = pl.last_ended.is_some_and(|e| e.elapsed() < CONTINUATION_GAP);
+                            pl.utterance_seq += 1;
+                            pl.hearing_since=Some(Instant::now());
+                            pl.hearing_continues = pl.last_ended.is_some_and(|e| continues_thought(e.elapsed(),pl.first_audio_pending));
                             if pl.awake {
                                 pl.last_activity = Instant::now();
                             }
-                            if pl.audio.is_playing() || pl.queued_phrases > 0 {
-                                let t = Instant::now();
-                                pl.hush();
-                                let ms = t.elapsed().as_millis() as u64;
-                                self.metrics.lock().last_barge_in_ms = Some(ms);
-                                tracing::info!(ms, "barge-in: speech cleared");
-                            }
+                            // VAD is only a candidate: breaths and room noise
+                            // must not destroy a spoken answer. Confirm below
+                            // after ASR returns meaningful words.
                         }
+                        // Resting: the microphone is open only to restart fast.
+                        VadEvent::Ended(_) if !pl.awake && (!pl.wake_enabled || pl.resting_since.is_some()) => {}
                         VadEvent::Ended(utterance) => {
                             pl.transcribing += 1;
                             let ended = Instant::now();
@@ -396,15 +474,46 @@ impl VoiceManager {
                             let engine = self.stt.clone();
                             let path = pl.model_path.clone();
                             let tx = ev_tx.clone();
+                            let dormant = !pl.awake;
                             tokio::task::spawn_blocking(move || {
-                                let res = engine.transcribe(&path, &utterance);
+                                let res = if dormant && utterance.len() > DORMANT_FULL_DECODE {
+                                    // Only a call by name matters here: decode the
+                                    // opening, and the rest only if it is one.
+                                    match engine.transcribe(&path, &utterance[..DORMANT_HEAD]) {
+                                        Ok(head) if super::wake::addressed(&head.text).is_none() => Ok(head),
+                                        _ => engine.transcribe(&path, &utterance),
+                                    }
+                                } else {
+                                    engine.transcribe(&path, &utterance)
+                                };
                                 let _ = tx.send(Ev::Transcribed(res, ended, continues));
                             });
                         }
+                        VadEvent::Preview(pcm) if !pl.awake && pl.wake_enabled && pl.preview_job.is_none() => {
+                            let seq=pl.utterance_seq;
+                            pl.preview_job=Some(seq);
+                            let engine=self.stt.clone();
+                            let path=pl.model_path.clone();
+                            let tx=ev_tx.clone();
+                            tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&pcm);let _=tx.send(Ev::WakePreview(seq,res)); });
+                        }
+                        VadEvent::Preview(_) => {}
                     } }
                     pl.refresh_state(&vad);
                 }
                 Some(ev) = ev_rx.recv() => match ev {
+                    Ev::WakePreview(seq,res) => {
+                        if pl.preview_job==Some(seq) { pl.preview_job=None; }
+                        if !pl.awake && seq==pl.utterance_seq && res.ok().is_some_and(|t| super::wake::addressed(&t.text).is_some()) {
+                            let ms=pl.hearing_since.map(|t|t.elapsed().as_millis() as u64).unwrap_or(0);
+                            tracing::info!(ms,"voice: early name detected");
+                            self.metrics.lock().last_wake_ms=Some(ms);
+                            pl.wake();
+                            // Heard: a short cue now, the answer after the command.
+                            pl.audio.play_pcm16(&AudioIo::chime());
+                            pl.refresh_state(&vad);
+                        }
+                    }
                     Ev::Transcribed(res, ended, continues) => {
                         pl.transcribing = pl.transcribing.saturating_sub(1);
                         match res {
@@ -412,8 +521,33 @@ impl VoiceManager {
                                 self.metrics.lock().last_stt_ms = Some(t.ms);
                                 let words = t.text.split_whitespace().count();
                                 tracing::info!(ms = t.ms, words, "speech recognised");
-                                if !stt::is_meaningful(&t.text) {
+                                let meaningful = stt::is_meaningful(&t.text);
+                                // Words over «Слушаю» (or the wake cue) are the command itself.
+                                let invited = pl.ack_only();
+                                let reply_busy = !invited && (pl.audio.is_playing() || pl.queued_phrases > 0);
+                                if invited && meaningful {
+                                    pl.hush();
+                                }
+                                if pl.awake && reply_busy && !is_reply_interruption(&t.text, continues, pl.audio.headphones) {
+                                    tracing::info!("ignored non-speech during reply");
+                                    pl.refresh_state(&vad);
+                                    continue;
+                                }
+                                if meaningful && pl.awake && reply_busy {
+                                    let t = Instant::now();
+                                    pl.hush();
+                                    let ms = t.elapsed().as_millis() as u64;
+                                    self.metrics.lock().last_barge_in_ms = Some(ms);
+                                    tracing::info!(ms, "barge-in: speech cleared after recognised words");
+                                }
+                                if !meaningful {
+                                    if reply_busy { tracing::info!("ignored non-speech during reply"); }
                                     tracing::debug!("ignored non-speech");
+                                } else if super::wake::addressed(&t.text).is_some_and(|a|a.only_name) {
+                                    pl.wake();
+                                    pl.emit_transcript("user",&t.text,true);
+                                    pl.say(acknowledgement(pl.address_vy));
+                                    pl.ack_gen = Some(pl.speech_gen);
                                 } else if !pl.awake {
                                     // Waiting for the name: phrases not addressed to JARVIS
                                     // are dropped here — not shown, logged or sent.
@@ -425,6 +559,7 @@ impl VoiceManager {
                                             if a.only_name {
                                                 let ack = acknowledgement(pl.address_vy);
                                                 pl.say(ack);
+                                                pl.ack_gen = Some(pl.speech_gen);
                                             } else {
                                                 pl.speech_end_at = Some(ended);
                                                 pl.first_audio_pending = true;
@@ -487,6 +622,7 @@ impl VoiceManager {
                         match res {
                             Ok(pcm) => {
                                 pl.audio.play_pcm16(&pcm);
+                                pl.playback_pending = true;
                                 if pl.first_audio_pending {
                                     pl.first_audio_pending = false;
                                     if let Some(t0) = pl.speech_end_at {
@@ -512,10 +648,19 @@ impl VoiceManager {
                     match c {
                         Ctl::Wake => pl.wake(),
                         Ctl::Sleep => pl.sleep(),
+                        Ctl::Rest => pl.rest(),
+                        Ctl::Say(line) => pl.say(line),
                     }
                     pl.refresh_state(&vad);
                 }
                 _ = level_tick.tick() => {
+                    if pl.playback_pending && !pl.turn_active && pl.queued_phrases == 0 && !pl.audio.is_playing() {
+                        tracing::info!(turn=pl.turn_seq,"voice playback drained");
+                        pl.playback_pending = false;
+                    }
+                    if last_mic.elapsed()>Duration::from_secs(5) {
+                        break Err(AppError::platform("Звук с микрофона перестал поступать. Переподключаю слушатель."));
+                    }
                     // Levels only drive the open voice view; none while waiting.
                     if pl.awake {
                         let _ = self.app.emit(EVT_LEVEL, LevelEvent { input: audio.levels.input(), output: audio.levels.output() });
@@ -525,7 +670,7 @@ impl VoiceManager {
                             pl.sleep();
                         }
                     }
-                    if pl.ending {
+                    if pl.ending || pl.resting_since.is_some_and(|t| t.elapsed() >= REST_FOR) {
                         break Ok(());
                     }
                     pl.refresh_state(&vad);
@@ -542,7 +687,7 @@ impl VoiceManager {
         let me = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(UNLOAD_AFTER + Duration::from_secs(1)).await;
-            if !me.is_active() {
+            if me.session.lock().is_none() {
                 let engine = me.stt.clone();
                 let _ = tokio::task::spawn_blocking(move || engine.unload_if_idle()).await;
             }
@@ -560,6 +705,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn background_speech_cannot_interrupt_but_stop_name_and_continuation_can() {
+        for text in ["", "Хм.", "Слушаю вас.", "Сегодня хорошая погода."] {
+            assert!(!is_reply_interruption(text, false, false), "unaddressed background interrupted: {text}");
+        }
+        for text in ["Стоп!", "Джарвис, подожди.", "Эй, Джар, какая громкость?"] {
+            assert!(is_reply_interruption(text, false, false), "explicit interruption ignored: {text}");
+        }
+        assert!(is_reply_interruption("и яркость", true, false));
+        assert!(!is_reply_interruption("", true, false));
+        assert!(is_reply_interruption("Подожди, не то.", false, false));
+        // Headphones: no echo, plain words interrupt; sounds still do not.
+        assert!(is_reply_interruption("Сегодня хорошая погода.", false, true));
+        assert!(!is_reply_interruption("Хм.", false, true));
+    }
+
+    #[test]
     fn stop_words() {
         assert!(is_stop("Стоп."));
         assert!(is_stop("Stop."));
@@ -567,5 +728,12 @@ mod tests {
         assert!(is_stop("Джарвис, хватит!"));
         assert!(!is_stop("Стоп, открой калькулятор"));
         assert!(!is_stop("Открой браузер"));
+    }
+
+    #[test]
+    fn a_new_command_after_a_spoken_answer_is_not_replayed_with_the_previous_action() {
+        assert!(continues_thought(Duration::from_millis(500),true));
+        assert!(!continues_thought(Duration::from_millis(500),false));
+        assert!(!continues_thought(Duration::from_secs(3),true));
     }
 }

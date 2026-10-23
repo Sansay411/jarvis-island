@@ -740,7 +740,7 @@ export default function SettingsApp() {
                   onChange={(e) => set((s) => ({ ...s, provider: { ...s.provider, baseUrl: e.target.value } }))}
                 />
               </Row>
-              <Row label="Модель" hint={preset.dashscope ? "qwen3.8-flash — быстрее, qwen3.8-max — сильнее." : undefined}>
+              <Row label="Модель" hint={preset.id === "deepseek" ? "V4.1 Flash: быстрые ответы, понимание экрана и поиск в интернете." : preset.dashscope ? "qwen3.8-flash: быстрее, qwen3.8-max: сильнее." : undefined}>
                 <input className="mono" value={draft.provider.model} spellCheck={false} onChange={(e) => set((s) => ({ ...s, provider: { ...s.provider, model: e.target.value } }))} />
               </Row>
               <Row label="Модель для изображений" hint="Пусто — та же модель.">

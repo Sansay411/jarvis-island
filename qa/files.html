@@ -1,0 +1,46 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><title>Jarvis files QA</title>
+<style>body{margin:0;background:#3a3f48;color:#fff;font-family:sans-serif}#controls{position:fixed;bottom:16px;left:16px;display:flex;flex-wrap:wrap;gap:8px;z-index:1000;max-width:96vw}button{padding:8px 10px}#root{width:640px;height:600px;margin:0 auto}</style>
+<div id="root"></div><div id="controls"><button data-k="video">Видео</button><button data-k="image">Картинка</button><button data-k="audio">Аудио</button><button data-k="many">3 файла</button><button id="timer">Таймер</button><button id="alert">Напоминание</button><output>Тестовая страница: данные поддельные, системные действия отключены</output></div>
+<script type="module">
+let callbackId=0;const callbacks=new Map();const listeners=new Map();
+window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener(){}};
+const SAMPLES={
+ video:{files:[{path:'C:\Users\qa\Видео\отпуск.mkv',name:'отпуск.mkv',ext:'mkv',kind:'video',size:734003200,width:1920,height:1080,durationS:754,pages:null,videoCodec:'h264',audioCodec:'aac',thumbnail:null}],
+  actions:[['telegram','В Избранное','Telegram, оригинал',1],['extract_audio','Звук','дорожка без перекодирования',1],['remux:mp4','В MP4','без перекодирования',1],['transcribe','Расшифровать','текст и субтитры на этом ПК',1],['frame','Кадр','PNG',0],['compress','Сжать','с потерями, для отправки',0],['open','Открыть',null,0],['reveal','Показать в папке',null,0],['copy_files','Копировать файл','вставить куда угодно',0],['copy_path','Копировать путь',null,0],['zip','В ZIP',null,0]]},
+ image:{files:[{path:'C:\Users\qa\IMG_2041.HEIC',name:'IMG_2041.HEIC',ext:'heic',kind:'image',size:2411724,width:4032,height:3024,durationS:null,pages:null,videoCodec:null,audioCodec:null,thumbnail:null}],
+  actions:[['chat','В чат','Джарвис посмотрит',1],['telegram','В Избранное','Telegram, оригинал',1],['convert:png','В PNG','без потерь при сохранении',1],['ocr','Текст','распознать и скопировать',1],['convert:jpg','В JPG','с потерями, для совместимости',0],['convert:webp','В WebP','без потерь',0],['to_pdf','В PDF',null,0]]},
+ audio:{files:[{path:'C:\Users\qa\Downloads\audio_2026-10-22.ogg',name:'audio_2026-10-22.ogg',ext:'ogg',kind:'audio',size:44964,width:null,height:null,durationS:11.3,pages:null,videoCodec:null,audioCodec:'opus',thumbnail:null}],
+  actions:[['transcribe','Расшифровать','текст на этом ПК',1],['telegram','В Избранное','Telegram, оригинал',1],['convert:flac','В FLAC','без потерь',1],['convert:wav','В WAV','без потерь',0],['convert:mp3','В MP3','с потерями, для совместимости',0]]},
+ many:{files:[1,2,3].map(i=>({path:'C:\qa\scan'+i+'.jpg',name:'scan'+i+'.jpg',ext:'jpg',kind:'image',size:900000*i,width:2000,height:3000,durationS:null,pages:null,videoCodec:null,audioCodec:null,thumbnail:null})),
+  actions:[['telegram','В Избранное','все оригиналы',1],['chat','В чат',null,1],['zip','В ZIP','один архив',1],['to_pdf','В один PDF','JPEG вставляется как есть',1],['copy_files','Копировать файлы','вставить куда угодно',0]]},
+};
+let current='video';let job=0;
+const emit=(event,payload)=>{for(const [id,ev] of listeners) if(ev===event) callbacks.get(id)?.({event,id:1,payload})};
+window.__TAURI_INTERNALS__={
+ metadata:{currentWindow:{label:'island'},currentWebview:{label:'island'}},
+ transformCallback(fn){const id=++callbackId;callbacks.set(id,fn);return id},
+ unregisterCallback(id){callbacks.delete(id)},
+ async invoke(cmd,args){
+  if(cmd==='plugin:event|listen'){listeners.set(args.handler,args.event);return args.handler}
+  if(cmd==='island_context')return {topCovered:false};
+  if(cmd==='audio_get')return {volume:30,muted:false,device:'QA'};
+  if(cmd==='brightness_list')return [];
+  if(cmd==='reminders_list')return [];
+  if(cmd==='files_inspect'){await new Promise(r=>setTimeout(r,250));const s=SAMPLES[current];return {files:s.files,actions:s.actions.map(([id,label,hint,p])=>({id,label,hint,primary:!!p})),ffmpeg:true}}
+  if(cmd==='files_action'){const id='qa-'+(++job);const action=args.action;let p=0;
+   const t=setInterval(()=>{p+=0.2;if(p<1)emit('files:job',{jobId:id,action,title:'Расшифровываю',state:'running',progress:p,message:null,outputs:[],text:null});else{clearInterval(t);
+    emit('files:job',action==='transcribe'?{jobId:id,action,title:'',state:'done',progress:1,message:'Расшифровка готова: 24 слова, текст в буфере',outputs:['C:\qa\audio.txt'],text:'Привет. Громкость двадцать восемь процентов. Открыл VS Code и YouTube. Может, сделаем перерыв? Ты сегодня с утра за компьютером?'}:{jobId:id,action,title:'',state:'done',progress:1,message:'Готово: отпуск.mp4',outputs:['C:\qa\отпуск.mp4'],text:null})}},300);return id}
+  return null;
+ }
+};
+const [{createRoot},React,{Island},{showFiles}]=await Promise.all([import('react-dom/client'),import('react'),import('/src/island/Island.tsx'),import('/src/store/files.ts')]);
+const files=await import('/src/store/files.ts');await files.startFilesFeed();
+await import('/src/styles/tokens.css');await import('/src/styles/base.css');
+createRoot(document.getElementById('root')).render(React.createElement(Island));
+document.querySelectorAll('[data-k]').forEach(b=>b.onclick=()=>{current=b.dataset.k;showFiles(SAMPLES[current].files.map(f=>f.path))});
+const rem=await import('/src/store/reminders.ts');await rem.startRemindersFeed();
+const files2=await import('/src/store/files.ts');
+document.getElementById('timer').onclick=()=>{files2.closeFiles();emit('reminders:changed',[{id:1,kind:'timer',text:'',dueAt:new Date(Date.now()+299000).toISOString(),createdAt:'',firedAt:null,done:false}])};
+document.getElementById('alert').onclick=()=>{files2.closeFiles();emit('reminders:changed',[{id:2,kind:'reminder',text:'Позвонить в банк насчёт карты',dueAt:new Date().toISOString(),createdAt:'',firedAt:new Date().toISOString(),done:false}])};
+setTimeout(()=>{showFiles(SAMPLES.video.files.map(f=>f.path))},400);
+</script></html>

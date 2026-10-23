@@ -2,7 +2,7 @@
 // code, inline code, bold and links rendered as plain text. Produces React
 // elements only — never raw HTML — because model output is untrusted.
 
-import { Fragment, type ReactNode } from "react";
+import { Fragment, memo, type ReactNode } from "react";
 
 function inline(text: string, keyBase: string): ReactNode[] {
   const out: ReactNode[] = [];
@@ -21,7 +21,7 @@ function inline(text: string, keyBase: string): ReactNode[] {
   return out;
 }
 
-export function Markdown({ text }: { text: string }) {
+export const Markdown=memo(function Markdown({ text }: { text: string }) {
   const blocks: ReactNode[] = [];
   const parts = text.split(/```/);
   parts.forEach((part, pi) => {
@@ -86,4 +86,4 @@ export function Markdown({ text }: { text: string }) {
     flushList();
   });
   return <div className="md">{blocks}</div>;
-}
+});

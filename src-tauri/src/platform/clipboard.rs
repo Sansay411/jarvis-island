@@ -73,6 +73,66 @@ pub fn read() -> AppResult<ClipboardContent> {
     Ok(out)
 }
 
+/// Put files on the clipboard as Explorer does (CF_HDROP, «copy»): Ctrl+V
+/// pastes them into Telegram, mail, chats or a folder.
+pub fn write_files(paths: &[String]) -> AppResult<()> {
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
+    use windows::Win32::UI::Shell::DROPFILES;
+    if paths.is_empty() {
+        return Err(AppError::invalid("Нет файлов"));
+    }
+    let mut list: Vec<u16> = Vec::new();
+    for p in paths {
+        let abs = std::path::absolute(p).map(|a| a.to_string_lossy().replace('/', "\\")).unwrap_or_else(|_| p.clone());
+        list.extend(abs.encode_utf16());
+        list.push(0);
+    }
+    list.push(0);
+    let header = std::mem::size_of::<DROPFILES>();
+    let _guard = Open::acquire()?;
+    unsafe {
+        EmptyClipboard()?;
+        let hg = GlobalAlloc(GMEM_MOVEABLE, header + list.len() * 2)?;
+        let p = GlobalLock(hg) as *mut u8;
+        if p.is_null() {
+            return Err(AppError::platform("Не удалось выделить память для буфера обмена"));
+        }
+        let df = DROPFILES { pFiles: header as u32, pt: POINT::default(), fNC: BOOL(0), fWide: BOOL(1) };
+        std::ptr::write_unaligned(p as *mut DROPFILES, df);
+        std::ptr::copy_nonoverlapping(list.as_ptr() as *const u8, p.add(header), list.len() * 2);
+        let _ = GlobalUnlock(hg);
+        SetClipboardData(CF_HDROP.0 as u32, Some(HANDLE(hg.0)))?;
+        // «Preferred DropEffect» = copy: the target must not move the original.
+        let fmt = RegisterClipboardFormatW(windows::core::w!("Preferred DropEffect"));
+        if fmt != 0 {
+            if let Ok(he) = GlobalAlloc(GMEM_MOVEABLE, 4) {
+                let pe = GlobalLock(he) as *mut u32;
+                if !pe.is_null() {
+                    *pe = 1; // DROPEFFECT_COPY
+                    let _ = GlobalUnlock(he);
+                    let _ = SetClipboardData(fmt, Some(HANDLE(he.0)));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Put back what was on the clipboard before (text or files).
+pub fn restore(prev: &ClipboardContent) -> AppResult<()> {
+    if !prev.files.is_empty() {
+        write_files(&prev.files)
+    } else if let Some(t) = &prev.text {
+        write_text(t)
+    } else {
+        let _guard = Open::acquire()?;
+        unsafe { EmptyClipboard()? };
+        Ok(())
+    }
+}
+
 pub fn write_text(text: &str) -> AppResult<()> {
     let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
     let _guard = Open::acquire()?;

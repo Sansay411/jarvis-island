@@ -3,7 +3,7 @@
 // rect on every state change so the transparent canvas never blocks clicks.
 
 import { AnimatePresence, motion, useMotionValue, useReducedMotion, useSpring, useTransform } from "motion/react";
-import { useEffect, useMemo, useRef, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { invoke } from "@tauri-apps/api/core";
 import { ipc, on } from "../lib/ipc";
@@ -18,11 +18,15 @@ import { CompactView } from "./views/CompactView";
 import { PeekView } from "./views/PeekView";
 import { DropView } from "./views/DropView";
 import { VoiceView } from "./views/VoiceView";
+import { FilesView } from "./views/FilesView";
+import { closeFiles, showFiles, useFiles } from "../store/files";
+import { NoticeView } from "./views/NoticeView";
+import { useAlerts, useNextTimer } from "../store/reminders";
 import { toggleVoice } from "../store/voice";
 import { WorkspaceView } from "../workspace/WorkspaceView";
 import "./island.css";
 
-const SHAPE_SPRING = { stiffness: 380, damping: 28, mass: 0.8 };
+const SHAPE_SPRING = { stiffness: 460, damping: 34, mass: 0.65 };
 
 /** Measure real frame pacing for ~700 ms after a shape change and log it
  *  natively (Settings → Diagnostics reads the log). Costs nothing at rest. */
@@ -62,7 +66,7 @@ function useIslandController() {
           // on its way to a title bar.
           // Over a maximised window the lip waits longer, so reaching for the
           // app's own title-bar controls doesn't pop the island open.
-          const dwell = useIsland.getState().topCovered ? 260 : 70;
+          const dwell = useIsland.getState().topCovered ? 150 : 45;
           enterTimer.current = window.setTimeout(() => set({ hovered: true }), dwell);
         } else {
           leaveTimer.current = window.setTimeout(() => set({ hovered: false }), 320);
@@ -87,9 +91,15 @@ function useIslandController() {
         if (p.type === "enter" || p.type === "over") set({ dragOver: true });
         else if (p.type === "leave") set({ dragOver: false });
         else if (p.type === "drop") {
-          const files = p.paths.map((path) => ({ path, name: path.split(/[\\/]/).pop() ?? path }));
-          useIsland.getState().addAttachments(files);
-          set({ dragOver: false, workspaceOpen: true });
+          // Into an open chat: attach. Elsewhere: offer actions for the file.
+          if (useIsland.getState().workspaceOpen) {
+            const files = p.paths.map((path) => ({ path, name: path.split(/[\\/]/).pop() ?? path }));
+            useIsland.getState().addAttachments(files);
+            set({ dragOver: false });
+          } else {
+            set({ dragOver: false });
+            if (p.paths.length > 0) void showFiles(p.paths);
+          }
         }
       }),
     );
@@ -97,14 +107,21 @@ function useIslandController() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         const s = useIsland.getState();
-        if (s.workspaceOpen) set({ workspaceOpen: false });
+        if (useFiles.getState().open) closeFiles();
+        else if (s.workspaceOpen) set({ workspaceOpen: false });
         else if (s.voiceOpen) void invoke("voice_stop");
         else if (s.hovered) set({ hovered: false });
       }
     };
     window.addEventListener("keydown", onKey);
 
+    let disposed = false;
+    void Promise.all(unsubs).then(() => {
+      if (!disposed) return invoke("island_frontend_ready");
+    }).catch(console.error);
+
     return () => {
+      disposed = true;
       window.removeEventListener("keydown", onKey);
       unsubs.forEach((u) => u.then((f) => f()));
     };
@@ -118,14 +135,14 @@ function useIslandController() {
       first.current = false;
       return;
     }
-    if (workspaceOpen) void ipc.island.beginInput();
+    if (workspaceOpen) void ipc.island.beginInput().then(() => window.dispatchEvent(new Event("jarvis:input-ready")));
     else void ipc.island.endInput(true);
   }, [workspaceOpen]);
 }
 
 function moodFor(mode: IslandMode, agentMood: EyeMood | null, hovered: boolean): EyeMood {
   if (agentMood) return agentMood;
-  if (mode === "drop") return "attentive";
+  if (mode === "drop" || mode === "files" || mode === "notice") return "attentive";
   if (mode === "peek" || mode === "workspace" || hovered) return "attentive";
   return "idle";
 }
@@ -138,16 +155,29 @@ export function Island() {
   const agentMood = useAgentMood();
   const reduced = useReducedMotion() || usePrefs((p) => p.reduceMotion);
 
-  const mode = resolveMode(st);
+  const filesOpen = useFiles((s) => s.open);
+  const filesH = useFiles((s) => s.height);
+  const alerting = useAlerts().length > 0;
+  const timer = useNextTimer();
+  const base = resolveMode(st);
+  // Drop and voice keep priority; a fired reminder shows over the rest.
+  const mode: IslandMode = base === "drop" ? "drop" : filesOpen ? "files" : base === "voice" ? "voice" : alerting ? "notice" : base;
+  const [workspaceWarm,setWorkspaceWarm]=useState(false);
+  useEffect(() => {
+    const id=window.requestIdleCallback(()=>setWorkspaceWarm(true),{timeout:1200});
+    return ()=>window.cancelIdleCallback(id);
+  },[]);
+  useEffect(()=>{ if(mode==="workspace") setWorkspaceWarm(true); },[mode]);
   const withMedia = hasActiveMedia(media);
   const jobRows = Math.min(2, useRunningJobs().length);
   const confirmPending = useAgent((s) => s.items.some((it) => it.kind === "tool" && it.status === "awaiting"));
   const dims = useMemo(
-    () => dimsFor(mode, { hasMedia: withMedia, hasActivity: jobRows > 0, jobRows, lip: st.topCovered, confirm: confirmPending }),
-    [mode, withMedia, jobRows, st.topCovered, confirmPending],
+    () => dimsFor(mode, { hasMedia: withMedia, hasActivity: jobRows > 0 || !!timer, jobRows, lip: st.topCovered, confirm: confirmPending, filesH }),
+    [mode, withMedia, jobRows, st.topCovered, confirmPending, filesH, !!timer],
   );
 
   const lip = mode === "compact" && st.topCovered;
+  const workspaceDims=dimsFor("workspace",{hasMedia:withMedia,hasActivity:jobRows>0,jobRows,lip:false,confirm:confirmPending});
   const spring = reduced ? REDUCED : SHAPE_SPRING;
   const w = useSpring(dims.w, spring);
   const h = useSpring(dims.h, spring);
@@ -197,23 +227,33 @@ export function Island() {
 
         <motion.div className="island-clip" style={{ borderBottomLeftRadius: r, borderBottomRightRadius: r }}>
           <AnimatePresence initial={false} mode="popLayout">
-            <motion.div
+            {mode !== "workspace" && <motion.div
               key={mode}
               className="island-content"
               style={{ width: dims.w, height: dims.h }}
-              // Blur reads beautifully on small views but re-rasterises every
-              // frame; the large workspace fades and settles without it.
-              initial={{ opacity: 0, filter: mode === "workspace" ? "none" : "blur(6px)", scale: 0.97 }}
-              animate={{ opacity: 1, filter: mode === "workspace" ? "none" : "blur(0px)", scale: 1, transition: { duration: 0.24, delay: 0.06, ease: [0.22, 1, 0.36, 1] } }}
-              exit={{ opacity: 0, filter: mode === "workspace" ? "none" : "blur(4px)", scale: 0.98, transition: { duration: 0.1 } }}
+              // Opacity/scale keep the small views on the compositor;
+              // the workspace stays mounted separately below.
+              initial={{ opacity: 0, scale: 0.99 }}
+              animate={{ opacity: 1, scale: 1, transition: { duration: reduced ? 0 : 0.14, ease: [0.22, 1, 0.36, 1] } }}
+              exit={{ opacity: 0, transition: { duration: reduced ? 0 : 0.07 } }}
             >
               {mode === "compact" && <CompactView />}
               {mode === "peek" && <PeekView />}
               {mode === "drop" && <DropView />}
               {mode === "voice" && <VoiceView />}
-              {mode === "workspace" && <WorkspaceView />}
-            </motion.div>
+              {mode === "files" && <FilesView />}
+              {mode === "notice" && <NoticeView />}
+            </motion.div>}
           </AnimatePresence>
+          {(workspaceWarm || mode==="workspace") && <motion.div
+            className="island-content"
+            style={{width:workspaceDims.w,height:workspaceDims.h,visibility:mode==="workspace"?"visible":"hidden",pointerEvents:mode==="workspace"?"auto":"none"}}
+            aria-hidden={mode!=="workspace"}
+            inert={mode!=="workspace"}
+            initial={false}
+            animate={{opacity:mode==="workspace"?1:0}}
+            transition={{duration:reduced?0:0.12}}
+          ><WorkspaceView visible={mode==="workspace"}/></motion.div>}
         </motion.div>
 
         <div className={`island-eyes${mode === "voice" ? " is-hidden" : ""}`} style={{ height: lip ? dims.h : BROW_H }}>

@@ -313,6 +313,11 @@ impl Island {
     }
 
     pub fn on_focus_lost(&self) {
+        // A queued WM_KILLFOCUS can arrive after a new open command has
+        // already restored the foreground. Do not close the fresh workspace.
+        if unsafe { GetForegroundWindow().0 as isize == self.hwnd } {
+            return;
+        }
         if self.input_mode.load(Ordering::Relaxed) {
             // Focus already moved elsewhere by the user: don't steal it back.
             let _ = self.end_input(false);

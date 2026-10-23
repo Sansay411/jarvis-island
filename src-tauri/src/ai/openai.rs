@@ -10,6 +10,7 @@
 //!  * usage arrives in a final chunk with empty `choices`.
 
 use std::time::{Duration, Instant};
+use std::sync::LazyLock;
 
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
@@ -40,12 +41,14 @@ impl std::fmt::Debug for OpenAiCompatible {
 }
 
 pub fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
+    // Reuse TLS connections across turns and Search/Fetch, not just steps.
+    static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
         .pool_idle_timeout(Duration::from_secs(90))
         .user_agent(concat!("JARVIS/", env!("CARGO_PKG_VERSION")))
         .build()
-        .expect("http client")
+        .expect("http client"));
+    CLIENT.clone()
 }
 
 fn wire_message(m: &ChatMessage) -> Value {
@@ -152,6 +155,7 @@ fn error_from_response(status: reqwest::StatusCode, body: &str, model: &str) -> 
         401 | 403 => AppError::Provider(
             "Провайдер отклонил API-ключ. Проверьте ключ и регион (ключи Model Studio привязаны к региону).".into(),
         ),
+        402 => AppError::Provider("На балансе провайдера недостаточно средств. Пополните баланс API.".into()),
         404 => AppError::Provider(format!(
             "Модель «{model}» или адрес API не найдены{}",
             detail.map(|d| format!(": {d}")).unwrap_or_default()
@@ -170,6 +174,61 @@ fn retryable(e: &AppError) -> bool {
 }
 
 impl OpenAiCompatible {
+    pub fn supports_web(&self) -> bool {
+        super::origin_of(&self.base_url) == "https://api.deepseek.com"
+    }
+
+    pub async fn deepseek_tool(&self, name: &str, args: Value, cancel: &CancellationToken) -> AppResult<Value> {
+        if !self.supports_web() || !matches!(name, "search" | "fetch") {
+            return Err(AppError::Unsupported("Поиск и чтение сайтов доступны с официальным API DeepSeek.".into()));
+        }
+        let key = self.api_key.as_deref().ok_or_else(|| AppError::invalid("Добавьте API-ключ DeepSeek"))?;
+        for attempt in 0..3 {
+            let response = tokio::select! {
+                _ = cancel.cancelled() => return Err(AppError::Cancelled),
+                r = self.client.post(format!("https://api.deepseek.com/v1/tools/{name}"))
+                    .bearer_auth(key).json(&args).timeout(Duration::from_secs(25)).send() => r?,
+            };
+            let status = response.status();
+            if matches!(status.as_u16(), 408 | 429 | 500..=599) && attempt < 2 {
+                let delay = response.headers().get(reqwest::header::RETRY_AFTER)
+                    .and_then(|s| s.to_str().ok()).and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(1 + attempt).clamp(1, 5);
+                tokio::select! {
+                    _ = cancel.cancelled() => return Err(AppError::Cancelled),
+                    _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
+                }
+                continue;
+            }
+            if !status.is_success() {
+                // Never echo provider bodies (they can contain private input).
+                return Err(match status.as_u16() {
+                    402 => AppError::Provider("Недостаточно средств на балансе DeepSeek API.".into()),
+                    401 => AppError::Provider("DeepSeek отклонил API-ключ.".into()),
+                    403 | 404 if name == "fetch" => AppError::Provider("Не удалось прочитать сайт: доступ ограничен или страница недоступна.".into()),
+                    429 => AppError::RateLimited(5),
+                    code => AppError::Provider(format!("DeepSeek {name}: HTTP {code}")),
+                });
+            }
+            let mut bytes = Vec::new();
+            let mut stream = response.bytes_stream();
+            loop {
+                let chunk = tokio::select! {
+                    _ = cancel.cancelled() => return Err(AppError::Cancelled),
+                    c = stream.next() => c,
+                };
+                let Some(chunk) = chunk else { break };
+                let chunk = chunk?;
+                if bytes.len() + chunk.len() > 2 * 1024 * 1024 {
+                    return Err(AppError::Provider("Ответ сайта слишком большой. Уточните запрос.".into()));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            return serde_json::from_slice(&bytes).map_err(|_| AppError::Provider("DeepSeek вернул некорректный ответ поиска.".into()));
+        }
+        unreachable!()
+    }
+
     pub fn new(base_url: String, api_key: Option<String>, model: String, dashscope: bool, temperature: f32) -> Self {
         OpenAiCompatible { client: http_client(), base_url, api_key, model, dashscope, temperature }
     }
@@ -198,6 +257,11 @@ impl OpenAiCompatible {
         }
         if self.dashscope {
             body["enable_thinking"] = Value::Bool(false);
+        }
+        if self.supports_web() {
+            // DeepSeek defaults to high reasoning; explicit non-thinking is
+            // essential for short desktop commands and valid tool history.
+            body["thinking"] = json!({ "type": "disabled" });
         }
         if let Some(n) = max_tokens {
             body["max_tokens"] = json!(n);
@@ -416,6 +480,22 @@ impl OpenAiCompatible {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deepseek_disables_default_high_thinking_without_affecting_other_providers() {
+        let client = OpenAiCompatible::new("https://api.deepseek.com/v1".into(), None, "deepseek-flash".into(), false, 0.3);
+        let messages = [ChatMessage::text(Role::User, "Привет")];
+        assert_eq!(client.body(&messages, &[], None)["thinking"]["type"], "disabled");
+        let other = OpenAiCompatible::new("https://example.com/v1".into(), None, "deepseek-flash".into(), false, 0.3);
+        assert!(other.body(&messages, &[], None).get("thinking").is_none());
+    }
+
+    #[tokio::test]
+    async fn web_api_never_sends_credentials_to_other_origins() {
+        let client = OpenAiCompatible::new("https://example.com/v1".into(), Some("must-not-send".into()), "m".into(), false, 0.3);
+        let result = client.deepseek_tool("search", json!({"query":"test"}), &CancellationToken::new()).await;
+        assert!(matches!(result, Err(AppError::Unsupported(_))));
+    }
 
     #[test]
     fn assistant_with_tool_calls_wire_format() {

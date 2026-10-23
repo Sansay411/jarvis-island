@@ -77,8 +77,24 @@ impl Recognizer {
 /// Recognised text worth sending to the agent: has letters, is not a lone
 /// filler sound.
 pub fn is_meaningful(text: &str) -> bool {
-    let letters: String = text.chars().filter(|c| c.is_alphabetic()).collect::<String>().to_lowercase();
-    !letters.is_empty() && !matches!(letters.as_str(), "а" | "э" | "м" | "мм" | "ммм" | "эм" | "хм" | "угу" | "ага")
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|w| !w.is_empty())
+        .any(|w| !is_filler(w))
+}
+
+/// «Хм», «ммм», «эээ», «Hmm» — sounds, not words (repeats collapsed).
+fn is_filler(word: &str) -> bool {
+    let mut collapsed = String::new();
+    for c in word.chars() {
+        if !collapsed.ends_with(c) {
+            collapsed.push(c);
+        }
+    }
+    matches!(
+        collapsed.as_str(),
+        "а" | "э" | "м" | "эм" | "хм" | "мх" | "угу" | "ага" | "мгм" | "ох" | "ах" | "m" | "hm" | "h" | "uh" | "um" | "ah" | "eh" | "oh"
+    )
 }
 
 #[cfg(test)]
@@ -91,5 +107,15 @@ mod tests {
         assert!(is_meaningful("Стоп!"));
         assert!(!is_meaningful(" ... "));
         assert!(!is_meaningful("Мм."));
+    }
+
+    #[test]
+    fn repeated_or_latin_fillers_are_not_commands_but_real_words_survive() {
+        for text in ["Хм-хм.", "Мм, эм, хм.", "MM", "Hmm."] {
+            assert!(!is_meaningful(text), "filler accepted as a command: {text}");
+        }
+        for text in ["Стоп!", "Нет.", "Мама", "А какая громкость?"] {
+            assert!(is_meaningful(text), "real words discarded: {text}");
+        }
     }
 }

@@ -14,6 +14,34 @@ fn main() {
     let cmd = args.first().map(String::as_str).unwrap_or("");
     let t = std::time::Instant::now();
     let out = match cmd {
+        // files-inspect A [B…] | files-run ACTION A [B…] — island file actions
+        "files-inspect" => match jarvis_lib::filekit::inspect(&args[1..]) {
+            Ok(mut i) => {
+                for f in &mut i.files {
+                    f.thumbnail = f.thumbnail.as_ref().map(|t| format!("<{} bytes>", t.len()));
+                }
+                serde_json::to_string_pretty(&i).unwrap()
+            }
+            Err(e) => format!("error: {e}"),
+        },
+        "files-transcribe" => {
+            let rec = jarvis_lib::voice::stt::Recognizer::load_default().expect("GigaAM");
+            let pcm = jarvis_lib::filekit::media::decode_pcm16k(std::path::Path::new(&args[1]), || false).expect("decode");
+            let t0 = std::time::Instant::now();
+            let phrases = jarvis_lib::voice::transcribe_segments(&pcm, |s| rec.transcribe(s), |_| true).expect("transcribe");
+            format!("{:.1} s audio in {} ms
+{}", pcm.len() as f64 / 16000.0, t0.elapsed().as_millis(), phrases.iter().map(|(s, e, t)| format!("[{} → {}] {t}", jarvis_lib::filekit::media::srt_time(*s), jarvis_lib::filekit::media::srt_time(*e))).collect::<Vec<_>>().join("
+"))
+        }
+        "files-run" => {
+            let mut progress = |_x: f32| true;
+            match jarvis_lib::filekit::execute(None, &args[2..], &args[1], &mut progress) {
+                Ok(o) => format!("{}
+outputs: {:?}
+text: {}", o.message, o.outputs, o.text.unwrap_or_default().chars().take(400).collect::<String>()),
+                Err(e) => format!("error: {e}"),
+            }
+        }
         "audio" => serde_json::to_string_pretty(&audio::get_state()).unwrap(),
         "sessions" => serde_json::to_string_pretty(&audio::list_app_sessions()).unwrap(),
         "devices" => serde_json::to_string_pretty(&audio::list_output_devices()).unwrap(),
@@ -87,7 +115,7 @@ recent={:?}",
                 let t0 = std::time::Instant::now();
                 let mut chunks = 0; let mut samples = 0; let mut max_in = 0f32;
                 while t0.elapsed() < std::time::Duration::from_millis(1500) {
-                    if let Ok(Some(c)) = tokio::time::timeout(std::time::Duration::from_millis(200), mic.rx.recv()).await { chunks += 1; samples += c.len(); }
+                    if let Ok(Some(c)) = tokio::time::timeout(std::time::Duration::from_millis(200), mic.recv()).await { chunks += 1; samples += c.len(); }
                     max_in = max_in.max(io.levels.input());
                 }
                 let tone: Vec<i16> = (0..9600).map(|i| ((i as f32 * 440.0 * 2.0 * std::f32::consts::PI / 24000.0).sin() * 0.05 * 32767.0) as i16).collect();

@@ -35,7 +35,10 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+# File actions on the island: ZIP archives (create/extract).
+zip = { version = "2.6", default-features = false, features = ["deflate"] }
+flate2 = "1"
 dirs = "6"
 cpal = "0.18"
 tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
@@ -49,11 +52,16 @@ url = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
+  "Data_Pdf",
   "Foundation",
   "Foundation_Collections",
+  "Globalization",
+  "Graphics_Imaging",
   "Media_Control",
   "Media_Core",
+  "Media_Ocr",
   "Media_SpeechSynthesis",
+  "Storage",
   "Storage_Streams",
   "Win32_Devices_Display",
   "Win32_Foundation",

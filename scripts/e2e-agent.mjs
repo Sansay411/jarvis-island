@@ -70,16 +70,16 @@ function check(name, cond, detail) {
 try {
   await sleep(600);
 
-  // 1. Simple request → one native tool → the model reports from the verified result.
+  // 1. Exact native command bypasses the model completely.
   let r = await ask("какая сейчас громкость");
   let tools = r.msgs.filter((m) => m.role === "tool");
   let final = r.msgs.filter((m) => m.role === "assistant").pop();
   check("single tool: status", r.task.status === "completed", r.task.status);
   check("single tool: ran and verified", tools.length === 1 && tools[0].toolOk === 1, tools.map((t) => t.toolTitle));
   // The summary depends on the machine: "Громкость N%" or "Звук выключен" when muted.
-  const volumeSummary = /^Проверил: (Громкость|Звук выключен)/;
+  const volumeSummary = /^(Громкость|Звук выключен)/;
   check("single tool: answer from verified result", volumeSummary.test(text(final)), text(final));
-  check("single tool: two model calls", r.task.steps === 2, r.task.steps);
+  check("single tool: one native step", r.task.steps === 1, r.task.steps);
 
   // 2. Parallel independent tools in one step.
   r = await ask("покажи громкость и яркость");
@@ -103,6 +103,7 @@ try {
 
   // Request shape sent to the provider.
   const reqs = fs.readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  check("single tool: zero network requests", reqs.every((q) => q.body.messages.filter((m) => m.role === "user").at(-1)?.content !== "какая сейчас громкость"), "");
   const first = reqs[0].body;
   check("request: streaming + tools", first.stream === true && Array.isArray(first.tools) && first.tools.length >= 20, `${first.tools?.length} tools`);
   check("request: system prompt with context", first.messages[0].role === "system" && first.messages[0].content.includes("Foreground window"), "");

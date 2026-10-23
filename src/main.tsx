@@ -21,18 +21,14 @@ if (label === "settings") {
   );
 } else {
   document.body.classList.add("island-window");
-  void Promise.all([import("./island/Island"), import("./store/system"), import("./store/agent"), import("./store/prefs"), import("./store/jobs"), import("./store/voice")]).then(
-    async ([{ Island }, system, agent, prefs, jobs, voice]) => {
+  void Promise.all([import("./island/Island"), import("./store/system"), import("./store/agent"), import("./store/prefs"), import("./store/jobs"), import("./store/voice"), import("./store/files"), import("./store/reminders")]).then(
+    async ([{ Island }, system, agent, prefs, jobs, voice, files, reminders]) => {
       root.render(
         <StrictMode>
           <Island />
         </StrictMode>,
       );
-      await prefs.startPrefsFeed();
-      await jobs.startJobsFeed();
-      await voice.startVoiceFeed();
-      await system.startSystemFeeds();
-      await agent.startAgentFeed().catch(() => undefined);
+      await Promise.allSettled([prefs.startPrefsFeed(),jobs.startJobsFeed(),voice.startVoiceFeed(),system.startSystemFeeds(),agent.startAgentFeed(),files.startFilesFeed(),reminders.startRemindersFeed()]);
     },
   );
 }

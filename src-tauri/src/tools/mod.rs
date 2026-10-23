@@ -8,11 +8,14 @@
 mod apps;
 mod browser;
 mod dev;
+mod file_actions;
 mod files;
 mod memory;
+mod reminders;
 pub mod screen;
 mod shell;
 mod system;
+mod web;
 
 pub use files::image_data_url;
 pub use screen::sensitive_text;
@@ -145,6 +148,9 @@ impl Registry {
             .chain(screen::tools())
             .chain(dev::tools())
             .chain(browser::tools())
+            .chain(web::tools())
+            .chain(file_actions::tools())
+            .chain(reminders::tools())
         {
             tools.insert(t.name, t);
         }
