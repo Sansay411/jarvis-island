@@ -18,6 +18,7 @@ pub mod models;
 pub mod neural;
 pub mod phrases;
 pub mod ru_speech;
+pub mod sapi;
 pub mod stt;
 pub mod tts;
 pub mod vad;

@@ -103,6 +103,11 @@ pub fn voices() -> AppResult<Vec<TtsVoice>> {
             out.push(TtsVoice { id: a.id.into(), name: format!("{} (Piper)", a.label.trim_start_matches("Piper ")), language: "ru-RU".into() });
         }
     }
+    // SAPI 5 engines (Silero…); the old Microsoft desktop voices duplicate
+    // the Windows ones listed below.
+    for v in super::sapi::voices().into_iter().filter(|v| v.russian() && !v.name.starts_with("Microsoft")) {
+        out.push(TtsVoice { id: format!("{}{}", super::sapi::PREFIX, v.id), name: format!("{} (SAPI)", v.name), language: "ru-RU".into() });
+    }
     out.extend(windows_voices()?.into_iter().map(|v| TtsVoice { id: format!("{WINDOWS_PREFIX}{}", v.id), name: format!("{} (Windows)", v.name), ..v }));
     Ok(out)
 }
@@ -112,6 +117,10 @@ pub fn voices() -> AppResult<Vec<TtsVoice>> {
 pub fn default_voice() -> String {
     if super::azure::configured() {
         return format!("{}{}", super::azure::PREFIX, super::azure::VOICES[0].0);
+    }
+    // A natural local engine (Silero) beats the bundled neural voices.
+    if let Some(v) = super::sapi::voices().into_iter().find(|v| v.russian() && v.name.to_lowercase().contains("silero")) {
+        return format!("{}{}", super::sapi::PREFIX, v.id);
     }
     if models::asset("supertonic-3").is_some_and(|a| a.installed()) {
         if let Some((sid, _)) = SUPERTONIC_SPEAKERS.first() {
@@ -130,6 +139,8 @@ pub enum Speaker {
     Windows(WindowsSpeaker),
     /// Microsoft neural voice; the local one speaks when the network fails.
     Azure(super::azure::AzureVoice, std::sync::OnceLock<Option<Box<Speaker>>>, f64),
+    /// A SAPI 5 engine such as Silero.
+    Sapi(super::sapi::SapiVoice),
 }
 
 /// The best local voice (no network needed).
@@ -154,6 +165,9 @@ impl Speaker {
         if let Some(id) = voice.strip_prefix(super::azure::PREFIX) {
             return Ok(Speaker::Azure(super::azure::AzureVoice::new(id, rate)?, std::sync::OnceLock::new(), rate));
         }
+        if let Some(id) = voice.strip_prefix(super::sapi::PREFIX) {
+            return Ok(Speaker::Sapi(super::sapi::SapiVoice::new(id, rate)?));
+        }
         if let Some(id) = voice.strip_prefix(WINDOWS_PREFIX) {
             return Ok(Speaker::Windows(WindowsSpeaker::new(id, rate)?));
         }
@@ -168,6 +182,7 @@ impl Speaker {
             Speaker::Neural(v) => v.name.clone(),
             Speaker::Windows(w) => format!("{} (Windows)", w.voice),
             Speaker::Azure(a, ..) => format!("{} (Microsoft)", a.voice),
+            Speaker::Sapi(s) => format!("{} (SAPI)", s.name),
         }
     }
 
@@ -179,6 +194,7 @@ impl Speaker {
         let (rate, mono) = match self {
             Speaker::Neural(v) => v.synthesize(text)?,
             Speaker::Windows(w) => w.synthesize_raw(text)?,
+            Speaker::Sapi(s) => (super::sapi::RATE, s.synthesize(text)?.iter().map(|v| *v as f32 / 32768.0).collect()),
             Speaker::Azure(a, fallback, speed) => match a.synthesize(text) {
                 Ok(pcm) if out_rate == 24_000 => return Ok(pcm),
                 Ok(pcm) => (24_000, pcm.iter().map(|s| *s as f32 / 32768.0).collect()),

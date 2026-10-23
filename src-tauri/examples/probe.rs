@@ -15,6 +15,17 @@ fn main() {
     let t = std::time::Instant::now();
     let out = match cmd {
         // files-inspect A [B…] | files-run ACTION A [B…] — island file actions
+        // sapi-voices | sapi-say TOKEN_ID TEXT OUT.wav — SAPI 5 engines (Silero…)
+        "sapi-voices" => jarvis_lib::voice::sapi::voices().iter().map(|v| format!("{} | {} | lang={}", v.name, v.id, v.languages)).collect::<Vec<_>>().join("
+"),
+        "sapi-say" => {
+            let v = jarvis_lib::voice::sapi::SapiVoice::new(&args[1], 1.1).expect("voice");
+            let t0 = std::time::Instant::now();
+            let pcm = v.synthesize(&args[2]).expect("synth");
+            let ms = t0.elapsed().as_millis();
+            std::fs::write(&args[3], jarvis_lib::voice::tts::wav_bytes(&pcm, 24_000)).unwrap();
+            format!("{} — {:.2} s of audio in {ms} ms", v.name, pcm.len() as f64 / 24000.0)
+        }
         "files-inspect" => match jarvis_lib::filekit::inspect(&args[1..]) {
             Ok(mut i) => {
                 for f in &mut i.files {
