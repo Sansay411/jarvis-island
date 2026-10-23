@@ -23,6 +23,7 @@ import { closeFiles, showFiles, useFiles } from "../store/files";
 import { NoticeView } from "./views/NoticeView";
 import { useAlerts, useNextTimer } from "../store/reminders";
 import { useStopwatch } from "../store/stopwatch";
+import { emote, useEmote } from "../store/emote";
 import { useClockRows } from "./views/ClocksStrip";
 import { toggleVoice } from "../store/voice";
 import { WorkspaceView } from "../workspace/WorkspaceView";
@@ -89,7 +90,11 @@ function useIslandController() {
     // Drops arrive from our own drop target (re-armed as a drag approaches)
     // and, until then, from Tauri's.
     const onFileDrag = (type: string, paths: string[]) => {
-      if (type === "enter" || type === "over") set({ dragOver: true });
+      if (type === "enter" || type === "over") {
+        // A file arrives: the eyes widen once.
+        if (!useIsland.getState().dragOver) emote("surprised");
+        set({ dragOver: true });
+      }
       else if (type === "leave") set({ dragOver: false });
       else if (type === "drop") {
         set({ dragOver: false });
@@ -138,6 +143,39 @@ function useIslandController() {
   }, [workspaceOpen]);
 }
 
+/** After 23:00 and before 6:00 the eyes rest heavy-lidded. */
+function useNight(): boolean {
+  const [night, setNight] = useState(() => isNight());
+  useEffect(() => {
+    const id = window.setInterval(() => setNight(isNight()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+  return night;
+}
+
+function isNight(): boolean {
+  const h = new Date().getHours();
+  return h >= 23 || h < 6;
+}
+
+/** True during the last ten seconds of the running timer. */
+function useTimerFinale(dueAt: string | null): boolean {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    setOn(false);
+    if (!dueAt) return;
+    const left = Date.parse(dueAt) - Date.now();
+    if (left <= 0) return;
+    const start = window.setTimeout(() => setOn(true), Math.max(0, left - 10_000));
+    const end = window.setTimeout(() => setOn(false), left);
+    return () => {
+      window.clearTimeout(start);
+      window.clearTimeout(end);
+    };
+  }, [dueAt]);
+  return on;
+}
+
 function moodFor(mode: IslandMode, agentMood: EyeMood | null, hovered: boolean): EyeMood {
   if (agentMood) return agentMood;
   if (mode === "drop" || mode === "files" || mode === "notice") return "attentive";
@@ -158,6 +196,9 @@ export function Island() {
   const alerting = useAlerts().length > 0;
   const timer = useNextTimer();
   const stopwatch = useStopwatch((s) => s.active);
+  const { emote: currentEmote, seq: emoteSeq } = useEmote();
+  const night = useNight();
+  const timerFinale = useTimerFinale(timer?.dueAt ?? null);
   const clockRows = useClockRows();
   const base = resolveMode(st);
   // Drop and voice keep priority; a fired reminder shows over the rest.
@@ -262,6 +303,13 @@ export function Island() {
             lookX={mode === "compact" ? zero : lookX}
             lookY={mode === "drop" ? 2 : 0}
             scale={lip ? 0.36 : 1}
+            emote={currentEmote}
+            emoteSeq={emoteSeq}
+            bob={media?.status === "playing"}
+            sleepy={night}
+            watch={timerFinale && (mode === "compact" || mode === "peek")}
+            alarm={mode === "notice"}
+            onBoop={lip ? undefined : () => emote("boop")}
           />
         </div>
       </motion.div>

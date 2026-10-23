@@ -12,6 +12,7 @@ import { listen } from "@tauri-apps/api/event";
 import { errorMessage } from "../lib/ipc";
 import { Eyes, type EyeMood } from "../island/Eyes";
 import "./settings.css";
+import { TitleBar } from "./TitleBar";
 
 interface Preset {
   id: string;
@@ -41,7 +42,7 @@ interface Settings {
   persona: { userName: string; address: "ty" | "vy"; style: "witty" | "warm" | "concise" };
   shortcuts: { workspace: string; voice: string };
   privacy: { storeHistory: boolean; allowScreen: boolean; allowClipboardRead: boolean };
-  agent: { maxSteps: number; confirmModerate: boolean; projectRoots: string[] };
+  agent: { maxSteps: number; confirmModerate: boolean; fullControl: boolean; projectRoots: string[] };
   launchAtStartup: boolean;
   reduceMotion: boolean;
 }
@@ -551,6 +552,7 @@ export default function SettingsApp() {
 
   return (
     <div className="settings">
+      <TitleBar />
       <aside className="rail">
         <Face
           mood={mood}
@@ -827,9 +829,17 @@ export default function SettingsApp() {
 
           {section === "behaviour" && (
             <Group>
-              <Row label="Спрашивать перед изменениями" hint="Чтение файлов, команды, меняющие проект, закрытие окон. Отправка сообщений, удаление и покупки подтверждаются всегда.">
-                <Switch label="Спрашивать перед изменениями" checked={draft.agent.confirmModerate} onChange={(v) => set((s) => ({ ...s, agent: { ...s.agent, confirmModerate: v } }))} />
+              <Row
+                label="Полное управление"
+                hint="Джарвис действует сам: запускает программы, правит файлы, закрывает окна, работает с кодом — без вопросов. Спросит только перед отправкой сообщений, нажатием «Удалить», «Купить», «Оплатить» и опасными командами терминала."
+              >
+                <Switch label="Полное управление" checked={draft.agent.fullControl} onChange={(v) => set((s) => ({ ...s, agent: { ...s.agent, fullControl: v } }))} />
               </Row>
+              {!draft.agent.fullControl && (
+                <Row label="Спрашивать перед изменениями" hint="Чтение файлов, команды, меняющие проект, закрытие окон. Отправка сообщений, удаление и покупки подтверждаются всегда.">
+                  <Switch label="Спрашивать перед изменениями" checked={draft.agent.confirmModerate} onChange={(v) => set((s) => ({ ...s, agent: { ...s.agent, confirmModerate: v } }))} />
+                </Row>
+              )}
               <Row label="Папки проектов" hint="По одной на строке. Помогают понять «мой проект».">
                 <textarea
                   className="mono"

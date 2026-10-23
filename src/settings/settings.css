@@ -17,6 +17,46 @@
   user-select: text;
 }
 
+/* ---------- window chrome ---------- */
+
+.titlebar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 50;
+  height: 36px;
+  display: flex;
+  justify-content: flex-end;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.titlebar-buttons {
+  display: flex;
+}
+.titlebar-btn {
+  width: 46px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  color: var(--text-3);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.titlebar-btn svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+}
+.titlebar-btn:hover {
+  background: var(--graphite-3);
+  color: var(--text-1);
+}
+.titlebar-btn.is-close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+
 .settings-loading {
   height: 100%;
   background: var(--obsidian);

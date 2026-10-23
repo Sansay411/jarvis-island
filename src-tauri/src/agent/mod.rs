@@ -137,6 +137,14 @@ fn ext_of(p: &str) -> String {
     Path::new(p).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
 }
 
+/// What stays confirmed even in «Полное управление»: these tools are rated
+/// high only for pressing «Отправить», «Удалить», «Купить» (a click, a key
+/// in a messenger, a UI action) or for a destructive shell command — things
+/// that cannot be taken back or reach other people.
+fn still_confirmed(tool: &str) -> bool {
+    matches!(tool, "input_key" | "input_click" | "ui_act" | "shell_run")
+}
+
 fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
@@ -576,6 +584,7 @@ impl Agent {
         if turn.attachments.is_empty() {
             let text = self.inner.lock().history.last().map(ChatMessage::joined_text).unwrap_or_default();
             if let Some(fast::Fast::Say(reply)) = fast::command(&text) {
+                let _ = self.app.emit_to(crate::platform::island::LABEL, "island:emote", fast::emote_for(reply));
                 if let Some(tx) = &turn.deltas { let _ = tx.send(reply.to_string()); }
                 self.emit(AgentEvent::TextDelta { turn_id:turn.id.clone(), text:reply.to_string() });
                 self.push_history(conversation_id, ChatMessage::text(Role::Assistant, reply.to_string()), None, None, persist);
@@ -828,9 +837,10 @@ impl Agent {
         let store = self.state().store.clone();
         let args_text = truncate_chars(&args.to_string(), 4000);
 
+        let full = turn.settings.agent.full_control;
         let needs_confirm = match risk {
-            Risk::High => true,
-            Risk::Moderate => turn.settings.agent.confirm_moderate && !self.inner.lock().approved_tools.contains(tool.name),
+            Risk::High => !full || still_confirmed(tool.name),
+            Risk::Moderate => !full && turn.settings.agent.confirm_moderate && !self.inner.lock().approved_tools.contains(tool.name),
             Risk::Low => false,
         };
         if needs_confirm {

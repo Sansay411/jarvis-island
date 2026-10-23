@@ -199,13 +199,16 @@ pub struct AgentSettings {
     pub max_steps: u32,
     /// Ask before moderate-risk actions (file edits, coding agents, closing windows).
     pub confirm_moderate: bool,
+    /// «Полное управление»: act without asking, except for what cannot be
+    /// taken back or leaves the PC (see `Agent::still_confirmed`).
+    pub full_control: bool,
     /// Folders the user works in; used to resolve "my project".
     pub project_roots: Vec<String>,
 }
 
 impl Default for AgentSettings {
     fn default() -> Self {
-        AgentSettings { max_steps: 24, confirm_moderate: true, project_roots: Vec::new() }
+        AgentSettings { max_steps: 24, confirm_moderate: true, full_control: false, project_roots: Vec::new() }
     }
 }
 

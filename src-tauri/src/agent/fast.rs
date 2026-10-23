@@ -63,6 +63,16 @@ fn small_talk(s: &str) -> Option<&'static str> {
     })
 }
 
+/// The face that goes with a small-talk reply (see `store/emote.ts`).
+pub fn emote_for(reply: &str) -> &'static str {
+    match reply {
+        "Обращайтесь." => "wink",
+        "Рад стараться." => "heart",
+        "Да, слушаю." => "surprised",
+        _ => "laugh",
+    }
+}
+
 /// Sites said by name: opened directly instead of looking for an app.
 fn site(s: &str) -> Option<&'static str> {
     Some(match s {

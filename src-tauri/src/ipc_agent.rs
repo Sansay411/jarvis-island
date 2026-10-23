@@ -220,6 +220,10 @@ pub async fn settings_open(app: AppHandle) -> AppResult<()> {
         .center()
         .theme(Some(tauri::Theme::Dark))
         .background_color(tauri::webview::Color(8, 8, 10, 255))
+        // Our own title band (TitleBar.tsx) in the page's colour; the
+        // shadow keeps Windows' rounded corners and resize edges.
+        .decorations(false)
+        .shadow(true)
         .build()?;
     Ok(())
 }
