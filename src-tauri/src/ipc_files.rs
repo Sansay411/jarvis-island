@@ -42,6 +42,29 @@ pub fn reminder_done(reminders: State<'_, Arc<crate::reminders::Reminders>>, id:
     reminders.done(id)
 }
 
+/// «+1 мин» / «−1 мин» on a running timer.
+#[tauri::command]
+pub fn reminder_extend(reminders: State<'_, Arc<crate::reminders::Reminders>>, id: i64, seconds: i64) -> AppResult<()> {
+    reminders.extend(id, seconds)
+}
+
+#[tauri::command]
+pub fn stopwatch_get(sw: State<'_, Arc<crate::stopwatch::Stopwatch>>) -> crate::stopwatch::Status {
+    sw.status()
+}
+
+/// Buttons on the island: start | pause | lap | reset.
+#[tauri::command]
+pub fn stopwatch_action(sw: State<'_, Arc<crate::stopwatch::Stopwatch>>, action: String) -> crate::stopwatch::Status {
+    match action.as_str() {
+        "start" => sw.start(),
+        "pause" => sw.pause(),
+        "lap" => sw.lap(),
+        "reset" => sw.reset(),
+        _ => sw.status(),
+    }
+}
+
 /// «Позже»: fire again in `minutes`.
 #[tauri::command]
 pub fn reminder_snooze(reminders: State<'_, Arc<crate::reminders::Reminders>>, id: i64, minutes: u32) -> AppResult<()> {

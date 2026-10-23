@@ -294,7 +294,7 @@ pub fn launch(app: &AppEntry, timeout: Duration) -> AppResult<LaunchOutcome> {
     let name_lc = app.name.to_lowercase();
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(100));
         let windows = winmgr::list_windows();
         let matches_app = |w: &WindowInfo| match &exe {
             Some(e) => w.process.to_lowercase() == *e,

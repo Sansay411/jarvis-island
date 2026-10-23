@@ -218,13 +218,17 @@ async fn open_target(_: ToolCtx, args: Value) -> AppResult<ToolOutput> {
         return Ok(ToolOutput::fail(format!("Путь не существует: {target}"), json!({ "exists": false })));
     }
     platform::blocking(move || {
-        let before = winmgr::foreground_window().map(|w| w.hwnd);
+        let before = winmgr::foreground_window().map(|w| (w.hwnd, w.title));
         apps::shell_open(&target, None, None)?;
-        // Verification: something new should come to the foreground.
-        for _ in 0..12 {
-            std::thread::sleep(Duration::from_millis(250));
+        // Verification: something new comes to the foreground — or, for a
+        // link opened in the browser already in front, its title changes.
+        // Polled finely: the answer waits for this.
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(100));
             if let Some(fg) = winmgr::foreground_window() {
-                if Some(fg.hwnd) != before {
+                let same_window = before.as_ref().is_some_and(|(h, _)| *h == fg.hwnd);
+                let retitled = kind == "url" && before.as_ref().is_some_and(|(_, t)| *t != fg.title);
+                if !same_window || retitled {
                     return Ok(ToolOutput::ok(
                         format!("Открыто: {target} → «{}»", fg.title),
                         json!({ "kind": kind, "window": fg, "verified": true }),

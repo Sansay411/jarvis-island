@@ -196,6 +196,23 @@ impl Reminders {
         Ok(())
     }
 
+    /// «+1 мин» on a running timer: push its end later (or earlier).
+    pub fn extend(&self, id: i64, seconds: i64) -> AppResult<()> {
+        let r = self.list().into_iter().find(|r| r.id == id).ok_or_else(|| AppError::not_found("Таймер не найден"))?;
+        let due = DateTime::parse_from_rfc3339(&r.due_at).map_err(|e| AppError::internal(e.to_string()))?.with_timezone(&Utc);
+        let new_due = (due + chrono::Duration::seconds(seconds)).max(Utc::now() + chrono::Duration::seconds(1));
+        if !self.store().reschedule_reminder(id, &new_due.to_rfc3339())? {
+            return Err(AppError::not_found("Таймер не найден"));
+        }
+        self.changed();
+        Ok(())
+    }
+
+    /// The running timer that ends first.
+    pub fn next_timer(&self) -> Option<Reminder> {
+        self.list().into_iter().filter(|r| r.kind == "timer" && r.fired_at.is_none()).min_by(|a, b| a.due_at.cmp(&b.due_at))
+    }
+
     fn fire(&self, r: &Reminder) {
         match self.store().mark_fired(r.id) {
             Ok(true) => {}

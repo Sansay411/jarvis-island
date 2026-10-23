@@ -19,6 +19,7 @@ pub mod jobs;
 mod ipc_agent;
 pub mod platform;
 pub mod reminders;
+pub mod stopwatch;
 mod shortcuts;
 mod state;
 pub mod store;
@@ -193,6 +194,7 @@ pub fn run() {
             app.manage(Arc::new(filekit::FileJobs::default()));
             let reminders = reminders::Reminders::new(app.handle().clone());
             app.manage(reminders.clone());
+            app.manage(Arc::new(stopwatch::Stopwatch::new(app.handle().clone())));
             reminders.spawn();
             // Start listening for «Джарвис» if that is on (after start-up settles).
             {
@@ -280,6 +282,9 @@ pub fn run() {
             ipc_files::reminders_list,
             ipc_files::reminder_done,
             ipc_files::reminder_snooze,
+            ipc_files::reminder_extend,
+            ipc_files::stopwatch_get,
+            ipc_files::stopwatch_action,
             ipc_agent::agent_status,
             ipc_agent::agent_send,
             ipc_agent::agent_cancel,

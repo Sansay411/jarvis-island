@@ -11,7 +11,6 @@ export interface DroppedFile {
 
 interface IslandStore {
   hovered: boolean;
-  dragApproach: boolean;
   dragOver: boolean;
   workspaceOpen: boolean;
   voiceOpen: boolean;
@@ -24,7 +23,6 @@ interface IslandStore {
 
 export const useIsland = create<IslandStore>((set) => ({
   hovered: false,
-  dragApproach: false,
   dragOver: false,
   workspaceOpen: false,
   voiceOpen: false,
@@ -39,10 +37,11 @@ export const useIsland = create<IslandStore>((set) => ({
     }),
 }));
 
-export function resolveMode(s: Pick<IslandStore, "hovered" | "dragOver" | "dragApproach" | "workspaceOpen" | "voiceOpen">): IslandMode {
-  // A file dragged toward the island opens the drop zone at once: the window
-  // is transparent, and Windows only delivers a drop over opaque pixels.
-  if (s.dragOver || s.dragApproach) return "drop";
+export function resolveMode(s: Pick<IslandStore, "hovered" | "dragOver" | "workspaceOpen" | "voiceOpen">): IslandMode {
+  // Only a real file drag opens the drop zone: the native drop catcher
+  // reports «enter» once Windows hands it files, so a plain press-and-drag
+  // near the island changes nothing.
+  if (s.dragOver) return "drop";
   // A live voice session takes over; the workspace returns when it ends.
   if (s.voiceOpen) return "voice";
   if (s.workspaceOpen) return "workspace";

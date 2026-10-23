@@ -5,6 +5,7 @@ import { usePrefs } from "../../store/prefs";
 import { MediaCard } from "./MediaCard";
 import { QuickControls } from "./QuickControls";
 import { JobsStrip } from "./JobsStrip";
+import { ClocksStrip } from "./ClocksStrip";
 import { toggleVoice } from "../../store/voice";
 
 export function PeekView() {
@@ -27,6 +28,7 @@ export function PeekView() {
         </div>
       </div>
       <JobsStrip />
+      <ClocksStrip />
       {withMedia ? (
         <div className="peek-grid">
           <MediaCard media={media} />

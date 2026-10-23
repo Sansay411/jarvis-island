@@ -83,6 +83,9 @@ pub struct ToolSpec {
 pub struct Usage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// Prompt tokens served from the provider's prefix cache (DeepSeek
+    /// `prompt_cache_hit_tokens`, OpenAI `prompt_tokens_details.cached_tokens`).
+    pub cached_tokens: u64,
 }
 
 /// Incremental output while a completion streams.

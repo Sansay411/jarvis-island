@@ -28,6 +28,8 @@ export interface DimsContext {
   hasActivity: boolean;
   /** Running background jobs shown as rows in the peek view (max 2). */
   jobRows: number;
+  /** Timer and stopwatch rows in the peek view (max 3). */
+  clockRows?: number;
   /** A maximised window's title bar is under the island: rest as a thin lip. */
   lip: boolean;
   /** A confirmation is waiting (shown inline in the voice view). */
@@ -42,7 +44,10 @@ export function dimsFor(mode: IslandMode, ctx: DimsContext): Dims {
       if (ctx.lip) return { w: 132, h: LIP_H };
       return { w: ctx.hasMedia || ctx.hasActivity ? 212 : 168, h: BROW_H };
     case "peek":
-      return ctx.hasMedia ? { w: 452, h: 136 + ctx.jobRows * 30 } : { w: 412, h: 104 + ctx.jobRows * 30 };
+    {
+      const rows = ctx.jobRows + (ctx.clockRows ?? 0);
+      return ctx.hasMedia ? { w: 452, h: 136 + rows * 30 } : { w: 412, h: 104 + rows * 30 };
+    }
     case "voice":
       return { w: 380, h: ctx.confirm ? 178 : 132 };
     case "drop":

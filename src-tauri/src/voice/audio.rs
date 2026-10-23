@@ -419,16 +419,32 @@ impl AudioIo {
 
     /// A soft two-note cue (~150 ms) played the moment JARVIS hears its
     /// name, before the command is finished and recognised.
+    /// Heard the name: a short rising cue.
     pub fn chime() -> Vec<i16> {
+        Self::tones(&[(880.0, 60.0), (1318.5, 90.0)], 0.16)
+    }
+
+    /// Back to waiting for the name: the same cue, falling.
+    pub fn chime_down() -> Vec<i16> {
+        Self::tones(&[(1318.5, 60.0), (880.0, 90.0)], 0.12)
+    }
+
+    /// Something did not work: two low notes.
+    pub fn chime_error() -> Vec<i16> {
+        Self::tones(&[(392.0, 90.0), (311.1, 140.0)], 0.14)
+    }
+
+    /// Sine notes (Hz, ms) one after another at `gain` of full scale.
+    fn tones(notes: &[(f32, f32)], gain: f32) -> Vec<i16> {
         let rate = SPEAKER_RATE as f32;
         let mut out = Vec::new();
-        for (freq, ms) in [(880.0f32, 60.0f32), (1318.5, 90.0)] {
+        for &(freq, ms) in notes {
             let n = (rate * ms / 1000.0) as usize;
             for i in 0..n {
                 let t = i as f32 / rate;
                 // Raised-cosine envelope: no clicks at either end.
                 let env = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / n as f32).cos();
-                out.push((0.16 * env * (2.0 * std::f32::consts::PI * freq * t).sin() * i16::MAX as f32) as i16);
+                out.push((gain * env * (2.0 * std::f32::consts::PI * freq * t).sin() * i16::MAX as f32) as i16);
             }
         }
         out

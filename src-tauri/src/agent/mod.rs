@@ -32,6 +32,7 @@ use events::{AgentEvent, EVT_AGENT};
 
 /// Messages of history sent to the model (older ones stay in SQLite).
 const HISTORY_WINDOW: usize = 48;
+const HISTORY_BLOCK: usize = 16;
 
 /// Result given to tool calls that never ran (the turn was cancelled or
 /// failed first), so the model does not take them for done — it once told
@@ -450,10 +451,16 @@ impl Agent {
 
     /// History window for the model: starts at a user message (never at an
     /// orphaned tool result) and keeps images only in the newest message.
-    fn context(&self, system: String) -> Vec<ChatMessage> {
+    /// `turn_context` is attached to the request that started the turn, so
+    /// everything before it — system prompt and history — stays the same
+    /// prefix from step to step and turn to turn, and the provider's cache
+    /// reads it instead of the model.
+    fn context(&self, system: String, turn_context: &str) -> Vec<ChatMessage> {
         let i = self.inner.lock();
         let h = &i.history;
-        let mut start = h.len().saturating_sub(HISTORY_WINDOW);
+        // The window moves in blocks: shifting by one message every turn
+        // would change the prefix and defeat the cache each time.
+        let mut start = h.len().saturating_sub(HISTORY_WINDOW) / HISTORY_BLOCK * HISTORY_BLOCK;
         while start < h.len() && h[start].role != Role::User {
             start += 1;
         }
@@ -468,6 +475,9 @@ impl Agent {
             } else {
                 out.push(m.clone());
             }
+        }
+        if let Some(request) = out.iter_mut().rposition(|m| m.role == Role::User && !m.joined_text().starts_with("[tool-image]")) {
+            out[request].parts.push(Part::Text { text: format!("\n\n{turn_context}") });
         }
         answer_dangling_calls(out)
     }
@@ -557,13 +567,21 @@ impl Agent {
         let mut specs = self.registry.specs();
         if !client.supports_web() { specs.retain(|s| !matches!(s.name.as_str(), "web_search" | "web_fetch")); }
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        // Gathered once: the same text on every step keeps the cache warm.
+        let turn_context = prompt::turn_context(&turn.settings, &self.state().history);
         let vision_model = turn.settings.provider.vision_model.trim().to_string();
         let persist = turn.settings.privacy.store_history;
         // Whole-utterance matching only. Execute through the normal registry
         // so cancellation, verification, events and risk policy stay intact.
         if turn.attachments.is_empty() {
             let text = self.inner.lock().history.last().map(ChatMessage::joined_text).unwrap_or_default();
-            if let Some(call) = fast::command(&text) {
+            if let Some(fast::Fast::Say(reply)) = fast::command(&text) {
+                if let Some(tx) = &turn.deltas { let _ = tx.send(reply.to_string()); }
+                self.emit(AgentEvent::TextDelta { turn_id:turn.id.clone(), text:reply.to_string() });
+                self.push_history(conversation_id, ChatMessage::text(Role::Assistant, reply.to_string()), None, None, persist);
+                return Ok(());
+            }
+            if let Some(fast::Fast::Call(call)) = fast::command(&text) {
                 *steps += 1;
                 let mut request = ChatMessage::text(Role::Assistant, "");
                 request.tool_calls.push(call.clone());
@@ -603,9 +621,9 @@ impl Agent {
             let system = {
                 let st = self.state();
                 let memories = st.store.memories().unwrap_or_default();
-                prompt::system_prompt(&turn.settings, &st.history, &memories, &names, turn.voice)
+                prompt::system_prompt(&turn.settings, &memories, &names, turn.voice)
             };
-            let messages = self.context(system);
+            let messages = self.context(system, &turn_context);
             let use_vision = !vision_model.is_empty() && messages.last().is_some_and(ChatMessage::has_images);
             let model = if use_vision { client.with_model(&vision_model) } else { client.clone() };
 

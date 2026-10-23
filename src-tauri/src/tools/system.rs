@@ -284,7 +284,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "wait",
-            description: "Wait a few seconds (0.2–15) before verifying something that takes time, e.g. an app starting.",
+            description: "Wait (0.2–15 s) before verifying something that takes time. Every second here is a second the user waits: 0.5–1 s is enough after a click or a key; app_launch and open_target already wait for their window.",
             schema: object(json!({ "seconds": { "type": "number", "minimum": 0.2, "maximum": 15 } }), &["seconds"]),
             risk: low,
             title: |a| format!("Подождать {} с", a.get("seconds").and_then(Value::as_f64).unwrap_or(1.0)),

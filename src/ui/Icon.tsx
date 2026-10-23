@@ -106,6 +106,12 @@ const paths = {
   ),
   bolt: <path d="M11 2.8 4.8 11h4.6L9 17.2 15.2 9h-4.6Z" />,
   chevron: <path d="m8 5.5 4.5 4.5L8 14.5" />,
+  timer: (
+    <>
+      <circle cx="10" cy="11" r="6" />
+      <path d="M10 8v3.2l2 1.3M8.2 3h3.6" />
+    </>
+  ),
 } as const;
 
 export type IconName = keyof typeof paths;

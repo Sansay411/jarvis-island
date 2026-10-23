@@ -387,6 +387,11 @@ impl OpenAiCompatible {
                 usage = Some(Usage {
                     prompt_tokens: u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
                     completion_tokens: u.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0),
+                    cached_tokens: u
+                        .get("prompt_cache_hit_tokens")
+                        .or_else(|| u.pointer("/prompt_tokens_details/cached_tokens"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
                 });
             }
             let Some(choice) = chunk.pointer("/choices/0") else { continue };

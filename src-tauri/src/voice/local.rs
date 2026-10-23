@@ -86,6 +86,39 @@ const FILLERS: &[&str] = &["Одну секунду.", "Ага.", "Сейчас.
 /// How long a turn may stay silent before a filler is said.
 const FILLER_AFTER: Duration = Duration::from_millis(700);
 
+/// A long task is narrated: what JARVIS is doing, said while it does it,
+/// so a ten-second job is not ten seconds of silence. Not before this much
+/// of the turn has passed (quick answers stay quiet)…
+const PROGRESS_AFTER: Duration = Duration::from_millis(1500);
+/// …and not more often than this.
+const PROGRESS_EVERY: Duration = Duration::from_secs(3);
+
+/// What to say when a tool starts; `None` for quick or silent ones. Fixed
+/// lines are cached after the first time, so they cost nothing.
+fn progress_line(tool: &str, args: &serde_json::Value) -> Option<String> {
+    let arg = |k: &str| args.get(k).and_then(serde_json::Value::as_str).unwrap_or("").trim().to_string();
+    Some(match tool {
+        "app_launch" => match arg("query") {
+            q if !q.is_empty() && q.chars().count() <= 30 => format!("Запускаю {q}."),
+            _ => "Запускаю приложение.".into(),
+        },
+        "open_target" => "Открываю.".into(),
+        "web_search" => "Ищу в интернете.".into(),
+        "web_fetch" | "browser_read_page" => "Читаю страницу.".into(),
+        "browser_tabs" | "windows_list" => "Смотрю, что открыто.".into(),
+        "browser_switch_tab" | "window_action" => "Переключаюсь.".into(),
+        "screen_capture" | "ui_inspect" | "context_snapshot" => "Смотрю на экран.".into(),
+        "ui_act" | "input_click" => "Нажимаю.".into(),
+        "input_type" => "Печатаю.".into(),
+        "files_search" => "Ищу файлы.".into(),
+        "file_read" => "Читаю файл.".into(),
+        "file_action" => "Работаю с файлом.".into(),
+        "shell_run" | "terminal_open" => "Выполняю команду.".into(),
+        "coding_agent_run" => "Передаю задачу агенту.".into(),
+        _ => return None,
+    })
+}
+
 /// GigaAM writes a lone «стоп» in Latin («Stop.») — seen live.
 const STOP_WORDS: &[&str] = &["стоп", "хватит", "отмена", "отмени", "замолчи", "тихо", "стой", "stop"];
 
@@ -180,11 +213,36 @@ struct Pipeline {
     resting_since: Option<Instant>,
     /// When to say a filler if the answer hasn't started by then.
     filler_at: Option<Instant>,
+    /// When the running turn started and when it was last narrated.
+    turn_started: Option<Instant>,
+    last_progress: Option<Instant>,
 }
 
 impl Pipeline {
     fn emit_transcript(&self, role: &'static str, text: &str, is_final: bool) {
         let _ = self.vm.app.emit(EVT_TRANSCRIPT, TranscriptEvent { role, text: text.to_string(), is_final });
+    }
+
+    /// A line that is not the answer (filler, progress): queued like speech,
+    /// but the answer still counts as unspoken.
+    fn say_aside(&mut self, phrase: String) {
+        self.queued_phrases += 1;
+        let _ = self.synth_tx.send((self.speech_gen, phrase));
+    }
+
+    /// A tool started in the running voice turn: narrate it if the turn is
+    /// already long and nothing else is being said.
+    fn on_tool_started(&mut self, tool: &str, args: &serde_json::Value) {
+        let long = self.turn_started.is_some_and(|t| t.elapsed() >= PROGRESS_AFTER);
+        let spaced = self.last_progress.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY);
+        if !self.turn_active || !long || !spaced || self.queued_phrases > 0 || self.audio.is_playing() {
+            return;
+        }
+        if let Some(line) = progress_line(tool, args) {
+            self.last_progress = Some(Instant::now());
+            self.filler_at = None;
+            self.say_aside(line);
+        }
     }
 
     fn say(&mut self, phrase: String) {
@@ -213,6 +271,7 @@ impl Pipeline {
         }
         if self.awake {
             self.awake = false;
+            self.audio.play_pcm16(&AudioIo::chime_down());
             self.vm.set_awake(false);
             tracing::info!("voice: waiting for the name");
         }
@@ -251,6 +310,8 @@ impl Pipeline {
         self.reply.clear();
         self.spoken_any = false;
         self.filler_at = Some(Instant::now() + FILLER_AFTER);
+        self.turn_started = Some(Instant::now());
+        self.last_progress = None;
         let seq = self.turn_seq;
         let (dtx, mut drx) = mpsc::unbounded_channel::<String>();
         let fwd = self.ev_tx.clone();
@@ -442,6 +503,8 @@ impl VoiceManager {
             utterance_seq:0,preview_job:None,hearing_since:None,
             playback_pending:false,
             filler_at: None,
+            turn_started: None,
+            last_progress: None,
             ack_gen: None,
             resting_since: None,
         };
@@ -452,10 +515,13 @@ impl VoiceManager {
         // action waits for confirmation (given only by clicking on the island —
         // a misheard «да» must not send a message).
         let (confirm_tx, mut confirm_rx) = mpsc::unbounded_channel::<String>();
+        let (tool_tx, mut tool_rx) = mpsc::unbounded_channel::<(String, serde_json::Value)>();
         let confirm_listener = self.app.listen(crate::agent::events::EVT_AGENT, move |e| {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(e.payload()) {
                 if v["type"] == "confirmationRequired" {
                     let _ = confirm_tx.send(v["title"].as_str().unwrap_or_default().to_string());
+                } else if v["type"] == "toolStarted" {
+                    let _ = tool_tx.send((v["tool"].as_str().unwrap_or_default().to_string(), v["args"].clone()));
                 }
             }
         });
@@ -589,7 +655,9 @@ impl VoiceManager {
                                                 pl.on_request(t.text, false);
                                             }
                                         }
-                                        None => tracing::debug!(words, "voice: not addressed"),
+                                        // The text stays in the local log only: it shows how
+                                        // the recogniser hears the name when a call is missed.
+                                        None => tracing::debug!(words, text = %t.text.chars().take(80).collect::<String>(), "voice: not addressed"),
                                     }
                                 } else {
                                     pl.emit_transcript("user", &t.text, true);
@@ -631,6 +699,7 @@ impl VoiceManager {
                             Err(e) => {
                                 let msg = e.to_string();
                                 if pl.pending_request.is_none() && !msg.contains("отмен") && !msg.to_lowercase().contains("cancel") {
+                                    pl.audio.play_pcm16(&AudioIo::chime_error());
                                     pl.say(format!("Не получилось: {}", super::phrases::speakable(&msg)));
                                 }
                             }
@@ -669,6 +738,10 @@ impl VoiceManager {
                     }
                     Ev::Audio(..) => {}
                 },
+                Some((tool, args)) = tool_rx.recv() => {
+                    pl.on_tool_started(&tool, &args);
+                    pl.refresh_state(&vad);
+                }
                 Some(title) = confirm_rx.recv() => {
                     if pl.turn_active {
                         pl.say(format!("Нужно ваше подтверждение: {}. Нажмите «Разрешить» или «Отклонить» на острове.", super::phrases::speakable(&title)));
@@ -688,10 +761,8 @@ impl VoiceManager {
                     if pl.turn_active && pl.filler_at.is_some_and(|t| Instant::now() >= t) {
                         pl.filler_at = None;
                         if pl.queued_phrases == 0 && !pl.audio.is_playing() {
-                            // Not `say`: a filler doesn't count as the answer.
-                            pl.queued_phrases += 1;
-                            let line = FILLERS[pl.turn_seq as usize % FILLERS.len()].to_string();
-                            let _ = pl.synth_tx.send((pl.speech_gen, line));
+                            pl.last_progress = Some(Instant::now());
+                            pl.say_aside(FILLERS[pl.turn_seq as usize % FILLERS.len()].to_string());
                         }
                     }
                     if pl.playback_pending && !pl.turn_active && pl.queued_phrases == 0 && !pl.audio.is_playing() {

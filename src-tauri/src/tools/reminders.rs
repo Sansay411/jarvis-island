@@ -43,18 +43,53 @@ async fn reminders_list(ctx: ToolCtx, _args: Value) -> AppResult<ToolOutput> {
             json!({ "id": r.id, "kind": r.kind, "text": r.text, "due": due, "fired": r.fired_at.is_some() })
         })
         .collect();
-    let summary = if items.is_empty() { "Активных таймеров и напоминаний нет".to_string() } else { format!("Активных: {}", items.len()) };
+    let reminders = ctx.app.state::<Arc<Reminders>>();
+    let summary = match reminders.next_timer() {
+        Some(t) => {
+            let left = chrono::DateTime::parse_from_rfc3339(&t.due_at).map(|d| (d.with_timezone(&Utc) - Utc::now()).num_seconds().max(0) as u64).unwrap_or(0);
+            let more = if items.len() > 1 { format!(" Всего активных: {}.", items.len()) } else { String::new() };
+            format!("До конца таймера {}.{more}", spoken_duration(left.max(1)))
+        }
+        None if items.is_empty() => "Активных таймеров и напоминаний нет".to_string(),
+        None => format!("Активных напоминаний: {}", items.len()),
+    };
     Ok(ToolOutput::ok(summary, json!({ "items": items })))
 }
 
 async fn reminder_cancel(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
-    let id = args.get("id").and_then(Value::as_i64).ok_or_else(|| AppError::invalid("Нужен id"))?;
     let reminders = ctx.app.state::<Arc<Reminders>>();
+    // No id: «отмени таймер» means the running timer that ends first.
+    let id = match args.get("id").and_then(Value::as_i64) {
+        Some(id) => id,
+        None => reminders.next_timer().map(|t| t.id).ok_or_else(|| AppError::not_found("Запущенных таймеров нет"))?,
+    };
     if !reminders.list().iter().any(|r| r.id == id) {
         return Err(AppError::not_found("Такого активного напоминания нет"));
     }
     reminders.done(id)?;
     Ok(ToolOutput::ok("Отменил", json!({ "id": id })))
+}
+
+async fn stopwatch(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
+    let sw = ctx.app.state::<Arc<crate::stopwatch::Stopwatch>>();
+    let s = match str_arg(&args, "action") {
+        "start" => sw.start(),
+        "pause" => sw.pause(),
+        "lap" => sw.lap(),
+        "reset" => sw.reset(),
+        _ => sw.status(),
+    };
+    let time = crate::stopwatch::spoken(s.elapsed_ms());
+    let summary = match str_arg(&args, "action") {
+        "start" if s.accumulated_ms == 0 => "Секундомер запущен".to_string(),
+        "start" => format!("Секундомер продолжает: {time}"),
+        "pause" if s.active => format!("Секундомер остановлен: {time}"),
+        "lap" if s.active => format!("Круг {}: {time}", s.laps.len()),
+        "reset" => "Секундомер сброшен".to_string(),
+        _ if !s.active => "Секундомер не запущен".to_string(),
+        _ => format!("На секундомере {time}{}", if s.running { "" } else { ", он на паузе" }),
+    };
+    Ok(ToolOutput::ok(summary, json!({ "running": s.running, "elapsed_ms": s.elapsed_ms(), "laps": s.laps })))
 }
 
 pub fn tools() -> Vec<Tool> {
@@ -92,13 +127,29 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "reminder_cancel",
-            description: "Cancel (or mark done) a timer or reminder by id from reminders_list.",
-            schema: object(json!({ "id": { "type": "integer" } }), &["id"]),
+            description: "Cancel (or mark done) a timer or reminder by id from reminders_list; without id — the running timer that ends first.",
+            schema: object(json!({ "id": { "type": "integer" } }), &[]),
             risk: low,
             title: |_| "Отменить напоминание".into(),
             timeout: Duration::from_secs(5),
             parallel_safe: false,
             handler: handler(reminder_cancel),
+        },
+        Tool {
+            name: "stopwatch",
+            description: "The stopwatch on the island: start (or resume), pause, lap, reset, status (elapsed time).",
+            schema: object(json!({ "action": { "type": "string", "enum": ["start", "pause", "lap", "reset", "status"] } }), &["action"]),
+            risk: low,
+            title: |a| match str_arg(a, "action") {
+                "start" => "Запустить секундомер".into(),
+                "pause" => "Остановить секундомер".into(),
+                "lap" => "Отметить круг".into(),
+                "reset" => "Сбросить секундомер".into(),
+                _ => "Секундомер".into(),
+            },
+            timeout: Duration::from_secs(5),
+            parallel_safe: false,
+            handler: handler(stopwatch),
         },
     ]
 }

@@ -22,6 +22,8 @@ import { FilesView } from "./views/FilesView";
 import { closeFiles, showFiles, useFiles } from "../store/files";
 import { NoticeView } from "./views/NoticeView";
 import { useAlerts, useNextTimer } from "../store/reminders";
+import { useStopwatch } from "../store/stopwatch";
+import { useClockRows } from "./views/ClocksStrip";
 import { toggleVoice } from "../store/voice";
 import { WorkspaceView } from "../workspace/WorkspaceView";
 import "./island.css";
@@ -51,19 +53,13 @@ const REDUCED = { stiffness: 1000, damping: 100, mass: 1 };
 function useIslandController() {
   const enterTimer = useRef<number | undefined>(undefined);
   const leaveTimer = useRef<number | undefined>(undefined);
-  const approachTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     const set = useIsland.getState().set;
     const unsubs: Array<Promise<() => void>> = [];
 
     unsubs.push(
-      on("island:pointer", ({ inside, dragApproach }) => {
-        // Keep the drop zone a moment after the pointer reaches it: the native
-        // side stops reporting «approach» once the cursor is inside the shape.
-        window.clearTimeout(approachTimer.current);
-        if (dragApproach) set({ dragApproach: true });
-        else approachTimer.current = window.setTimeout(() => set({ dragApproach: false }), 900);
+      on("island:pointer", ({ inside }) => {
         window.clearTimeout(enterTimer.current);
         window.clearTimeout(leaveTimer.current);
         if (inside) {
@@ -94,9 +90,9 @@ function useIslandController() {
     // and, until then, from Tauri's.
     const onFileDrag = (type: string, paths: string[]) => {
       if (type === "enter" || type === "over") set({ dragOver: true });
-      else if (type === "leave") set({ dragOver: false, dragApproach: false });
+      else if (type === "leave") set({ dragOver: false });
       else if (type === "drop") {
-        set({ dragOver: false, dragApproach: false });
+        set({ dragOver: false });
         // Into an open chat: attach. Elsewhere: offer actions for the file.
         if (useIsland.getState().workspaceOpen) {
           useIsland.getState().addAttachments(paths.map((path) => ({ path, name: path.split(/[\\/]/).pop() ?? path })));
@@ -161,6 +157,8 @@ export function Island() {
   const filesH = useFiles((s) => s.height);
   const alerting = useAlerts().length > 0;
   const timer = useNextTimer();
+  const stopwatch = useStopwatch((s) => s.active);
+  const clockRows = useClockRows();
   const base = resolveMode(st);
   // Drop and voice keep priority; a fired reminder shows over the rest.
   const mode: IslandMode = base === "drop" ? "drop" : filesOpen ? "files" : base === "voice" ? "voice" : alerting ? "notice" : base;
@@ -174,8 +172,8 @@ export function Island() {
   const jobRows = Math.min(2, useRunningJobs().length);
   const confirmPending = useAgent((s) => s.items.some((it) => it.kind === "tool" && it.status === "awaiting"));
   const dims = useMemo(
-    () => dimsFor(mode, { hasMedia: withMedia, hasActivity: jobRows > 0 || !!timer, jobRows, lip: st.topCovered, confirm: confirmPending, filesH }),
-    [mode, withMedia, jobRows, st.topCovered, confirmPending, filesH, !!timer],
+    () => dimsFor(mode, { hasMedia: withMedia, hasActivity: jobRows > 0 || !!timer || stopwatch, jobRows, clockRows, lip: st.topCovered, confirm: confirmPending, filesH }),
+    [mode, withMedia, jobRows, clockRows, st.topCovered, confirmPending, filesH, !!timer, stopwatch],
   );
 
   const lip = mode === "compact" && st.topCovered;
