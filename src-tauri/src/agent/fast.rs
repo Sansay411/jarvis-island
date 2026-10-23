@@ -32,15 +32,13 @@ fn bare(text: &str) -> String {
         if let Some(rest) = ["эй, ", "эй ", "слушай, ", "слушай ", "а ", "ну "].iter().find_map(|lead| s.strip_prefix(lead)) {
             s = rest.trim().to_string();
         }
-        for name in NAMES {
-            if let Some(rest) = s.strip_prefix(name).filter(|rest| rest.is_empty() || rest.starts_with([',', ' ', '.', ':', '!'])) {
-                s = rest.trim_start_matches([',', ' ', '.', ':', '!']).trim().to_string();
-                break;
-            }
-            if let Some(rest) = s.strip_suffix(name).filter(|rest| rest.ends_with([',', ' '])) {
-                s = rest.trim_end_matches([',', ' ']).trim().to_string();
-                break;
-            }
+        // The same ear for the name as the voice wake-up (`voice::wake`).
+        let first = s.split([',', ' ', '.', ':', '!']).next().unwrap_or("").to_string();
+        let last = s.rsplit([',', ' ']).next().unwrap_or("").to_string();
+        if !first.is_empty() && (NAMES.contains(&first.as_str()) || crate::voice::wake::is_name(&first)) {
+            s = s[first.len()..].trim_start_matches([',', ' ', '.', ':', '!']).trim().to_string();
+        } else if !last.is_empty() && last.len() < s.len() && (NAMES.contains(&last.as_str()) || crate::voice::wake::is_name(&last)) {
+            s = s[..s.len() - last.len()].trim_end_matches([',', ' ']).trim().to_string();
         }
         if s == before {
             break;

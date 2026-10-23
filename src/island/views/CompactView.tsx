@@ -36,6 +36,13 @@ function StopwatchTime() {
   );
 }
 
+/** The running timer, else the stopwatch, else nothing. */
+export function ClockChip() {
+  const timer = useNextTimer();
+  const stopwatch = useStopwatch((s) => s.active);
+  return timer ? <TimerLeft t={timer} /> : stopwatch ? <StopwatchTime /> : null;
+}
+
 /** Resting state: the eyes, a tiny cover when something plays, and a ring
  *  while background work (coding agents) is running. */
 export function CompactView() {

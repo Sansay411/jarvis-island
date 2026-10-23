@@ -45,7 +45,7 @@ fn words(text: &str) -> Vec<String> {
     for w in raw {
         if let Some(prev) = out.last_mut() {
             let joined = format!("{prev}{w}");
-            if matches!(joined.as_str(), "джарвис" | "джарвиз" | "джарвиса") {
+            if prev.chars().count() <= 4 && (matches!(joined.as_str(), "джарвис" | "джарвиз" | "джарвиса") || sounds_like_name(&joined)) {
                 *prev = joined;
                 continue;
             }
@@ -55,9 +55,54 @@ fn words(text: &str) -> Vec<String> {
     out
 }
 
+/// What is left of the name when the recogniser cuts it («Дар.», «Джал»).
+/// These are ordinary words too («жар»), so they count only when nothing
+/// follows them but punctuation — see `addressed`.
+const SHORT: &[&str] = &["жар", "дар", "чар", "джал", "жал", "джа", "дарв", "жарв"];
+
+/// Words that sound like the name but are not it.
+const NOT_NAMES: &[&str] = &["сервис", "сервиз", "дарвин", "харви", "марвин", "чарли", "жарить", "жаркий"];
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur = vec![i + 1; b.len() + 1];
+        for (j, cb) in b.iter().enumerate() {
+            cur[j + 1] = (prev[j] + usize::from(ca != cb)).min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// Sounds like «Джарвис»: within two letters of it once «дж», «ч» and «ж»
+/// are one sound and «з» is «с» — «Эрвис», «Джервиз», «Жарвиса», «Дарвис».
+fn sounds_like_name(w: &str) -> bool {
+    let n = w.chars().count();
+    if !(4..=10).contains(&n) || NOT_NAMES.iter().any(|x| w.starts_with(x)) {
+        return false;
+    }
+    let c = w.replace("дж", "ж").replace('ч', "ж").replace('з', "с");
+    levenshtein(&c, "жарвис") <= 2
+}
+
 /// The name, or a greeting glued to it («Эйджарвис» — 2 of 7 voices).
-pub(super) fn is_name(w: &str) -> bool {
-    NAMES.contains(&w) || LEADS.iter().any(|l| w.strip_prefix(l).is_some_and(|rest| NAMES.contains(&rest)))
+pub fn is_name(w: &str) -> bool {
+    let full = |w: &str| NAMES.contains(&w) || sounds_like_name(w);
+    full(w) || LEADS.iter().any(|l| w.strip_prefix(l).is_some_and(full))
+}
+
+/// A cut-off name followed only by punctuation or nothing: «Дар.», «Джал, …».
+fn short_name_alone(text: &str, w: &str) -> bool {
+    if !SHORT.contains(&w) {
+        return false;
+    }
+    let lower = text.to_lowercase().replace('ё', "е");
+    let Some(at) = lower.find(w) else { return false };
+    let after = lower[at + w.len()..].chars().next();
+    after.is_none_or(|c| !c.is_alphabetic() && !c.is_whitespace())
 }
 
 pub fn addressed(text: &str) -> Option<Addressed> {
@@ -65,11 +110,12 @@ pub fn addressed(text: &str) -> Option<Addressed> {
     if w.is_empty() || w.len() > MAX_WORDS {
         return None;
     }
+    let named = |word: &str| is_name(word) || short_name_alone(text, word);
     let first = w.iter().take(4).position(|word| !LEADS.contains(&word.as_str()))
-        .filter(|at| is_name(&w[*at]));
-    let last = (w.len() <= MAX_WORDS_NAME_LAST && is_name(&w[w.len() - 1])).then(|| w.len() - 1);
+        .filter(|at| named(&w[*at]));
+    let last = (w.len() <= MAX_WORDS_NAME_LAST && named(&w[w.len() - 1])).then(|| w.len() - 1);
     let at = first.or(last)?;
-    let rest = w.iter().enumerate().filter(|(i, word)| *i != at && !is_name(word) && !LEADS.contains(&word.as_str())).count();
+    let rest = w.iter().enumerate().filter(|(i, word)| *i != at && !named(word) && !LEADS.contains(&word.as_str())).count();
     Some(Addressed { only_name: rest == 0 })
 }
 
@@ -121,6 +167,20 @@ mod tests {
         assert!(!yes("Джаз сегодня вечером в клубе"));
         assert!(!yes(""));
         assert!(!yes("..."));
+    }
+
+    #[test]
+    fn cut_and_misheard_names_wake() {
+        for t in ["Дар.", "Эрвис.", "Джал, открой браузер", "Жар!", "Джервиз, сколько времени?", "Дарвис, включи музыку", "Жарвиса", "Чарвис, пауза", "Эй, джа рвис", "Джарви, громче", "Джарвисом", "Ярвис, привет"] {
+            assert!(yes(t), "must wake: {t}");
+        }
+    }
+
+    #[test]
+    fn similar_ordinary_words_do_not() {
+        for t in ["Сервис не работает", "Жарко сегодня", "Дар речи пропал", "Чарли, иди сюда", "Жарить картошку"] {
+            assert!(!yes(t), "must not wake: {t}");
+        }
     }
 
     #[test]

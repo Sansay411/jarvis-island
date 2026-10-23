@@ -429,6 +429,11 @@ impl AudioIo {
         Self::tones(&[(1318.5, 60.0), (880.0, 90.0)], 0.12)
     }
 
+    /// An action waits for «Разрешить» on the island: the same note twice.
+    pub fn chime_confirm() -> Vec<i16> {
+        Self::tones(&[(1046.5, 70.0), (0.0, 60.0), (1046.5, 70.0)], 0.13)
+    }
+
     /// Something did not work: two low notes.
     pub fn chime_error() -> Vec<i16> {
         Self::tones(&[(392.0, 90.0), (311.1, 140.0)], 0.14)

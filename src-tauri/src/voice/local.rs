@@ -742,9 +742,11 @@ impl VoiceManager {
                     pl.on_tool_started(&tool, &args);
                     pl.refresh_state(&vad);
                 }
-                Some(title) = confirm_rx.recv() => {
+                Some(_title) = confirm_rx.recv() => {
+                    // The command is on the island with its buttons; reading it
+                    // aloud only got in the way. A short cue says «look».
                     if pl.turn_active {
-                        pl.say(format!("Нужно ваше подтверждение: {}. Нажмите «Разрешить» или «Отклонить» на острове.", super::phrases::speakable(&title)));
+                        pl.audio.play_pcm16(&AudioIo::chime_confirm());
                         pl.refresh_state(&vad);
                     }
                 }

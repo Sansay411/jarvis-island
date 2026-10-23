@@ -25,7 +25,7 @@ import { useAlerts, useNextTimer } from "../store/reminders";
 import { useStopwatch } from "../store/stopwatch";
 import { emote, useEmote } from "../store/emote";
 import { useClockRows } from "./views/ClocksStrip";
-import { toggleVoice } from "../store/voice";
+import { inputLevel, outputLevel, toggleVoice, useVoice, type VoiceState } from "../store/voice";
 import { WorkspaceView } from "../workspace/WorkspaceView";
 import "./island.css";
 
@@ -176,6 +176,16 @@ function useTimerFinale(dueAt: string | null): boolean {
   return on;
 }
 
+/** In a voice conversation the eyes listen, think and speak with it. */
+function voiceMood(state: VoiceState, agentMood: EyeMood | null): EyeMood {
+  if (state === "error") return "error";
+  if (agentMood === "happy" || agentMood === "error") return agentMood;
+  if (state === "speaking") return "speaking";
+  if (state === "thinking") return "thinking";
+  if (state === "hearing" || state === "listening") return "listening";
+  return "attentive";
+}
+
 function moodFor(mode: IslandMode, agentMood: EyeMood | null, hovered: boolean): EyeMood {
   if (agentMood) return agentMood;
   if (mode === "drop" || mode === "files" || mode === "notice") return "attentive";
@@ -198,6 +208,11 @@ export function Island() {
   const stopwatch = useStopwatch((s) => s.active);
   const { emote: currentEmote, seq: emoteSeq } = useEmote();
   const night = useNight();
+  const voiceState = useVoice((s) => s.state);
+  // The eyes take the mic level while listening and JARVIS's own while speaking.
+  const speaking = useRef(false);
+  speaking.current = voiceState === "speaking";
+  const voiceLevel = useTransform(() => (speaking.current ? outputLevel.get() : inputLevel.get()));
   const timerFinale = useTimerFinale(timer?.dueAt ?? null);
   const clockRows = useClockRows();
   const base = resolveMode(st);
@@ -297,9 +312,10 @@ export function Island() {
           ><WorkspaceView visible={mode==="workspace"}/></motion.div>}
         </motion.div>
 
-        <div className={`island-eyes${mode === "voice" ? " is-hidden" : ""}`} style={{ height: lip ? dims.h : BROW_H }}>
+        <div className="island-eyes" style={{ height: lip ? dims.h : BROW_H }}>
           <Eyes
-            mood={moodFor(mode, agentMood, st.hovered)}
+            mood={mode === "voice" ? voiceMood(voiceState, agentMood) : moodFor(mode, agentMood, st.hovered)}
+            level={voiceLevel}
             lookX={mode === "compact" ? zero : lookX}
             lookY={mode === "drop" ? 2 : 0}
             scale={lip ? 0.36 : 1}

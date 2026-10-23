@@ -1,13 +1,15 @@
-// Voice conversation: JARVIS's eyes become the two central bars of a live
-// visualiser. Every bar height comes from real audio levels — the mic while
-// the user talks, JARVIS's own output while it speaks. Older samples drift
-// outward, so the shape is a short, mirrored history of the actual signal.
+// Voice conversation: the eyes stay in the brow (they follow the voice and
+// keep every expression), a live visualiser sits below them. Every bar
+// height comes from real audio levels — the mic while the user talks,
+// JARVIS's own output while it speaks. Older samples drift outward, so the
+// shape is a short, mirrored history of the actual signal.
 
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../../ui/Icon";
 import { inputLevel, outputLevel, useVoice, type VoiceState } from "../../store/voice";
 import { useAgent } from "../../store/agent";
+import { ClockChip } from "./CompactView";
 
 const BARS = 8;
 const LABEL: Record<VoiceState, string> = {
@@ -58,7 +60,7 @@ function Visualizer({ state }: { state: VoiceState }) {
   return (
     <div className={`visualizer is-${state}`} aria-hidden="true">
       {Array.from({ length: BARS }, (_, i) => (
-        <span key={i} ref={(el) => void (bars.current[i] = el)} className={i === BARS / 2 - 1 || i === BARS / 2 ? "bar eye" : "bar"} />
+        <span key={i} ref={(el) => void (bars.current[i] = el)} className={i === BARS / 2 - 1 || i === BARS / 2 ? "bar is-centre" : "bar"} />
       ))}
     </div>
   );
@@ -91,6 +93,7 @@ export function VoiceView() {
       <div className="brow">
         <span className={`brow-name${state === "error" ? " is-error" : ""}`}>{LABEL[state]}</span>
         <div className="brow-actions">
+          <ClockChip />
           {state === "error" && (
             <button className="btn btn-quiet" onClick={() => void invoke("settings_open")}>
               Настройки

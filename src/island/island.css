@@ -366,13 +366,14 @@
   opacity: 0.55;
   box-shadow: 0 0 10px rgba(255, 255, 255, 0.12);
 }
-.visualizer .bar.eye {
-  width: 8px;
-  opacity: 1;
-  background: linear-gradient(180deg, var(--amber-hi), var(--amber) 55%, var(--amber-lo));
-  box-shadow: 0 0 12px var(--amber-glow);
+.visualizer .bar.is-centre {
+  opacity: 0.85;
 }
-.visualizer.is-thinking .bar.eye {
+.visualizer.is-speaking .bar {
+  background: linear-gradient(180deg, var(--amber-hi), var(--amber) 55%, var(--amber-lo));
+  box-shadow: 0 0 10px var(--amber-glow);
+}
+.visualizer.is-thinking .bar.is-centre {
   animation: think 1.2s ease-in-out infinite alternate;
 }
 @keyframes think {
