@@ -70,8 +70,19 @@ interface Ids {
   refl: string;
 }
 
-/** One eye, layer by layer (see the header). */
-function Pill({ x, y, h, gx, ids, error }: { x: MotionValue<number>; y: MotionValue<number>; h: MotionValue<number>; gx: MotionValue<number>; ids: Ids; error: boolean }) {
+/** The part of an eye left open by its lid: everything below a line through
+ *  the eye's centre column, `drop` (0 open … 1 half shut) down from its top,
+ *  tilted by `tilt` degrees. Applied as a clip, so the glow follows the cut. */
+function lidClip(cx: number, top: number, h: number, drop: number, tilt: number): string {
+  const X = 14;
+  const line = top - 1.5 + drop * h * 0.55;
+  const t = Math.tan((tilt * Math.PI) / 180);
+  const bottom = top + h + 40;
+  return `M${cx - X} ${line - t * X} L${cx + X} ${line + t * X} L${cx + X} ${bottom} L${cx - X} ${bottom} Z`;
+}
+
+/** One eye, layer by layer (see the header); `clip` is its lid. */
+function Pill({ x, y, h, gx, ids, error, clip }: { x: MotionValue<number>; y: MotionValue<number>; h: MotionValue<number>; gx: MotionValue<number>; ids: Ids; error: boolean; clip: string }) {
   const coreW = EYE_W * 0.4;
   const coreX = useTransform(() => x.get() + (EYE_W - coreW) / 2);
   const coreY = useTransform(() => y.get() + h.get() * 0.14 + 0.4);
@@ -82,13 +93,18 @@ function Pill({ x, y, h, gx, ids, error }: { x: MotionValue<number>; y: MotionVa
   const glintR = useTransform(() => (h.get() > 4.5 ? Math.min(1.05, h.get() * 0.085) : 0));
   return (
     <>
+      {/* The glow is built from the eye as the lid cuts it. */}
       <g filter={`url(#${ids.glow})`}>
-        <motion.rect x={x} y={y} width={EYE_W} height={h} rx={EYE_W / 2} fill={error ? "var(--danger)" : `url(#${ids.fill})`} />
+        <g clipPath={`url(#${clip})`}>
+          <motion.rect x={x} y={y} width={EYE_W} height={h} rx={EYE_W / 2} fill={error ? "var(--danger)" : `url(#${ids.fill})`} />
+        </g>
       </g>
-      <motion.rect x={x} y={y} width={EYE_W} height={h} rx={EYE_W / 2} fill={`url(#${ids.shade})`} />
-      <motion.rect x={coreX} y={coreY} width={coreW} height={coreH} rx={coreW / 2} fill={error ? "#ffd2ca" : `url(#${ids.core})`} opacity={0.8} />
-      <motion.rect x={x} y={y} width={EYE_W} height={h} rx={EYE_W / 2} fill="none" stroke={error ? "rgba(255,200,190,0.4)" : "rgba(255,240,212,0.38)"} strokeWidth={0.45} />
-      <motion.circle cx={glintX} cy={glintY} r={glintR} fill="#fffaf0" opacity={0.92} />
+      <g clipPath={`url(#${clip})`}>
+        <motion.rect x={x} y={y} width={EYE_W} height={h} rx={EYE_W / 2} fill={`url(#${ids.shade})`} />
+        <motion.rect x={coreX} y={coreY} width={coreW} height={coreH} rx={coreW / 2} fill={error ? "#ffd2ca" : `url(#${ids.core})`} opacity={0.8} />
+        <motion.rect x={x} y={y} width={EYE_W} height={h} rx={EYE_W / 2} fill="none" stroke={error ? "rgba(255,200,190,0.4)" : "rgba(255,240,212,0.38)"} strokeWidth={0.45} />
+        <motion.circle cx={glintX} cy={glintY} r={glintR} fill="#fffaf0" opacity={0.92} />
+      </g>
     </>
   );
 }
@@ -114,16 +130,6 @@ function star(cx: number): string {
   return `M${cx} ${cy - r} Q${cx + i} ${cy - i} ${cx + r} ${cy} Q${cx + i} ${cy + i} ${cx} ${cy + r} Q${cx - i} ${cy + i} ${cx - r} ${cy} Q${cx - i} ${cy - i} ${cx} ${cy - r} Z`;
 }
 
-/** An eyelid: the obsidian of the island laid over the top of an eye at an
- *  angle. `drop` 0 = open, 1 = covers about half the eye. */
-function Lid({ x, y, h, drop, tilt }: { x: MotionValue<number>; y: MotionValue<number>; h: MotionValue<number>; drop: MotionValue<number>; tilt: MotionValue<number> }) {
-  const lx = useTransform(() => x.get() + EYE_W / 2 - 9);
-  const ly = useTransform(() => y.get() - 14 + drop.get() * h.get() * 0.5);
-  const origin = useTransform(() => `${x.get() + EYE_W / 2}px ${y.get() + drop.get() * h.get() * 0.5}px`);
-  const shown = useTransform(() => (drop.get() > 0.01 ? 1 : 0));
-  return <motion.rect x={lx} y={ly} width={18} height={14} fill="var(--obsidian)" style={{ rotate: tilt, transformOrigin: origin, transformBox: "view-box", opacity: shown }} />;
-}
-
 function heart(cx: number): string {
   const cy = BOX_H / 2;
   return `M${cx} ${cy + 3.6} C${cx - 5.6} ${cy - 0.4} ${cx - 3.8} ${cy - 5.6} ${cx} ${cy - 2.4} C${cx + 3.8} ${cy - 5.6} ${cx + 5.6} ${cy - 0.4} ${cx} ${cy + 3.6} Z`;
@@ -133,6 +139,8 @@ export function Eyes({ mood, level, lookX, lookY = 0, scale = 1, emote = null, e
   const reduced = useReducedMotion();
   const uid = useId().replace(/[^a-zA-Z0-9]/g, "");
   const ids: Ids = { fill: `eye-fill-${uid}`, shade: `eye-shade-${uid}`, core: `eye-core-${uid}`, glow: `eye-glow-${uid}`, refl: `eye-refl-${uid}` };
+  const clipL = `eye-lid-l-${uid}`;
+  const clipR = `eye-lid-r-${uid}`;
   const zero = useMotionValue(0);
   const life = useMotionValue(1);
   const lvl = level ?? zero;
@@ -174,6 +182,8 @@ export function Eyes({ mood, level, lookX, lookY = 0, scale = 1, emote = null, e
   const gx = useTransform(() => gaze.get() * 2.4 + drift.get());
   const leftX = useTransform(() => LEFT_CX - EYE_W / 2 + gx.get());
   const rightX = useTransform(() => RIGHT_CX - EYE_W / 2 + gx.get());
+  const lidPathL = useTransform(() => lidClip(leftX.get() + EYE_W / 2, yL.get(), hL.get(), lidL.get(), tiltL.get()));
+  const lidPathR = useTransform(() => lidClip(rightX.get() + EYE_W / 2, yR.get(), hR.get(), lidR.get(), tiltR.get()));
   const splitLeftX = useTransform(() => leftX.get() - 1.1);
   const splitRightX = useTransform(() => rightX.get() + 1.1);
 
@@ -292,7 +302,8 @@ export function Eyes({ mood, level, lookX, lookY = 0, scale = 1, emote = null, e
     if (!emote) return;
     switch (emote) {
       case "wink":
-        animate(blinkR, [1, 0.08, 0.08, 1], { duration: 0.6, times: [0, 0.2, 0.75, 1] });
+        // The right eye becomes an arc (see arcR); a small tilt of the head.
+        if (!reduced) animate(hop, [0, -0.8, 0], { duration: 0.4 });
         break;
       case "surprised":
         animate(widen, [1, 1.4, 1.4, 1], { duration: 0.8, times: [0, 0.15, 0.7, 1], ease: "easeOut" });
@@ -335,11 +346,10 @@ export function Eyes({ mood, level, lookX, lookY = 0, scale = 1, emote = null, e
         break;
       }
       case "squint":
-        // «Хм…»: one eye narrows, the other a touch wider.
-        animate(sizeR, [1, 0.38, 0.38, 1], { duration: 1.3, times: [0, 0.2, 0.8, 1] });
-        animate(sizeL, [1, 1.08, 1.08, 1], { duration: 1.3, times: [0, 0.2, 0.8, 1] });
-        animate(lidR, [0, 0.35, 0.35, 0], { duration: 1.3, times: [0, 0.2, 0.8, 1] });
-        animate(tiltR, [0, -10, -10, 0], { duration: 1.3, times: [0, 0.2, 0.8, 1] });
+        // «Хм…»: both lids come down flat, the right one lower and slanted.
+        animate(lidL, [0, 0.42, 0.42, 0], { duration: 1.3, times: [0, 0.2, 0.8, 1] });
+        animate(lidR, [0, 0.72, 0.72, 0], { duration: 1.3, times: [0, 0.2, 0.8, 1] });
+        animate(tiltR, [0, -9, -9, 0], { duration: 1.3, times: [0, 0.2, 0.8, 1] });
         break;
       case "confused":
         animate(sizeL, [1, 1.3, 1.3, 1], { duration: 1.7, times: [0, 0.2, 0.85, 1] });
@@ -372,10 +382,13 @@ export function Eyes({ mood, level, lookX, lookY = 0, scale = 1, emote = null, e
 
   const fill = `url(#${ids.fill})`;
   const showArcs = mood === "happy" || emote === "laugh" || emote === "boop";
+  // A wink closes one eye into a smiling arc; the other stays open.
+  const arcL = showArcs;
+  const arcR = showArcs || emote === "wink";
   const showHearts = emote === "heart";
   const showStars = emote === "star";
   const split = mood === "thinking";
-  const pillsHidden = showArcs || showHearts || showStars;
+  const pillsHidden = showHearts || showStars;
 
   return (
     <svg
@@ -408,6 +421,12 @@ export function Eyes({ mood, level, lookX, lookY = 0, scale = 1, emote = null, e
           <stop offset="0" stopColor="var(--amber)" stopOpacity="0.32" />
           <stop offset="1" stopColor="var(--amber)" stopOpacity="0" />
         </radialGradient>
+        <clipPath id={clipL}>
+          <motion.path d={lidPathL} />
+        </clipPath>
+        <clipPath id={clipR}>
+          <motion.path d={lidPathR} />
+        </clipPath>
         {/* Two-step halo: a tight bright one and a wide soft one. */}
         <filter id={ids.glow} x="-300%" y="-150%" width="700%" height="400%">
           <feGaussianBlur in="SourceGraphic" stdDeviation="1.1" result="tight" />
@@ -438,11 +457,13 @@ export function Eyes({ mood, level, lookX, lookY = 0, scale = 1, emote = null, e
 
       <motion.g initial={false} animate={{ opacity: pillsHidden ? 0 : mood === "sleep" ? 0.45 : 1 }} transition={{ duration: 0.18 }}>
         <motion.g style={{ opacity: life }}>
-          <Pill x={leftX} y={yL} h={hL} gx={gx} ids={ids} error={mood === "error"} />
-          <Pill x={rightX} y={yR} h={hR} gx={gx} ids={ids} error={mood === "error"} />
+          <motion.g initial={false} animate={{ opacity: arcL ? 0 : 1 }} transition={{ duration: 0.12 }}>
+            <Pill x={leftX} y={yL} h={hL} gx={gx} ids={ids} error={mood === "error"} clip={clipL} />
+          </motion.g>
+          <motion.g initial={false} animate={{ opacity: arcR ? 0 : 1 }} transition={{ duration: 0.12 }}>
+            <Pill x={rightX} y={yR} h={hR} gx={gx} ids={ids} error={mood === "error"} clip={clipR} />
+          </motion.g>
         </motion.g>
-        <Lid x={leftX} y={yL} h={hL} drop={lidL} tilt={tiltL} />
-        <Lid x={rightX} y={yR} h={hR} drop={lidR} tilt={tiltR} />
       </motion.g>
 
       <motion.g
@@ -460,7 +481,7 @@ export function Eyes({ mood, level, lookX, lookY = 0, scale = 1, emote = null, e
       <motion.g
         filter={`url(#${ids.glow})`}
         initial={false}
-        animate={{ opacity: showArcs ? 1 : 0, y: showArcs ? 0 : 2 }}
+        animate={{ opacity: arcL || arcR ? 1 : 0, y: arcL || arcR ? 0 : 2 }}
         transition={{ duration: 0.22 }}
         style={{ y: hop }}
         stroke={fill}
@@ -468,8 +489,8 @@ export function Eyes({ mood, level, lookX, lookY = 0, scale = 1, emote = null, e
         strokeLinecap="round"
         fill="none"
       >
-        <path d={arc(LEFT_CX)} />
-        <path d={arc(RIGHT_CX)} />
+        <motion.path d={arc(LEFT_CX)} initial={false} animate={{ opacity: arcL ? 1 : 0 }} transition={{ duration: 0.15 }} />
+        <motion.path d={arc(RIGHT_CX)} initial={false} animate={{ opacity: arcR ? 1 : 0 }} transition={{ duration: 0.15 }} />
       </motion.g>
 
       <motion.g

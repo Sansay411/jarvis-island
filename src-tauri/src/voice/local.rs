@@ -70,6 +70,10 @@ const CONTINUATION_GAP: Duration = Duration::from_millis(1300);
 
 fn continues_thought(gap:Duration,awaiting_first_audio:bool)->bool { awaiting_first_audio && gap<CONTINUATION_GAP }
 
+/// An utterance whose words have not changed for this long has ended, even
+/// if background sound keeps the detector open.
+const STABLE_FOR: Duration = Duration::from_millis(1300);
+
 /// A conversation with no speech for this long goes back to waiting for
 /// the name (when that is on).
 const SLEEP_AFTER: Duration = Duration::from_secs(60);
@@ -167,6 +171,8 @@ enum Ev {
     /// The phrase is complete: its tail (the pause after it), or the error.
     Audio(u64, AppResult<Vec<i16>>),
     WakePreview(u64, AppResult<Transcript>),
+    /// A decode of the utterance so far (awake), for endpointing.
+    Progress(u64, AppResult<Transcript>),
 }
 
 struct Pipeline {
@@ -205,6 +211,13 @@ struct Pipeline {
     utterance_seq: u64,
     preview_job: Option<u64>,
     hearing_since: Option<Instant>,
+    /// A progress decode in flight, and the words it last found (with when
+    /// they were first seen) for the running utterance.
+    progress_job: Option<u64>,
+    progress_text: Option<(u64, String, Instant)>,
+    /// The utterance already answered from its stable words: the rest of it
+    /// (the room's sound) is dropped when the detector closes it.
+    consumed_seq: Option<u64>,
     playback_pending: bool,
     /// Speech generation whose only queued line is «Слушаю»: words spoken
     /// over it are the command it invited, not an interruption.
@@ -373,7 +386,7 @@ impl Pipeline {
     fn derive_state(&self, vad: &Vad) -> VoiceState {
         if !self.awake {
             VoiceState::Dormant
-        } else if vad.is_active() {
+        } else if vad.is_active() && self.consumed_seq != Some(self.utterance_seq) {
             VoiceState::Hearing
         } else if self.audio.is_playing() {
             VoiceState::Speaking
@@ -500,7 +513,7 @@ impl VoiceManager {
             speech_end_at: None,
             first_audio_pending: false,
             shown: initial,
-            utterance_seq:0,preview_job:None,hearing_since:None,
+            utterance_seq:0,preview_job:None,hearing_since:None,progress_job:None,progress_text:None,consumed_seq:None,
             playback_pending:false,
             filler_at: None,
             turn_started: None,
@@ -541,6 +554,7 @@ impl VoiceManager {
                     // Our own voice through speakers must be louder to count.
                     vad.echo_guard = pl.audio.is_playing() && !pl.audio.headphones;
                     vad.wake_preview = !pl.awake && pl.wake_enabled && pl.resting_since.is_none();
+                    vad.endpoint_preview = pl.awake;
                     for event in vad.push(&pcm) { match event {
                         VadEvent::Started => {
                             pl.utterance_seq += 1;
@@ -555,6 +569,11 @@ impl VoiceManager {
                         }
                         // Resting: the microphone is open only to restart fast.
                         VadEvent::Ended(_) if !pl.awake && (!pl.wake_enabled || pl.resting_since.is_some()) => {}
+                        // Already answered from its stable words: the rest is the room.
+                        VadEvent::Ended(_) if pl.consumed_seq == Some(pl.utterance_seq) => {
+                            pl.consumed_seq = None;
+                            tracing::debug!("voice: tail of an answered phrase dropped");
+                        }
                         VadEvent::Ended(utterance) => {
                             pl.transcribing += 1;
                             let ended = Instant::now();
@@ -587,10 +606,46 @@ impl VoiceManager {
                             tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&pcm);let _=tx.send(Ev::WakePreview(seq,res)); });
                         }
                         VadEvent::Preview(_) => {}
+                        VadEvent::Progress(pcm) if pl.awake && pl.progress_job.is_none() => {
+                            let seq=pl.utterance_seq;
+                            pl.progress_job=Some(seq);
+                            let engine=self.stt.clone();
+                            let path=pl.model_path.clone();
+                            let tx=ev_tx.clone();
+                            tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&pcm);let _=tx.send(Ev::Progress(seq,res)); });
+                        }
+                        VadEvent::Progress(_) => {}
                     } }
                     pl.refresh_state(&vad);
                 }
                 Some(ev) = ev_rx.recv() => match ev {
+                    Ev::Progress(seq, res) => {
+                        if pl.progress_job == Some(seq) { pl.progress_job = None; }
+                        let Ok(t) = res else { continue };
+                        if seq != pl.utterance_seq || !vad.is_active() || !stt::is_meaningful(&t.text) { continue; }
+                        let words = t.text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+                        let stable = match &pl.progress_text {
+                            Some((s, w, since)) if *s == seq && *w == words => since.elapsed() >= STABLE_FOR,
+                            _ => {
+                                pl.progress_text = Some((seq, words, Instant::now()));
+                                false
+                            }
+                        };
+                        if stable {
+                            // The words stopped changing but the detector still
+                            // hears sound: the user is done, the rest is the room.
+                            // Answer now; the tail of this sound is dropped.
+                            tracing::info!(words = t.text.split_whitespace().count(), "voice: phrase ended by stable words");
+                            pl.consumed_seq = Some(seq);
+                            pl.progress_text = None;
+                            pl.transcribing += 1;
+                            let ended = Instant::now();
+                            pl.last_ended = Some(ended);
+                            let continues = std::mem::take(&mut pl.hearing_continues);
+                            let _ = ev_tx.send(Ev::Transcribed(Ok(t), ended, continues));
+                            pl.refresh_state(&vad);
+                        }
+                    }
                     Ev::WakePreview(seq,res) => {
                         if pl.preview_job==Some(seq) { pl.preview_job=None; }
                         if !pl.awake && seq==pl.utterance_seq && res.ok().is_some_and(|t| super::wake::addressed(&t.text).is_some()) {

@@ -15,7 +15,7 @@ use sherpa_onnx::{SileroVadModelConfig, VadModelConfig, VoiceActivityDetector};
 use super::models::native_path;
 use crate::error::{AppError, AppResult};
 
-const END_SILENCE_S: f32 = 0.9;
+const END_SILENCE_S: f32 = 0.75;
 // Short «Стоп», «Джар» and the first word before a pause must survive.
 const MIN_SPEECH_S: f32 = 0.12;
 const MAX_SPEECH_S: f32 = 20.0;
@@ -37,7 +37,15 @@ pub enum VadEvent {
     Ended(Vec<f32>),
     /// Early local-only recognition while waiting for the wake name.
     Preview(Vec<f32>),
+    /// The utterance so far, while awake: if its words stop changing, the
+    /// user is done and the sound that keeps the detector open is just the
+    /// room (music, a video, a fan).
+    Progress(Vec<f32>),
 }
+
+/// Progress decodes start this long into an utterance and repeat this often.
+const PROGRESS_FROM: usize = 16_000 * 3 / 2;
+const PROGRESS_EVERY: usize = 16_000 * 7 / 10;
 
 pub fn chunk_db(chunk: &[f32]) -> f32 {
     if chunk.is_empty() {
@@ -79,6 +87,8 @@ pub struct Vad {
     /// JARVIS is speaking: apply the echo guard.
     pub echo_guard: bool,
     pub wake_preview: bool,
+    /// Awake: send `Progress` while an utterance runs.
+    pub endpoint_preview: bool,
     utterance_start: usize,
     last_preview: usize,
     /// Recent samples; `history[0]` is sample number `history_base`.
@@ -109,7 +119,7 @@ impl Vad {
         };
         let det = VoiceActivityDetector::create(&cfg, MAX_SPEECH_S + 10.0)
             .ok_or_else(|| AppError::platform("Не удалось загрузить детектор речи"))?;
-        Ok(Vad { det, floor: Floor::default(), in_speech: false, accepted: false, echo_guard: false, wake_preview:false, utterance_start:0,last_preview:0,history: VecDeque::with_capacity(HISTORY), history_base: 0, last_segment_start: 0 })
+        Ok(Vad { det, floor: Floor::default(), in_speech: false, accepted: false, echo_guard: false, wake_preview:false, endpoint_preview:false, utterance_start:0,last_preview:0,history: VecDeque::with_capacity(HISTORY), history_base: 0, last_segment_start: 0 })
     }
 
     pub fn floor_db(&self) -> f32 {
@@ -157,6 +167,10 @@ impl Vad {
                 events.push(VadEvent::Preview(self.history.range(from-self.history_base..).copied().collect()));
                 self.last_preview=seen;
             }
+            if self.accepted && self.endpoint_preview && !self.echo_guard && length >= PROGRESS_FROM && seen.saturating_sub(self.last_preview) >= PROGRESS_EVERY {
+                events.push(VadEvent::Progress(self.utterance_so_far()));
+                self.last_preview = seen;
+            }
         } else {
             self.floor.learn(db);
         }
@@ -174,6 +188,11 @@ impl Vad {
             return segment.to_vec();
         }
         self.history.range(from - self.history_base..to - self.history_base).copied().collect()
+    }
+
+    fn utterance_so_far(&self) -> Vec<f32> {
+        let from = self.utterance_start.saturating_sub(PAD_BEFORE).max(self.history_base);
+        self.history.range(from - self.history_base..).copied().collect()
     }
 
     /// Forget a half-heard utterance.
