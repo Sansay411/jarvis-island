@@ -34,6 +34,8 @@ export interface DimsContext {
   lip: boolean;
   /** A confirmation is waiting (shown inline in the voice view). */
   confirm: boolean;
+  /** A timer or stopwatch pill in the voice view. */
+  voiceClock?: boolean;
   /** Measured height of the file card. */
   filesH?: number;
 }
@@ -49,7 +51,9 @@ export function dimsFor(mode: IslandMode, ctx: DimsContext): Dims {
       return ctx.hasMedia ? { w: 452, h: 136 + rows * 30 } : { w: 412, h: 104 + rows * 30 };
     }
     case "voice":
-      return { w: 380, h: ctx.confirm ? 178 : 132 };
+      // brow 34 + two lines of speech 44 + padding; the pill and the
+      // confirmation add their own rows only when shown.
+      return { w: 400, h: 96 + (ctx.voiceClock ? 34 : 0) + (ctx.confirm ? 48 : 0) };
     case "drop":
       return { w: 440, h: 132 };
     case "notice":

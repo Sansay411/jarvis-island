@@ -17,13 +17,13 @@ import { Eyes, type EyeMood } from "./Eyes";
 import { CompactView } from "./views/CompactView";
 import { PeekView } from "./views/PeekView";
 import { DropView } from "./views/DropView";
-import { VoiceView } from "./views/VoiceView";
+import { VoiceView, useVoiceClock } from "./views/VoiceView";
 import { FilesView } from "./views/FilesView";
 import { closeFiles, showFiles, useFiles } from "../store/files";
 import { NoticeView } from "./views/NoticeView";
 import { useAlerts, useNextTimer } from "../store/reminders";
 import { useStopwatch } from "../store/stopwatch";
-import { emote, useEmote } from "../store/emote";
+import { activityOf, emote, useEmote } from "../store/emote";
 import { useClockRows } from "./views/ClocksStrip";
 import { inputLevel, outputLevel, toggleVoice, useVoice, type VoiceState } from "../store/voice";
 import { WorkspaceView } from "../workspace/WorkspaceView";
@@ -207,6 +207,12 @@ export function Island() {
   const timer = useNextTimer();
   const stopwatch = useStopwatch((s) => s.active);
   const { emote: currentEmote, seq: emoteSeq } = useEmote();
+  // The tool running now, as the face shows it (looking up while searching…).
+  const runningTool = useAgent((s) => {
+    const it = s.items.findLast((i) => i.kind === "tool" && i.status === "running");
+    return it?.kind === "tool" ? it.tool : null;
+  });
+  const activity = runningTool ? activityOf(runningTool) : null;
   const night = useNight();
   const voiceState = useVoice((s) => s.state);
   // The eyes take the mic level while listening and JARVIS's own while speaking.
@@ -215,6 +221,7 @@ export function Island() {
   const voiceLevel = useTransform(() => (speaking.current ? outputLevel.get() : inputLevel.get()));
   const timerFinale = useTimerFinale(timer?.dueAt ?? null);
   const clockRows = useClockRows();
+  const voiceClock = useVoiceClock();
   const base = resolveMode(st);
   // Drop and voice keep priority; a fired reminder shows over the rest.
   const mode: IslandMode = base === "drop" ? "drop" : filesOpen ? "files" : base === "voice" ? "voice" : alerting ? "notice" : base;
@@ -228,8 +235,8 @@ export function Island() {
   const jobRows = Math.min(2, useRunningJobs().length);
   const confirmPending = useAgent((s) => s.items.some((it) => it.kind === "tool" && it.status === "awaiting"));
   const dims = useMemo(
-    () => dimsFor(mode, { hasMedia: withMedia, hasActivity: jobRows > 0 || !!timer || stopwatch, jobRows, clockRows, lip: st.topCovered, confirm: confirmPending, filesH }),
-    [mode, withMedia, jobRows, clockRows, st.topCovered, confirmPending, filesH, !!timer, stopwatch],
+    () => dimsFor(mode, { hasMedia: withMedia, hasActivity: jobRows > 0 || !!timer || stopwatch, jobRows, clockRows, voiceClock, lip: st.topCovered, confirm: confirmPending, filesH }),
+    [mode, withMedia, jobRows, clockRows, voiceClock, st.topCovered, confirmPending, filesH, !!timer, stopwatch],
   );
 
   const lip = mode === "compact" && st.topCovered;
@@ -325,6 +332,7 @@ export function Island() {
             sleepy={night}
             watch={timerFinale && (mode === "compact" || mode === "peek")}
             alarm={mode === "notice"}
+            activity={activity}
             onBoop={lip ? undefined : () => emote("boop")}
           />
         </div>

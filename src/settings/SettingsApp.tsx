@@ -13,6 +13,7 @@ import { errorMessage } from "../lib/ipc";
 import { Eyes, type EyeMood } from "../island/Eyes";
 import "./settings.css";
 import { TitleBar } from "./TitleBar";
+import { ACTIVITIES, EMOTES, emote, useEmote, type Activity } from "../store/emote";
 
 interface Preset {
   id: string;
@@ -165,13 +166,25 @@ function useGaze(anchor: React.RefObject<HTMLElement | null>) {
   return { lookX, lookY };
 }
 
-function Face({ mood, level, caption }: { mood: EyeMood; level: MotionValue<number>; caption: ReactNode }) {
+function Face({ mood, level, caption, activity = null }: { mood: EyeMood; level: MotionValue<number>; caption: ReactNode; activity?: Activity | null }) {
   const ref = useRef<HTMLDivElement>(null);
   const { lookX, lookY } = useGaze(ref);
+  const { emote: current, seq } = useEmote();
+  const still = mood === "speaking" || !!activity;
   return (
     <div className="face" ref={ref}>
       <div className="face-notch">
-        <Eyes mood={mood} level={level} lookX={mood === "speaking" ? undefined : lookX} lookY={mood === "speaking" ? 0 : lookY} scale={1.9} />
+        <Eyes
+          mood={mood}
+          level={level}
+          lookX={still ? undefined : lookX}
+          lookY={still ? 0 : lookY}
+          scale={1.9}
+          emote={current}
+          emoteSeq={seq}
+          activity={activity}
+          onBoop={() => emote("boop")}
+        />
       </div>
       <div className="face-caption">{caption}</div>
     </div>
@@ -509,6 +522,9 @@ export default function SettingsApp() {
     if (progress?.state === "done") loadVoices();
   }, [progress]);
 
+  const [demoMood, setDemoMood] = useState<EyeMood | null>(null);
+  const [demoActivity, setDemoActivity] = useState<Activity | null>(null);
+  const demoTimer = useRef<number | undefined>(undefined);
   const dirty = useMemo(() => JSON.stringify(view?.settings) !== JSON.stringify(draft), [view, draft]);
   if (!view || !draft) return <div className="settings-loading" />;
 
@@ -517,7 +533,23 @@ export default function SettingsApp() {
   const set = (patch: (s: Settings) => Settings) => setDraft((d) => (d ? patch(structuredClone(d)) : d));
   const current = SECTIONS.find((s) => s.id === section)!;
   const voiceName = ttsVoices.find((v) => v.id === draft.voice.ttsVoice)?.name ?? (ttsVoices[0]?.name ?? "голос Windows");
-  const mood: EyeMood = preview.playing ? "speaking" : happy ? "happy" : busy ? "thinking" : "attentive";
+  const mood: EyeMood = demoMood ?? (preview.playing ? "speaking" : happy ? "happy" : busy ? "thinking" : "attentive");
+  // The expression gallery: a mood or an activity shown on the face for a moment.
+  const showMood = (m: EyeMood) => {
+    window.clearTimeout(demoTimer.current);
+    setDemoActivity(null);
+    setDemoMood(m);
+    demoTimer.current = window.setTimeout(() => setDemoMood(null), 2600);
+  };
+  const showActivity = (a: Activity) => {
+    window.clearTimeout(demoTimer.current);
+    setDemoMood("thinking");
+    setDemoActivity(a);
+    demoTimer.current = window.setTimeout(() => {
+      setDemoMood(null);
+      setDemoActivity(null);
+    }, 3200);
+  };
 
   const save = async () => {
     try {
@@ -556,6 +588,7 @@ export default function SettingsApp() {
       <aside className="rail">
         <Face
           mood={mood}
+          activity={demoActivity}
           level={preview.level}
           caption={
             <>
@@ -584,6 +617,40 @@ export default function SettingsApp() {
 
           {section === "persona" && (
             <>
+              <Group title="Мимика">
+                <p className="note">Нажмите — лицо слева покажет выражение. Двойной клик по глазам — «тык».</p>
+                <div className="expr-grid">
+                  {EMOTES.map((e) => (
+                    <button key={e.id} className="expr-chip" onClick={() => emote(e.id)}>
+                      {e.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="expr-caption">Пока работает</div>
+                <div className="expr-grid">
+                  {ACTIVITIES.map((a) => (
+                    <button key={a.id} className="expr-chip" onClick={() => showActivity(a.id)}>
+                      {a.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="expr-caption">Состояния</div>
+                <div className="expr-grid">
+                  {(
+                    [
+                      ["thinking", "Думает"],
+                      ["listening", "Слушает"],
+                      ["happy", "Радость"],
+                      ["error", "Ошибка"],
+                      ["sleep", "Сон"],
+                    ] as [EyeMood, string][]
+                  ).map(([m, label]) => (
+                    <button key={m} className="expr-chip" onClick={() => showMood(m)}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </Group>
               <Group>
                 <Row label={vy ? "Как вас зовут" : "Как тебя зовут"} hint="Я буду иногда обращаться по имени — не в каждой фразе.">
                   <input
