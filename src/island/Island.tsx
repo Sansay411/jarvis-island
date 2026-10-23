@@ -51,6 +51,7 @@ const REDUCED = { stiffness: 1000, damping: 100, mass: 1 };
 function useIslandController() {
   const enterTimer = useRef<number | undefined>(undefined);
   const leaveTimer = useRef<number | undefined>(undefined);
+  const approachTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     const set = useIsland.getState().set;
@@ -58,7 +59,11 @@ function useIslandController() {
 
     unsubs.push(
       on("island:pointer", ({ inside, dragApproach }) => {
-        set({ dragApproach });
+        // Keep the drop zone a moment after the pointer reaches it: the native
+        // side stops reporting «approach» once the cursor is inside the shape.
+        window.clearTimeout(approachTimer.current);
+        if (dragApproach) set({ dragApproach: true });
+        else approachTimer.current = window.setTimeout(() => set({ dragApproach: false }), 900);
         window.clearTimeout(enterTimer.current);
         window.clearTimeout(leaveTimer.current);
         if (inside) {
@@ -85,24 +90,21 @@ function useIslandController() {
         else if (cmd === "toggle-voice") void toggleVoice();
       }),
     );
-    unsubs.push(
-      getCurrentWebview().onDragDropEvent((e) => {
-        const p = e.payload;
-        if (p.type === "enter" || p.type === "over") set({ dragOver: true });
-        else if (p.type === "leave") set({ dragOver: false });
-        else if (p.type === "drop") {
-          // Into an open chat: attach. Elsewhere: offer actions for the file.
-          if (useIsland.getState().workspaceOpen) {
-            const files = p.paths.map((path) => ({ path, name: path.split(/[\\/]/).pop() ?? path }));
-            useIsland.getState().addAttachments(files);
-            set({ dragOver: false });
-          } else {
-            set({ dragOver: false });
-            if (p.paths.length > 0) void showFiles(p.paths);
-          }
-        }
-      }),
-    );
+    // Drops arrive from our own drop target (re-armed as a drag approaches)
+    // and, until then, from Tauri's.
+    const onFileDrag = (type: string, paths: string[]) => {
+      if (type === "enter" || type === "over") set({ dragOver: true });
+      else if (type === "leave") set({ dragOver: false, dragApproach: false });
+      else if (type === "drop") {
+        set({ dragOver: false, dragApproach: false });
+        // Into an open chat: attach. Elsewhere: offer actions for the file.
+        if (useIsland.getState().workspaceOpen) {
+          useIsland.getState().addAttachments(paths.map((path) => ({ path, name: path.split(/[\\/]/).pop() ?? path })));
+        } else if (paths.length > 0) void showFiles(paths);
+      }
+    };
+    unsubs.push(on("island:file-drop", ({ type, paths }) => onFileDrag(type, paths)));
+    unsubs.push(getCurrentWebview().onDragDropEvent(({ payload: p }) => onFileDrag(p.type, "paths" in p ? p.paths : [])));
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {

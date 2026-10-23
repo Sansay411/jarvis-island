@@ -39,8 +39,10 @@ export const useIsland = create<IslandStore>((set) => ({
     }),
 }));
 
-export function resolveMode(s: Pick<IslandStore, "hovered" | "dragOver" | "workspaceOpen" | "voiceOpen">): IslandMode {
-  if (s.dragOver) return "drop";
+export function resolveMode(s: Pick<IslandStore, "hovered" | "dragOver" | "dragApproach" | "workspaceOpen" | "voiceOpen">): IslandMode {
+  // A file dragged toward the island opens the drop zone at once: the window
+  // is transparent, and Windows only delivers a drop over opaque pixels.
+  if (s.dragOver || s.dragApproach) return "drop";
   // A live voice session takes over; the workspace returns when it ends.
   if (s.voiceOpen) return "voice";
   if (s.workspaceOpen) return "workspace";

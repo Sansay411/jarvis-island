@@ -13,6 +13,7 @@
 
 pub mod audio;
 pub mod azure;
+pub mod elevenlabs;
 mod local;
 pub mod models;
 pub mod neural;

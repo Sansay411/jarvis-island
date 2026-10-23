@@ -19,6 +19,10 @@ const SAVED_TITLES: &[&str] = &["избранное", "saved messages", "збе�
 pub fn chat_title(window_title: &str) -> String {
     let t: String = window_title.chars().filter(|c| !matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')).collect();
     let mut t = t.trim().to_string();
+    // With several accounts the title reads «chat @ account».
+    if let Some(at) = t.find(" @ ") {
+        t.truncate(at);
+    }
     if t.starts_with('(') {
         if let Some(end) = t.find(')') {
             t = t[end + 1..].trim().to_string();
@@ -148,5 +152,7 @@ mod tests {
         assert!(!is_saved_messages("Избранное обсуждение"));
         assert!(!is_saved_messages("Telegram"));
         assert_eq!(chat_title("\u{200e}Noxen"), "Noxen");
+        assert!(is_saved_messages("\u{200e}Избранное @ \u{200e}Noxen"));
+        assert!(!is_saved_messages("Нинок @ Noxen"));
     }
 }

@@ -3,7 +3,7 @@
 // The island takes the card's measured height, so it grows with the
 // result instead of clipping it.
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { Icon } from "../../ui/Icon";
 import { cancelFileJob, closeFiles, resultAction, runFileAction, useFiles, type FileInfo } from "../../store/files";
 
@@ -121,7 +121,6 @@ export function FilesView() {
   const actions = useFiles((s) => s.actions);
   const error = useFiles((s) => s.error);
   const running = useFiles((s) => s.job?.state === "running");
-  const [more, setMore] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   // Report the natural height so the island shape fits the card.
@@ -144,12 +143,6 @@ export function FilesView() {
         <div className="brow">
           <span className="brow-name">Что сделать с файлом?</span>
           <div className="brow-actions">
-            {rest.length > 0 && (
-              <button className={more ? "file-more is-open" : "file-more"} aria-expanded={more} onClick={() => setMore((v) => !v)}>
-                Ещё
-                <Icon name="chevron" size={12} />
-              </button>
-            )}
             <button className="icon-btn" aria-label="Закрыть" onClick={closeFiles}>
               <Icon name="close" size={14} />
             </button>
@@ -168,19 +161,18 @@ export function FilesView() {
           {primary.length > 0 && (
             <div className="file-actions">
               {primary.map((a) => (
-                <button key={a.id} className="file-action" disabled={running} onClick={() => void runFileAction(a.id)}>
-                  <span className="file-action-label">{a.label}</span>
-                  {a.hint && <span className="file-action-hint">{a.hint}</span>}
+                <button key={a.id} className="file-action" disabled={running} title={a.hint ?? undefined} onClick={() => void runFileAction(a.id)}>
+                  {a.label}
                 </button>
               ))}
             </div>
           )}
-          {more && rest.length > 0 && (
+          {/* Everything at once: no hidden menu to open and search through. */}
+          {rest.length > 0 && (
             <div className="file-more-list">
               {rest.map((a) => (
                 <button key={a.id} className="file-chip" disabled={running} title={a.hint ?? undefined} onClick={() => void runFileAction(a.id)}>
                   {a.label}
-                  {a.hint && <span>{a.hint}</span>}
                 </button>
               ))}
             </div>

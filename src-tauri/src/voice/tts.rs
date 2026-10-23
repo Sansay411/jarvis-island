@@ -35,6 +35,25 @@ impl CachedSpeaker {
     pub fn synthesize(&self,text:&str)->AppResult<Vec<i16>> {
         self.cache.render(text,||self.speaker.synthesize(text,super::audio::SPEAKER_RATE))
     }
+
+    /// Like `synthesize`, but streaming voices hand over audio as it
+    /// arrives; `sink` returns false to stop.
+    pub fn synthesize_stream(&self,text:&str,sink:&mut dyn FnMut(&[i16])->bool)->AppResult<()> {
+        if !matches!(self.speaker,Speaker::Eleven(..)) {
+            sink(&self.synthesize(text)?);
+            return Ok(());
+        }
+        if let Some(pcm)=self.cache.0.lock().get(text).cloned() {
+            sink(&pcm);
+            return Ok(());
+        }
+        let mut all=Vec::new();
+        let mut complete=true;
+        self.speaker.synthesize_stream(text,&mut |pcm| { all.extend_from_slice(pcm); complete=sink(pcm); complete })?;
+        let mut cache=self.cache.0.lock();
+        if complete && text.chars().count()<=64 && cache.len()<16 { cache.insert(text.into(),all); }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -89,6 +108,11 @@ pub const SUPERTONIC_SPEAKERS: &[(i32, &str)] = &[
 /// Voices for Settings: installed neural voices first, then Windows voices.
 pub fn voices() -> AppResult<Vec<TtsVoice>> {
     let mut out = Vec::new();
+    if super::elevenlabs::configured() {
+        for (id, name) in super::elevenlabs::voices() {
+            out.push(TtsVoice { id: format!("{}{id}", super::elevenlabs::PREFIX), name: format!("{name} (ElevenLabs)"), language: "ru-RU".into() });
+        }
+    }
     if super::azure::configured() {
         for (id, name) in super::azure::VOICES {
             out.push(TtsVoice { id: format!("{}{id}", super::azure::PREFIX), name: format!("{name} (Microsoft)"), language: "ru-RU".into() });
@@ -115,6 +139,9 @@ pub fn voices() -> AppResult<Vec<TtsVoice>> {
 /// The best voice available without a choice: a downloaded neural voice,
 /// else the first Russian Windows voice.
 pub fn default_voice() -> String {
+    if super::elevenlabs::configured() {
+        return format!("{}{}", super::elevenlabs::PREFIX, super::elevenlabs::DEFAULT_VOICE);
+    }
     if super::azure::configured() {
         return format!("{}{}", super::azure::PREFIX, super::azure::VOICES[0].0);
     }
@@ -137,6 +164,8 @@ pub enum Speaker {
     Azure(super::azure::AzureVoice, std::sync::OnceLock<Option<Box<Speaker>>>, f64),
     /// A SAPI 5 engine such as Silero.
     Sapi(super::sapi::SapiVoice),
+    /// ElevenLabs, streamed; the local voice speaks when the network fails.
+    Eleven(super::elevenlabs::ElevenVoice, std::sync::OnceLock<Option<Box<Speaker>>>, f64),
 }
 
 /// The best local voice (no network needed).
@@ -158,6 +187,9 @@ impl Speaker {
     /// settings stored a bare WinRT id.
     pub fn new(voice: &str, rate: f64) -> AppResult<Speaker> {
         let voice = if voice.trim().is_empty() { default_voice() } else { voice.trim().to_string() };
+        if let Some(id) = voice.strip_prefix(super::elevenlabs::PREFIX) {
+            return Ok(Speaker::Eleven(super::elevenlabs::ElevenVoice::new(id, rate)?, std::sync::OnceLock::new(), rate));
+        }
         if let Some(id) = voice.strip_prefix(super::azure::PREFIX) {
             return Ok(Speaker::Azure(super::azure::AzureVoice::new(id, rate)?, std::sync::OnceLock::new(), rate));
         }
@@ -179,12 +211,27 @@ impl Speaker {
             Speaker::Windows(w) => format!("{} (Windows)", w.voice),
             Speaker::Azure(a, ..) => format!("{} (Microsoft)", a.voice),
             Speaker::Sapi(s) => format!("{} (SAPI)", s.name),
+            Speaker::Eleven(e, ..) => format!("{} (ElevenLabs)", e.name),
         }
     }
 
     /// Synthesise `text` to PCM16 mono at `out_rate` (`SPEAKER_RATE` for playback).
     /// Russian text is normalised first (numbers, names, symbols in words).
     pub fn synthesize(&self, text: &str, out_rate: u32) -> AppResult<Vec<i16>> {
+        if let Speaker::Eleven(..) = self {
+            let mut all = Vec::new();
+            self.synthesize_stream(text, &mut |pcm| {
+                all.extend_from_slice(pcm);
+                true
+            })?;
+            if out_rate == 24_000 {
+                return Ok(all);
+            }
+            let mono: Vec<f32> = all.iter().map(|s| *s as f32 / 32768.0).collect();
+            let mut out = Vec::new();
+            Resampler::new(24_000, out_rate).process(&mono, &mut out);
+            return Ok(out.iter().map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).collect());
+        }
         let text = super::ru_speech::normalize(text);
         let text = text.as_str();
         let (rate, mono) = match self {
@@ -203,11 +250,43 @@ impl Speaker {
                     };
                 }
             },
+            Speaker::Eleven(..) => unreachable!("handled above"),
         };
         let mono = trim_leading_silence(&mono, rate);
         let mut out = Vec::with_capacity(mono.len() * out_rate as usize / rate as usize + 8);
         Resampler::new(rate, out_rate).process(mono, &mut out);
         Ok(out.iter().map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).collect())
+    }
+}
+
+impl Speaker {
+    /// PCM16 mono at 24 kHz as it is made (ElevenLabs streams; the others
+    /// hand over the whole phrase at once). When ElevenLabs fails before
+    /// any sound, the local voice says the phrase instead.
+    pub fn synthesize_stream(&self, text: &str, sink: &mut dyn FnMut(&[i16]) -> bool) -> AppResult<()> {
+        let Speaker::Eleven(e, fallback, speed) = self else {
+            sink(&self.synthesize(text, 24_000)?);
+            return Ok(());
+        };
+        let normalized = super::ru_speech::normalize(text);
+        let mut started = false;
+        let res = e.stream(&normalized, &mut |pcm| {
+            started = true;
+            sink(pcm)
+        });
+        match res {
+            Err(err) if !started => {
+                tracing::warn!("{err}; local voice speaks instead");
+                match fallback.get_or_init(|| Speaker::new(&local_voice(), *speed).ok().map(Box::new)) {
+                    Some(s) => {
+                        sink(&s.synthesize(text, 24_000)?);
+                        Ok(())
+                    }
+                    None => Err(err),
+                }
+            }
+            other => other,
+        }
     }
 }
 

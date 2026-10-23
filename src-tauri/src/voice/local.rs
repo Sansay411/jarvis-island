@@ -79,6 +79,13 @@ fn acknowledgement(vy: bool) -> String {
     if vy { "Слушаю вас." } else { "Слушаю." }.into()
 }
 
+/// Said at once when the answer is slow to start, so the pause after a
+/// request is never dead air. Cached at session start: they cost nothing.
+const FILLERS: &[&str] = &["Одну секунду.", "Ага.", "Сейчас.", "Минутку."];
+
+/// How long a turn may stay silent before a filler is said.
+const FILLER_AFTER: Duration = Duration::from_millis(700);
+
 /// GigaAM writes a lone «стоп» in Latin («Stop.») — seen live.
 const STOP_WORDS: &[&str] = &["стоп", "хватит", "отмена", "отмени", "замолчи", "тихо", "стой", "stop"];
 
@@ -122,6 +129,9 @@ enum Ev {
     Transcribed(AppResult<Transcript>, Instant, bool),
     Delta(u64, String),
     TurnDone(u64, AppResult<String>),
+    /// Part of a phrase, as a streaming voice makes it.
+    AudioChunk(u64, Vec<i16>),
+    /// The phrase is complete: its tail (the pause after it), or the error.
     Audio(u64, AppResult<Vec<i16>>),
     WakePreview(u64, AppResult<Transcript>),
 }
@@ -168,6 +178,8 @@ struct Pipeline {
     ack_gen: Option<u64>,
     /// Ended without the name listener: hear nothing, close after `REST_FOR`.
     resting_since: Option<Instant>,
+    /// When to say a filler if the answer hasn't started by then.
+    filler_at: Option<Instant>,
 }
 
 impl Pipeline {
@@ -222,6 +234,7 @@ impl Pipeline {
     /// Drop everything queued or playing.
     fn hush(&mut self) {
         self.ack_gen = None;
+        self.filler_at = None;
         self.audio.clear_playback();
         self.speech_gen += 1;
         self.synth_generation.store(self.speech_gen,std::sync::atomic::Ordering::Release);
@@ -237,6 +250,7 @@ impl Pipeline {
         self.splitter = PhraseSplitter::default();
         self.reply.clear();
         self.spoken_any = false;
+        self.filler_at = Some(Instant::now() + FILLER_AFTER);
         let seq = self.turn_seq;
         let (dtx, mut drx) = mpsc::unbounded_channel::<String>();
         let fwd = self.ev_tx.clone();
@@ -360,7 +374,10 @@ impl VoiceManager {
         tracing::info!(voice = %speaker.speaker.name(), dormant, "local voice session started");
         let address_vy = store.settings().persona.address == "vy";
         let ready_speaker=speaker.clone();
-        tokio::task::spawn_blocking(move || {let _=ready_speaker.synthesize(&acknowledgement(address_vy));});
+        tokio::task::spawn_blocking(move || {
+            let _=ready_speaker.synthesize(&acknowledgement(address_vy));
+            for f in FILLERS { let _=ready_speaker.synthesize(f); }
+        });
 
         let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<Ev>();
         // Phrases are synthesised one at a time, in order.
@@ -374,13 +391,18 @@ impl VoiceManager {
                 while let Some((gen, phrase)) = synth_rx.recv().await {
                     if gen!=generation.load(std::sync::atomic::Ordering::Acquire) { continue; }
                     let sp = speaker.clone();
+                    let (chunks, live) = (ev_tx.clone(), generation.clone());
                     let pcm = tokio::task::spawn_blocking(move || {
-                        // A breath after each sentence, longer after «?» and «…».
-                        sp.synthesize(&phrase).map(|mut pcm| {
-                            let pause = super::ru_speech::pause_after_ms(&phrase) as usize * SPEAKER_RATE as usize / 1000;
-                            pcm.resize(pcm.len() + pause, 0);
-                            pcm
+                        // Streaming voices start playing before the phrase is
+                        // done; a hushed phrase stops downloading.
+                        sp.synthesize_stream(&phrase, &mut |pcm| {
+                            if gen != live.load(std::sync::atomic::Ordering::Acquire) {
+                                return false;
+                            }
+                            chunks.send(Ev::AudioChunk(gen, pcm.to_vec())).is_ok()
                         })
+                        // A breath after each sentence, longer after «?» and «…».
+                        .map(|()| vec![0; super::ru_speech::pause_after_ms(&phrase) as usize * SPEAKER_RATE as usize / 1000])
                     })
                     .await
                     .unwrap_or_else(|e| Err(AppError::internal(e.to_string())));
@@ -419,6 +441,7 @@ impl VoiceManager {
             shown: initial,
             utterance_seq:0,preview_job:None,hearing_since:None,
             playback_pending:false,
+            filler_at: None,
             ack_gen: None,
             resting_since: None,
         };
@@ -583,6 +606,7 @@ impl VoiceManager {
                         pl.refresh_state(&vad);
                     }
                     Ev::Delta(seq, d) if seq == pl.turn_seq => {
+                        pl.filler_at = None;
                         pl.reply.push_str(&d);
                         pl.emit_transcript("assistant", &d, false);
                         for phrase in pl.splitter.push(&d) {
@@ -592,6 +616,7 @@ impl VoiceManager {
                     Ev::Delta(..) => {}
                     Ev::TurnDone(seq, res) if seq == pl.turn_seq => {
                         pl.turn_active = false;
+                        pl.filler_at = None;
                         pl.turn_finished = Some(Instant::now());
                         match res {
                             Ok(final_text) => {
@@ -617,20 +642,26 @@ impl VoiceManager {
                         pl.refresh_state(&vad);
                     }
                     Ev::TurnDone(..) => {}
+                    Ev::AudioChunk(gen, pcm) if gen == pl.speech_gen => {
+                        pl.audio.play_pcm16(&pcm);
+                        pl.playback_pending = true;
+                        if pl.first_audio_pending {
+                            pl.first_audio_pending = false;
+                            if let Some(t0) = pl.speech_end_at {
+                                let ms = t0.elapsed().as_millis() as u64;
+                                self.metrics.lock().last_time_to_first_audio_ms = Some(ms);
+                                tracing::info!(ms, "voice time to first audio");
+                            }
+                        }
+                        pl.refresh_state(&vad);
+                    }
+                    Ev::AudioChunk(..) => {}
                     Ev::Audio(gen, res) if gen == pl.speech_gen => {
                         pl.queued_phrases = pl.queued_phrases.saturating_sub(1);
                         match res {
                             Ok(pcm) => {
                                 pl.audio.play_pcm16(&pcm);
                                 pl.playback_pending = true;
-                                if pl.first_audio_pending {
-                                    pl.first_audio_pending = false;
-                                    if let Some(t0) = pl.speech_end_at {
-                                        let ms = t0.elapsed().as_millis() as u64;
-                                        self.metrics.lock().last_time_to_first_audio_ms = Some(ms);
-                                        tracing::info!(ms, "voice time to first audio");
-                                    }
-                                }
                             }
                             Err(e) => tracing::warn!("speech synthesis failed: {e}"),
                         }
@@ -654,6 +685,15 @@ impl VoiceManager {
                     pl.refresh_state(&vad);
                 }
                 _ = level_tick.tick() => {
+                    if pl.turn_active && pl.filler_at.is_some_and(|t| Instant::now() >= t) {
+                        pl.filler_at = None;
+                        if pl.queued_phrases == 0 && !pl.audio.is_playing() {
+                            // Not `say`: a filler doesn't count as the answer.
+                            pl.queued_phrases += 1;
+                            let line = FILLERS[pl.turn_seq as usize % FILLERS.len()].to_string();
+                            let _ = pl.synth_tx.send((pl.speech_gen, line));
+                        }
+                    }
                     if pl.playback_pending && !pl.turn_active && pl.queued_phrases == 0 && !pl.audio.is_playing() {
                         tracing::info!(turn=pl.turn_seq,"voice playback drained");
                         pl.playback_pending = false;

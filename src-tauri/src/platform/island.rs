@@ -76,7 +76,7 @@ impl ScreenRect {
     /// (file drags from Explorer toward the top of the screen).
     fn approach_zone(&self, scale: f64) -> ScreenRect {
         let side = (140.0 * scale) as i32;
-        let below = (90.0 * scale) as i32;
+        let below = (220.0 * scale) as i32;
         ScreenRect { l: self.l - side, t: self.t, r: self.r + side, b: self.b + below }
     }
 }
@@ -344,6 +344,7 @@ impl Island {
         let mut last = PointerEvent { inside: false, drag_approach: false };
         let mut was_down = false;
         let mut press_inside = false;
+        let mut catcher_shown = false;
         loop {
             self.tracker_ticks.fetch_add(1, Ordering::Relaxed);
             if !self.is_visible() || self.pointer_suppressed.load(Ordering::Relaxed) {
@@ -391,6 +392,24 @@ impl Island {
             if want != interactive {
                 if self.window.set_ignore_cursor_events(!want).is_ok() {
                     interactive = want;
+                }
+            }
+
+            // A file drag is near: cover the island with the drop catcher
+            // until the button is released.
+            let cover = if drag_approach && !catcher_shown {
+                Some(true)
+            } else if !down && catcher_shown {
+                Some(false)
+            } else {
+                None
+            };
+            if let Some(show) = cover {
+                catcher_shown = show;
+                if let Ok(hwnd) = self.window.hwnd() {
+                    let app = self.app.clone();
+                    let hwnd = hwnd.0 as isize;
+                    let _ = self.app.run_on_main_thread(move || super::drop_target::cover(&app, LABEL, HWND(hwnd as _), show));
                 }
             }
 

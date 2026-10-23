@@ -233,6 +233,7 @@ pub fn run() {
             }
             match event {
                 WindowEvent::Focused(false) => window.state::<AppState>().island.on_focus_lost(),
+                WindowEvent::DragDrop(e) => tracing::debug!(?e, "island drag-drop"),
                 WindowEvent::ScaleFactorChanged { .. } => {
                     let _ = window.state::<AppState>().island.place();
                 }

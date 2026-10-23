@@ -54,6 +54,7 @@ pub struct SettingsView {
     pub has_llm_key: bool,
     pub has_voice_key: bool,
     pub has_azure_key: bool,
+    pub has_elevenlabs_key: bool,
     pub log_path: Option<String>,
     pub data_path: Option<String>,
 }
@@ -67,6 +68,7 @@ pub fn settings_get(app: AppHandle, state: State<'_, AppState>) -> SettingsView 
         has_llm_key: secrets::exists(secrets::LLM_API_KEY),
         has_voice_key: secrets::exists(secrets::VOICE_API_KEY),
         has_azure_key: crate::voice::azure::configured(),
+        has_elevenlabs_key: crate::voice::elevenlabs::configured(),
         log_path: log_dir,
         data_path: app.path().app_local_data_dir().ok().map(|p| p.display().to_string()),
     }
@@ -99,6 +101,7 @@ pub enum SecretKind {
     Voice,
     /// Azure Speech key; `base_url` carries its region.
     Azure,
+    Elevenlabs,
 }
 
 fn target(kind: &SecretKind) -> &'static str {
@@ -106,6 +109,7 @@ fn target(kind: &SecretKind) -> &'static str {
         SecretKind::Llm => secrets::LLM_API_KEY,
         SecretKind::Voice => secrets::VOICE_API_KEY,
         SecretKind::Azure => secrets::AZURE_SPEECH_KEY,
+        SecretKind::Elevenlabs => secrets::ELEVENLABS_KEY,
     }
 }
 

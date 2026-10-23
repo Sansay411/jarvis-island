@@ -516,91 +516,53 @@
   text-overflow: ellipsis;
 }
 .file-actions {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 .file-action {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 2px;
-  min-height: 46px;
-  padding: 6px 10px;
-  border-radius: var(--r-sm);
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--r-pill);
   background: var(--graphite-2);
-  box-shadow: inset 0 0 0 1px var(--line);
-  text-align: left;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  font-weight: 560;
+  white-space: nowrap;
   transition: background var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
 .file-action:hover:not(:disabled) {
   background: var(--graphite-3);
 }
-.file-action:active:not(:disabled) {
+.file-action:active:not(:disabled),
+.file-chip:active:not(:disabled) {
   transform: scale(0.97);
 }
-.file-action:disabled {
+.file-action:disabled,
+.file-chip:disabled {
   opacity: 0.45;
   cursor: default;
-}
-.file-action-label {
-  color: var(--text-1);
-  font-size: var(--fs-12);
-  font-weight: 560;
-}
-.file-action-hint {
-  color: var(--text-3);
-  font-size: 10.5px;
-  line-height: 1.25;
-}
-.file-more {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 8px 0 10px;
-  border-radius: var(--r-sm);
-  color: var(--text-2);
-  font-size: var(--fs-12);
-  font-weight: 560;
-}
-.file-more:hover {
-  color: var(--text-1);
-  background: var(--graphite-3);
-}
-.file-more svg {
-  transition: transform var(--dur-fast) var(--ease-out);
-}
-.file-more.is-open svg {
-  transform: rotate(90deg);
 }
 .file-more-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
 }
 .file-chip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
   height: 26px;
   padding: 0 10px;
   border-radius: var(--r-pill);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-  color: var(--text-1);
+  color: var(--text-2);
   font-size: var(--fs-12);
-  line-height: 26px;
-}
-.file-chip span {
-  color: var(--text-3);
-  font-size: 10.5px;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 .file-chip:hover:not(:disabled) {
   background: var(--graphite-3);
-}
-.file-chip:disabled {
-  opacity: 0.45;
+  color: var(--text-1);
 }
 .file-job {
   display: grid;

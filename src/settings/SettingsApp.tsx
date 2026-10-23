@@ -52,6 +52,7 @@ interface SettingsView {
   hasLlmKey: boolean;
   hasVoiceKey: boolean;
   hasAzureKey: boolean;
+  hasElevenlabsKey: boolean;
   logPath: string | null;
   dataPath: string | null;
 }
@@ -290,6 +291,27 @@ function Keycaps({ value }: { value: string }) {
   );
 }
 
+/** ElevenLabs through the user's own plan: the most natural voice, streamed. */
+function ElevenVoice({ has, notify, onChanged, onUse }: { has: boolean; notify: (tone: Tone, text: string) => void; onChanged: () => void; onUse: (id: string) => void }) {
+  return (
+    <>
+      <p className="note">
+        Самый живой голос. Модель v4 Turbo — первый звук через 0,2 секунды, звук идёт потоком, пока фраза ещё создаётся. Тратит полкредита на символ: на тарифе Starter
+        это около 75 000 символов речи в месяц. Наружу уходит только текст ответа. Без интернета или когда кредиты кончились, говорит локальный голос.
+      </p>
+      <KeyField
+        kind="elevenlabs"
+        has={has}
+        notify={notify}
+        onChanged={() => {
+          onChanged();
+          onUse("eleven:rQOBu7YxCDxGiFdTm28w");
+        }}
+      />
+    </>
+  );
+}
+
 /** Microsoft neural voices through the user's own free Azure Speech (F0). */
 function AzureVoice({ has, notify, onChanged, onUse }: { has: boolean; notify: (tone: Tone, text: string) => void; onChanged: () => void; onUse: (id: string) => void }) {
   const [region, setRegion] = useState("westeurope");
@@ -322,7 +344,7 @@ function AzureVoice({ has, notify, onChanged, onUse }: { has: boolean; notify: (
   );
 }
 
-function KeyField({ kind, has, onChanged, baseUrl, notify }: { kind: "llm" | "voice" | "azure"; has: boolean; onChanged: () => void; baseUrl?: string; notify: (tone: Tone, text: string) => void }) {
+function KeyField({ kind, has, onChanged, baseUrl, notify }: { kind: "llm" | "voice" | "azure" | "elevenlabs"; has: boolean; onChanged: () => void; baseUrl?: string; notify: (tone: Tone, text: string) => void }) {
   const [value, setValue] = useState("");
   const [editing, setEditing] = useState(!has);
   useEffect(() => setEditing(!has), [has]);
@@ -650,6 +672,10 @@ export default function SettingsApp() {
                         <DownloadControl model={m} progress={progress} onDownload={() => void download(m.id)} />
                       </Row>
                     ))}
+                  </Group>
+
+                  <Group title="Голос ElevenLabs">
+                    <ElevenVoice has={view.hasElevenlabsKey} notify={notify} onChanged={() => { void load(); loadVoices(); }} onUse={(id) => set((s) => ({ ...s, voice: { ...s.voice, ttsVoice: id } }))} />
                   </Group>
 
                   <Group title="Голос Microsoft — бесплатно">

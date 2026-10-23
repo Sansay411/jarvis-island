@@ -11,6 +11,7 @@ pub mod capture;
 pub mod clipboard;
 pub mod com;
 pub mod display;
+pub mod drop_target;
 pub mod input;
 pub mod island;
 pub mod media;

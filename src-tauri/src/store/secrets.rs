@@ -16,6 +16,8 @@ pub const VOICE_API_KEY: &str = "JARVIS/voice-api-key";
 /// Microsoft Azure Speech (free F0 tier): key and its region («westeurope»).
 pub const AZURE_SPEECH_KEY: &str = "JARVIS/azure-speech-key";
 pub const AZURE_SPEECH_REGION: &str = "JARVIS/azure-speech-region";
+/// ElevenLabs API key (the user's own plan).
+pub const ELEVENLABS_KEY: &str = "JARVIS/elevenlabs-key";
 
 pub fn set(target: &str, secret: &str) -> AppResult<()> {
     let target_w = HSTRING::from(target);

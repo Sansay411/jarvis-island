@@ -54,6 +54,7 @@ export const ipc = {
 type EventMap = {
   "island:pointer": PointerEvent;
   "island:presence": PresenceEvent;
+  "island:file-drop": { type: "enter" | "over" | "leave" | "drop"; paths: string[] };
   "island:context": { topCovered: boolean };
   "island:blur": null;
   "island:command": IslandCommand;
