@@ -424,15 +424,19 @@ impl VoiceManager {
         let store = &self.app.state::<crate::state::AppState>().store;
         crate::ai::client_from_settings(&store.settings(), store)?;
 
-        // Load the model while the microphone already listens.
+        // Load the model while the microphone already listens. Waiting for
+        // the name nobody is in a hurry (app start-up): load at background
+        // priority so the desktop does not stutter.
         let engine = self.stt.clone();
         let p = model_path.clone();
-        let preload = tokio::task::spawn_blocking(move || engine.ensure(&p));
+        let preload = tokio::task::spawn_blocking(move || {
+            if dormant { crate::platform::in_background(|| engine.ensure(&p)) } else { engine.ensure(&p) }
+        });
 
         let (voice, rate) = (cfg.tts_voice.clone(), cfg.tts_rate);
         let speech=self.speech.clone();
         let speaker = tokio::task::spawn_blocking(move || {
-            speech.get(&voice,rate)
+            if dormant { crate::platform::in_background(|| speech.get(&voice,rate)) } else { speech.get(&voice,rate) }
         })
         .await
         .map_err(|e| AppError::internal(e.to_string()))??;

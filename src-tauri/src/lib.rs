@@ -196,11 +196,13 @@ pub fn run() {
             app.manage(reminders.clone());
             app.manage(Arc::new(stopwatch::Stopwatch::new(app.handle().clone())));
             reminders.spawn();
-            // Start listening for «Джарвис» if that is on (after start-up settles).
+            // Start listening for «Джарвис» if that is on — after WebView2 has
+            // booted and painted the island, so model loading does not pile
+            // onto the busiest second of start-up.
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(600)).await;
+                    tokio::time::sleep(Duration::from_millis(2500)).await;
                     handle.state::<Arc<voice::VoiceManager>>().apply_settings();
                 });
             }
@@ -212,10 +214,11 @@ pub fn run() {
                 tracing::warn!("media watcher not started: {e}");
             }
             // Warm the app index in the background so the first "open X"
-            // doesn't pay for Start-menu enumeration.
+            // doesn't pay for Start-menu enumeration — after the speech models
+            // have loaded, at background priority.
             tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                let _ = platform::blocking(move || apps.ensure_fresh(Duration::from_secs(600))).await;
+                tokio::time::sleep(Duration::from_secs(12)).await;
+                let _ = platform::blocking(move || platform::in_background(|| apps.ensure_fresh(Duration::from_secs(600)))).await;
             });
 
             setup_tray(app)?;

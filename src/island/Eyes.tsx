@@ -287,9 +287,12 @@ export function Eyes({ mood, level, lookX, lookY = 0, scale = 1, emote = null, e
     if (mood === "error" && !reduced) animate(drift, [0, -3, 3, -2.4, 2.4, -1, 0], { duration: 0.55 });
   }, [mood, reduced, drift]);
 
-  // A slow, barely visible shimmer: the light is alive, not printed.
+  // A slow, barely visible shimmer: the light is alive, not printed. Only
+  // while JARVIS is busy: an endless animation repaints the blurred SVG at
+  // the panel's refresh rate and keeps DWM compositing an always-on-top
+  // transparent window — the idle island must cost nothing between blinks.
   useEffect(() => {
-    if (reduced || mood === "sleep") {
+    if (reduced || mood === "sleep" || mood === "idle" || mood === "attentive") {
       life.set(1);
       return;
     }

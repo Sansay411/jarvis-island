@@ -38,6 +38,19 @@ where
     .map_err(|e| AppError::internal(format!("Фоновая задача завершилась аварийно: {e}")))?
 }
 
+/// Run `f` in the background scheduling mode (low CPU, I/O and memory
+/// priority) on the current thread: warm-up work nobody is waiting for —
+/// loading speech models, indexing apps — must not make the desktop stutter.
+pub fn in_background<T>(f: impl FnOnce() -> T) -> T {
+    use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN, THREAD_MODE_BACKGROUND_END};
+    let lowered = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) }.is_ok();
+    let out = f();
+    if lowered {
+        let _ = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END) };
+    }
+    out
+}
+
 /// Encode a Rust string as a NUL-terminated UTF-16 buffer for Win32 calls.
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
