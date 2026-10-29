@@ -18,7 +18,11 @@
 <br>
 
 <div align="center">
-<img src="docs/media/island.png" width="720" alt="Остров Джарвиса вверху экрана">
+<a href="https://github.com/Sansay411/jarvis-island/releases/download/v0.1.1/jarvis-demo.mp4">
+<img src="docs/media/demo.webp" width="900" alt="Демо Джарвиса: голос, действия, файлы, подтверждения">
+</a>
+<br>
+<sub>▶ <a href="https://github.com/Sansay411/jarvis-island/releases/download/v0.1.1/jarvis-demo.mp4">Полное демо в 1080p, 39 секунд</a></sub>
 </div>
 
 <br>
@@ -49,6 +53,19 @@ Rust и системные API Windows. Никакого Electron, Python и ф�
 DeepSeek по умолчанию. Также OpenAI, OpenRouter, Model Studio, Ollama и любой OpenAI-совместимый API.
 
 </td>
+</tr>
+</table>
+
+## Как это выглядит
+
+<table>
+<tr>
+<td width="50%"><img src="docs/media/voice.jpg" alt="Голосовой режим"><br><b>Голос.</b> Скажите «Джарвис», он слушает и отвечает голосом. Речь распознаётся на компьютере.</td>
+<td width="50%"><img src="docs/media/chat.jpg" alt="Чат с действиями"><br><b>Действия.</b> Одна просьба, несколько шагов. Каждый проверен, прежде чем Джарвис ответит.</td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/media/files.jpg" alt="Действия с файлом"><br><b>Файлы.</b> Бросьте файл на остров, и он предложит, что с ним сделать.</td>
+<td width="50%"><img src="docs/media/safety.jpg" alt="Подтверждение опасного действия"><br><b>Безопасность.</b> Удаление, отправка и покупки идут только после вашего «Разрешить».</td>
 </tr>
 </table>
 
