@@ -187,8 +187,10 @@ pub fn run(args: &[String], duration: Option<f64>, mut progress: impl FnMut(f32)
     Ok(())
 }
 
-/// Mono 16 kHz samples of the first audio track (for recognition).
-pub fn decode_pcm16k(path: &Path, mut cancelled: impl FnMut() -> bool) -> AppResult<Vec<f32>> {
+/// Mono 16 kHz samples of the first audio track (for recognition), handed
+/// to `on_samples` as they are decoded so hours of audio never sit in memory.
+/// `on_samples` returns false to cancel.
+pub fn decode_pcm16k(path: &Path, mut on_samples: impl FnMut(&[f32]) -> AppResult<bool>) -> AppResult<()> {
     let tool = ffmpeg()?;
     let mut child = command(&tool)
         .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-i"])
@@ -199,18 +201,22 @@ pub fn decode_pcm16k(path: &Path, mut cancelled: impl FnMut() -> bool) -> AppRes
         .spawn()
         .map_err(|e| AppError::platform(format!("Не удалось запустить FFmpeg: {e}")))?;
     let mut stdout = child.stdout.take().expect("piped");
-    let mut pcm = Vec::new();
+    let mut pcm = Vec::with_capacity(32 * 1024);
+    let mut any = false;
     let mut buf = vec![0u8; 64 * 1024];
     let mut carry: Option<u8> = None;
     loop {
-        if cancelled() {
-            let _ = child.kill();
-            return Err(AppError::Cancelled);
-        }
-        let n = stdout.read(&mut buf).map_err(|e| AppError::platform(format!("FFmpeg: {e}")))?;
+        let n = match stdout.read(&mut buf) {
+            Ok(n) => n,
+            Err(e) => {
+                let _ = child.kill();
+                return Err(AppError::platform(format!("FFmpeg: {e}")));
+            }
+        };
         if n == 0 {
             break;
         }
+        pcm.clear();
         let mut bytes: &[u8] = &buf[..n];
         if let Some(lo) = carry.take() {
             pcm.push(i16::from_le_bytes([lo, bytes[0]]) as f32 / 32768.0);
@@ -221,12 +227,24 @@ pub fn decode_pcm16k(path: &Path, mut cancelled: impl FnMut() -> bool) -> AppRes
             pcm.push(i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0);
         }
         carry = it.remainder().first().copied();
+        any |= !pcm.is_empty();
+        match on_samples(&pcm) {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = child.kill();
+                return Err(AppError::Cancelled);
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(e);
+            }
+        }
     }
     let status = child.wait().map_err(|e| AppError::platform(format!("FFmpeg: {e}")))?;
-    if !status.success() || pcm.is_empty() {
+    if !status.success() || !any {
         return Err(AppError::invalid("В файле нет звуковой дорожки, которую можно прочитать"));
     }
-    Ok(pcm)
+    Ok(())
 }
 
 /// One video frame as PNG bytes, scaled to `width` (thumbnails).

@@ -485,7 +485,7 @@ pub fn execute(voice: Option<&crate::voice::VoiceManager>, paths: &[String], act
         }
         "unzip" => {
             let dir = unique_path(&parent_of(&first), &stem_of(&first), "");
-            let count = archive::unzip(&first, &dir)?;
+            let count = archive::unzip(&first, &dir, &mut *progress)?;
             done(format!("Распаковал {} в «{}»", plural(count, "элемент", "элемента", "элементов"), dir.file_name().unwrap_or_default().to_string_lossy()), vec![dir.to_string_lossy().to_string()])
         }
         "convert:png" | "convert:jpg" | "convert:webp" => {
@@ -596,8 +596,18 @@ pub fn execute(voice: Option<&crate::voice::VoiceManager>, paths: &[String], act
             let mut outs = Vec::new();
             for (i, p) in list.iter().enumerate() {
                 let base = i as f32 / n as f32;
-                let pcm = media::decode_pcm16k(p, || false)?;
-                let phrases = voice.transcribe_long(&pcm, |x| progress(base + x / n as f32))?;
+                // Progress by decoded time against the file's length; a
+                // cancel stops FFmpeg and recognition together.
+                let duration = media::probe(p, std::time::Duration::from_secs(10)).ok().and_then(|pr| pr.duration_s).filter(|d| *d > 0.0);
+                let mut decoded = 0usize;
+                let phrases = voice.transcribe_stream(|feed| {
+                    media::decode_pcm16k(p, |samples| {
+                        feed(samples)?;
+                        decoded += samples.len();
+                        let x = duration.map_or(0.0, |d| (decoded as f64 / 16_000.0 / d).min(1.0) as f32);
+                        Ok(progress(base + x / n as f32))
+                    })
+                })?;
                 if phrases.is_empty() {
                     continue;
                 }

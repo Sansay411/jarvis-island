@@ -214,7 +214,7 @@ impl Reminders {
     }
 
     fn fire(&self, r: &Reminder) {
-        match self.store().mark_fired(r.id) {
+        match self.store().mark_fired(r.id, &r.due_at) {
             Ok(true) => {}
             _ => return,
         }

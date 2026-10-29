@@ -10,7 +10,7 @@ use windows::core::HSTRING;
 use windows::Data::Pdf::{PdfDocument, PdfPageRenderOptions};
 use windows::Globalization::Language;
 use windows::Graphics::Imaging::{
-    BitmapAlphaMode, BitmapDecoder, BitmapPixelFormat, BitmapTransform, ColorManagementMode,
+    BitmapAlphaMode, BitmapDecoder, BitmapInterpolationMode, BitmapPixelFormat, BitmapTransform, ColorManagementMode,
     ExifOrientationMode, SoftwareBitmap,
 };
 use windows::Media::Ocr::OcrEngine;
@@ -54,7 +54,23 @@ fn decode_with(dec: &BitmapDecoder, max_side: Option<u32>) -> AppResult<Rgba> {
     if w == 0 || h == 0 {
         return Err(AppError::invalid("Изображение пустое"));
     }
+    // A 12000×12000 photo is 576 MB of RGBA: scale inside the decoder for a
+    // thumbnail, and refuse what could not fit in memory at all.
+    let k = max_side.filter(|m| w.max(h) > *m).map(|m| m as f64 / w.max(h) as f64);
+    if k.is_none() && (w as u64) * (h as u64) > MAX_PIXELS {
+        return Err(AppError::unsupported(format!("Изображение {w}×{h} слишком большое для обработки")));
+    }
     let transform = BitmapTransform::new().map_err(|e| platform("WIC", e))?;
+    let (mut w, mut h) = (w, h);
+    if let Some(k) = k {
+        // The scale applies to the stored frame, before EXIF rotation.
+        let (pw, ph) = (dec.PixelWidth().unwrap_or(w), dec.PixelHeight().unwrap_or(h));
+        let (sw, sh) = (((pw as f64 * k).round() as u32).max(1), ((ph as f64 * k).round() as u32).max(1));
+        let _ = transform.SetScaledWidth(sw);
+        let _ = transform.SetScaledHeight(sh);
+        let _ = transform.SetInterpolationMode(BitmapInterpolationMode::Fant);
+        (w, h) = if (w, h) == (pw, ph) { (sw, sh) } else { (sh, sw) };
+    }
     let data = dec
         .GetPixelDataTransformedAsync(
             BitmapPixelFormat::Rgba8,
@@ -69,12 +85,11 @@ fn decode_with(dec: &BitmapDecoder, max_side: Option<u32>) -> AppResult<Rgba> {
     if pixels.len() != (w as usize) * (h as usize) * 4 {
         return Err(AppError::platform("Декодер вернул неожиданный размер изображения"));
     }
-    let img = Rgba { width: w, height: h, pixels };
-    Ok(match max_side.filter(|m| w.max(h) > *m) {
-        Some(max) => shrink(&img, max),
-        None => img,
-    })
+    Ok(Rgba { width: w, height: h, pixels })
 }
+
+/// About 1 GB of RGBA.
+const MAX_PIXELS: u64 = 250_000_000;
 
 /// Downscale so the longer side is `max` (orientation already applied).
 pub fn shrink(img: &Rgba, max: u32) -> Rgba {

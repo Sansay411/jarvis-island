@@ -63,10 +63,20 @@ pub fn zip_paths(paths: &[PathBuf], out: &Path, mut progress: impl FnMut(usize, 
     Ok(files)
 }
 
-/// Extract into `dir` (created). Entries that would escape the folder are refused.
-pub fn unzip(archive: &Path, dir: &Path) -> AppResult<usize> {
+/// Limits that keep a small "zip bomb" from filling the disk.
+const UNZIP_MAX_FILES: usize = 100_000;
+const UNZIP_MAX_ENTRY: u64 = 8 << 30;
+const UNZIP_MAX_TOTAL: u64 = 16 << 30;
+
+/// Extract into `dir` (created; removed again on failure or cancel). Entries
+/// that would escape the folder, links and oversized content are refused.
+/// `progress(fraction)` returns false to cancel.
+pub fn unzip(archive: &Path, dir: &Path, mut progress: impl FnMut(f32) -> bool) -> AppResult<usize> {
     let file = File::open(archive).map_err(|e| io("Архив", e))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|_| AppError::invalid("Это не ZIP-архив или он повреждён"))?;
+    if zip.len() > UNZIP_MAX_FILES {
+        return Err(AppError::unsupported(format!("В архиве больше {UNZIP_MAX_FILES} файлов, распаковывать не стану")));
+    }
     for i in 0..zip.len() {
         let entry = zip.by_index(i).map_err(|e| io("Архив", e))?;
         if entry.enclosed_name().is_none() {
@@ -77,8 +87,44 @@ pub fn unzip(archive: &Path, dir: &Path) -> AppResult<usize> {
         }
     }
     std::fs::create_dir_all(dir).map_err(|e| io("Папка", e))?;
-    zip.extract(dir).map_err(|e| io("Не удалось распаковать", e))?;
-    Ok(zip.len())
+    let res = extract_limited(&mut zip, dir, &mut progress);
+    if res.is_err() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    res
+}
+
+fn extract_limited(zip: &mut zip::ZipArchive<File>, dir: &Path, progress: &mut impl FnMut(f32) -> bool) -> AppResult<usize> {
+    let total = zip.len();
+    let mut written: u64 = 0;
+    for i in 0..total {
+        if !progress(i as f32 / total.max(1) as f32) {
+            return Err(AppError::Cancelled);
+        }
+        let mut entry = zip.by_index(i).map_err(|e| io("Архив", e))?;
+        let Some(rel) = entry.enclosed_name() else { continue };
+        // Symbolic links could point the next entries outside the folder.
+        if entry.unix_mode().is_some_and(|m| m & 0o170000 == 0o120000) {
+            continue;
+        }
+        let out = dir.join(rel);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out).map_err(|e| io("Папка", e))?;
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| io("Папка", e))?;
+        }
+        // The declared size can lie: count what is really written.
+        let budget = UNZIP_MAX_ENTRY.min(UNZIP_MAX_TOTAL - written);
+        let mut dst = File::create(&out).map_err(|e| io("Не удалось распаковать", e))?;
+        let n = std::io::copy(&mut (&mut entry).take(budget + 1), &mut dst).map_err(|e| io("Не удалось распаковать", e))?;
+        if n > budget {
+            return Err(AppError::unsupported("Распакованные данные слишком велики (больше 8 ГБ на файл или 16 ГБ всего), распаковка остановлена"));
+        }
+        written += n;
+    }
+    Ok(total)
 }
 
 /// Plain text of a .docx / .xlsx / .pptx (paragraphs, cells, slides).
@@ -104,7 +150,8 @@ pub fn office_text(path: &Path) -> AppResult<String> {
     let mut out = Vec::new();
     for name in parts {
         let mut xml = String::new();
-        zip.by_name(&name).map_err(|e| io("Документ", e))?.read_to_string(&mut xml).map_err(|e| io("Документ", e))?;
+        // 64 MB of XML is far beyond any real document; more is a zip bomb.
+        zip.by_name(&name).map_err(|e| io("Документ", e))?.take(64 << 20).read_to_string(&mut xml).map_err(|e| io("Документ", e))?;
         out.push(xml_text(&xml));
     }
     Ok(out.join("\n\n").trim().to_string())
@@ -314,7 +361,7 @@ mod tests {
         std::fs::write(dir.join("src/inner/b.txt"), "бета").unwrap();
         let out = dir.join("out.zip");
         assert_eq!(zip_paths(&[dir.join("src")], &out, |_, _| true).unwrap(), 2);
-        let n = unzip(&out, &dir.join("x")).unwrap();
+        let n = unzip(&out, &dir.join("x"), |_| true).unwrap();
         assert!(n >= 2);
         assert_eq!(std::fs::read_to_string(dir.join("x/src/inner/b.txt")).unwrap(), "бета");
         let _ = std::fs::remove_dir_all(&dir);

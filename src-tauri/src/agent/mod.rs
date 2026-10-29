@@ -141,9 +141,22 @@ fn ext_of(p: &str) -> String {
 /// high only for pressing «Отправить», «Удалить», «Купить» (a click, a key
 /// in a messenger, a UI action) or for a destructive shell command — things
 /// that cannot be taken back or reach other people.
-fn still_confirmed(tool: &str) -> bool {
-    // An MCP tool is high only when its server calls it destructive.
-    matches!(tool, "input_key" | "input_click" | "ui_act" | "shell_run") || tool.starts_with(crate::mcp::PREFIX)
+fn still_confirmed(tool: &str, args: &Value) -> bool {
+    // An MCP tool is high only when its server calls it destructive. Sending
+    // a file to Telegram leaves the computer, so it is always asked about.
+    matches!(tool, "input_key" | "input_click" | "ui_act" | "shell_run")
+        || tool.starts_with(crate::mcp::PREFIX)
+        || (tool == "file_action" && args.get("action").and_then(Value::as_str) == Some("telegram"))
+}
+
+/// Keep memory bounded in long conversations. Only the last `HISTORY_WINDOW`
+/// messages are sent; older ones are dropped in whole blocks, so the window
+/// `context` builds (aligned to `HISTORY_BLOCK`) stays the same messages.
+fn trim_history(h: &mut Vec<ChatMessage>) {
+    if h.len() > HISTORY_WINDOW * 4 {
+        let drop = (h.len() - HISTORY_WINDOW * 2) / HISTORY_BLOCK * HISTORY_BLOCK;
+        h.drain(..drop);
+    }
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -209,6 +222,7 @@ impl Agent {
         let mut i = self.inner.lock();
         if !i.loaded {
             i.history = msgs.into_iter().map(|m| m.message).collect();
+            trim_history(&mut i.history);
             i.loaded = true;
         }
     }
@@ -322,7 +336,7 @@ impl Agent {
     /// (used by the voice session for multi-step work).
     pub async fn delegate(self: &Arc<Self>, task: String) -> AppResult<String> {
         let (tx, rx) = oneshot::channel();
-        self.start_turn(task, Vec::new(), Some(tx), true, None)?;
+        self.start_turn(task, Vec::new(), Some(tx), true, None, false)?;
         rx.await.map_err(|_| AppError::internal("Задача агента прервалась"))?
     }
 
@@ -331,7 +345,7 @@ impl Agent {
     /// `deltas` for speech as it is generated. Resolves with the final answer.
     pub async fn voice_turn(self: &Arc<Self>, text: String, deltas: mpsc::UnboundedSender<String>) -> AppResult<String> {
         let (tx, rx) = oneshot::channel();
-        self.start_turn(text, Vec::new(), Some(tx), true, Some(deltas))?;
+        self.start_turn(text, Vec::new(), Some(tx), true, Some(deltas), false)?;
         rx.await.map_err(|_| AppError::internal("Задача агента прервалась"))?
     }
 
@@ -390,7 +404,14 @@ impl Agent {
     }
 
     pub fn send(self: &Arc<Self>, text: String, attachments: Vec<String>) -> AppResult<SendResult> {
-        self.start_turn(text, attachments, None, false, None)
+        self.start_turn(text, attachments, None, false, None, false)
+    }
+
+    /// A request from another program (`jarvis.exe --ask`). Anyone on this
+    /// computer can start one, so full control does not apply: every action
+    /// that changes something is confirmed as if it were off.
+    pub fn send_external(self: &Arc<Self>, text: String) -> AppResult<SendResult> {
+        self.start_turn(text, Vec::new(), None, false, None, true)
     }
 
     fn start_turn(
@@ -400,12 +421,16 @@ impl Agent {
         waiter: Option<oneshot::Sender<AppResult<String>>>,
         voice: bool,
         deltas: Option<mpsc::UnboundedSender<String>>,
+        external: bool,
     ) -> AppResult<SendResult> {
         let text = text.trim().to_string();
         if text.is_empty() {
             return Err(AppError::invalid("Пустое сообщение"));
         }
-        let settings = self.state().store.settings();
+        let mut settings = self.state().store.settings();
+        if external {
+            settings.agent.full_control = false;
+        }
         let client = ai::client_from_settings(&settings, &self.state().store)?;
         self.ensure_loaded();
 
@@ -503,7 +528,17 @@ impl Agent {
                 tracing::warn!("history write failed: {e}");
             }
         }
-        self.inner.lock().history.push(msg);
+        let mut i = self.inner.lock();
+        // Only the newest image ever reaches the model (see `context`), so
+        // older ones are dropped here too instead of being held all day.
+        if msg.has_images() {
+            for m in i.history.iter_mut().filter(|m| m.has_images()) {
+                m.parts.retain(|p| matches!(p, Part::Text { .. }));
+                m.parts.push(Part::Text { text: " [изображение опущено]".into() });
+            }
+        }
+        i.history.push(msg);
+        trim_history(&mut i.history);
     }
 
     async fn run_turn(self: Arc<Self>, turn: Turn, conversation_id: String, text: String, client: OpenAiCompatible) {
@@ -709,11 +744,16 @@ impl Agent {
     fn effective_risk(&self, turn: &Turn, name: &str, base: Risk, args: &Value) -> Risk {
         match name {
             "file_read" => {
-                let p = args.get("path").and_then(Value::as_str).unwrap_or("").to_lowercase();
-                let attached = turn.attachments.iter().any(|a| {
-                    let a = a.to_lowercase();
-                    p == a || p.starts_with(&format!("{}\\", a.trim_end_matches('\\')))
-                });
+                // Compare resolved paths, so `attached\..\other` and junctions
+                // pointing out of an attached folder are not treated as inside it.
+                let Ok(p) = std::fs::canonicalize(args.get("path").and_then(Value::as_str).unwrap_or("")) else {
+                    return base;
+                };
+                let attached = turn
+                    .attachments
+                    .iter()
+                    .filter_map(|a| std::fs::canonicalize(a).ok())
+                    .any(|a| p == a || (a.is_dir() && p.starts_with(&a)));
                 if attached { Risk::Low } else { base }
             }
             "clipboard_read" if turn.settings.privacy.allow_clipboard_read => Risk::Low,
@@ -726,6 +766,21 @@ impl Agent {
                     Risk::High
                 } else {
                     base
+                }
+            }
+            "input_click" => {
+                // The description comes from the model, so it cannot prove a
+                // click is harmless: look at what is really under the point.
+                // Unreadable targets (games, custom-drawn UIs) are confirmed
+                // once per conversation.
+                if base == Risk::High {
+                    return base;
+                }
+                let names = crate::tools::screen::click_point(args).and_then(|(x, y)| crate::platform::uia::names_at_point(x, y));
+                match names {
+                    Some(n) if n.iter().any(|n| crate::tools::sensitive_text(n)) => Risk::High,
+                    Some(n) if !n.is_empty() => base,
+                    _ => Risk::Moderate,
                 }
             }
             "ui_act" => {
@@ -811,6 +866,19 @@ impl Agent {
 {details}", w.title.trim_start_matches('‎'), w.process);
             }
         }
+        // A file sent to Telegram may come from the attachments or the island
+        // rather than the arguments: list the files that will really leave.
+        if call.name == "file_action" && args.get("action").and_then(Value::as_str) == Some("telegram") {
+            let mut paths: Vec<String> = args.get("paths").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+            if paths.is_empty() {
+                paths = turn.attachments.iter().cloned().collect();
+            }
+            if paths.is_empty() {
+                paths = crate::filekit::SHOWN.lock().clone();
+            }
+            title = "Отправить в Telegram «Избранное»".into();
+            details = format!("Файлы:\n{}", paths.join("\n"));
+        }
         tracing::info!(tool = %call.name, risk = risk.as_str(), title = %title, "confirmation requested");
         let (tx, rx) = oneshot::channel();
         self.inner.lock().confirms.insert(call.id.clone(), tx);
@@ -840,7 +908,7 @@ impl Agent {
 
         let full = turn.settings.agent.full_control;
         let needs_confirm = match risk {
-            Risk::High => !full || still_confirmed(&tool.name),
+            Risk::High => !full || still_confirmed(&tool.name, &args),
             Risk::Moderate => !full && turn.settings.agent.confirm_moderate && !self.inner.lock().approved_tools.contains(tool.name.as_str()),
             Risk::Low => false,
         };

@@ -140,10 +140,11 @@ impl ToolDef {
     /// say it only reads is confirmed once per conversation, an explicitly
     /// destructive one every time.
     pub fn risk(&self) -> Risk {
-        if self.annotations.read_only_hint == Some(true) {
-            Risk::Low
-        } else if self.annotations.destructive_hint == Some(true) {
+        // Destructive wins: a server that claims both is not trusted to read only.
+        if self.annotations.destructive_hint == Some(true) {
             Risk::High
+        } else if self.annotations.read_only_hint == Some(true) {
+            Risk::Low
         } else {
             Risk::Moderate
         }
@@ -218,8 +219,29 @@ pub struct Hub {
     app: AppHandle,
     servers: RwLock<BTreeMap<String, Arc<Server>>>,
     /// Ids of servers whose tool list changed (read by [`Hub::spawn_background`]).
-    reloads: tokio::sync::mpsc::UnboundedSender<String>,
+    reloads: ReloadQueue,
     reload_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<String>>>,
+}
+
+/// Holds each server at most once: a burst of `tools/list_changed`
+/// notifications becomes one reload, and the queue never outgrows the list
+/// of servers. A notification during a reload queues one more.
+#[derive(Clone)]
+struct ReloadQueue {
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+    queued: Arc<Mutex<HashSet<String>>>,
+}
+
+impl ReloadQueue {
+    fn push(&self, id: &str) {
+        if self.queued.lock().insert(id.to_string()) {
+            let _ = self.tx.send(id.to_string());
+        }
+    }
+
+    fn taken(&self, id: &str) {
+        self.queued.lock().remove(id);
+    }
 }
 
 /// Latin letters, digits, `_` and `-` only (the tool-name alphabet).
@@ -382,7 +404,8 @@ impl Hub {
         let configs: Vec<ServerConfig> = store.kv_get(KV_SERVERS).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let mut cache: BTreeMap<String, Vec<ToolDef>> = store.kv_get(KV_TOOLS).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let servers = configs.into_iter().map(|c| (c.id.clone(), Server::new(c.clone(), cache.remove(&c.id).unwrap_or_default()))).collect();
-        let (reloads, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let reloads = ReloadQueue { tx, queued: Arc::default() };
         Arc::new(Hub { app, servers: RwLock::new(servers), reloads, reload_rx: Mutex::new(Some(rx)) })
     }
 
@@ -475,9 +498,7 @@ impl Hub {
         let on_change: transport::OnChange = {
             // By id: switching a tool off replaces the `Server` value.
             let (tx, id) = (self.reloads.clone(), server.config.id.clone());
-            Arc::new(move || {
-                let _ = tx.send(id.clone());
-            })
+            Arc::new(move || tx.push(&id))
         };
         let opened = tokio::select! {
             _ = cancel.cancelled() => Err(AppError::Cancelled),
@@ -577,9 +598,19 @@ impl Hub {
         if replacing.as_deref() != Some(config.id.as_str()) && self.servers.read().contains_key(&config.id) {
             return Err(AppError::invalid(format!("Сервер с идентификатором «{}» уже есть", config.id)));
         }
+        // Stored headers belong to the address they were entered for: a server
+        // moved to another origin or transport gets none until typed again.
+        let same_endpoint = replacing.as_ref().and_then(|p| self.servers.read().get(p).map(|s| s.config.transport.clone())).is_some_and(|old| {
+            match (&old, &config.transport) {
+                (TransportConfig::Stdio { .. }, TransportConfig::Stdio { .. }) => true,
+                (TransportConfig::Http { url: a }, TransportConfig::Http { url: b }) => same_origin(a, b),
+                _ => false,
+            }
+        });
         let secrets = match secrets {
             Some(s) => s,
-            None => replacing.as_deref().map(Secrets::load).unwrap_or_default(),
+            None if same_endpoint => replacing.as_deref().map(Secrets::load).unwrap_or_default(),
+            None => Secrets::default(),
         };
         config.env_keys = secrets.env.keys().cloned().collect();
         config.header_keys = secrets.headers.keys().cloned().collect();
@@ -685,12 +716,13 @@ impl Hub {
         if let Some(mut rx) = self.reload_rx.lock().take() {
             // Enabled servers whose tools were never read: learn them after start-up.
             for s in self.servers.read().values().filter(|s| s.config.enabled && s.tools.read().is_empty()) {
-                let _ = self.reloads.send(s.config.id.clone());
+                self.reloads.push(&s.config.id);
             }
             let hub = self.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(8)).await;
                 while let Some(id) = rx.recv().await {
+                    hub.reloads.taken(&id);
                     let Some(server) = hub.servers.read().get(&id).cloned() else { continue };
                     if let Err(e) = hub.reload_tools(&server).await {
                         tracing::warn!(server = %id, "mcp tools reload failed: {e}");
@@ -717,6 +749,14 @@ impl Hub {
                 }
             }
         });
+    }
+}
+
+/// Scheme, host and port match (the path may differ).
+fn same_origin(a: &str, b: &str) -> bool {
+    match (url::Url::parse(a), url::Url::parse(b)) {
+        (Ok(a), Ok(b)) => a.scheme() == b.scheme() && a.host_str() == b.host_str() && a.port_or_known_default() == b.port_or_known_default(),
+        _ => false,
     }
 }
 

@@ -136,6 +136,14 @@ async fn screen_capture(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
     Ok(out)
 }
 
+/// Screen point an `input_click` call targets, for risk assessment.
+pub fn click_point(a: &Value) -> Option<(i32, i32)> {
+    let x = a.get("x").and_then(Value::as_f64)?;
+    let y = a.get("y").and_then(Value::as_f64)?;
+    let space = a.get("space").and_then(Value::as_str).unwrap_or("image");
+    to_screen(x, y, space, a.get("capture_id").and_then(Value::as_u64)).ok()
+}
+
 fn to_screen(x: f64, y: f64, space: &str, capture_id: Option<u64>) -> AppResult<(i32, i32)> {
     if space == "screen" {
         return Ok((x.round() as i32, y.round() as i32));

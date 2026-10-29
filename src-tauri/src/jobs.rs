@@ -17,6 +17,8 @@ use crate::platform::supervisor::{self, Spec};
 
 pub const EVT_JOBS: &str = "jobs:update";
 const MAX_LINES: usize = 300;
+/// Finished jobs kept in memory; older ones are forgotten.
+const KEEP_FINISHED: usize = 20;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -112,7 +114,17 @@ impl JobManager {
         let id = format!("job-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
         let cancel = CancellationToken::new();
         let cwd = spec.cwd.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
-        self.jobs.lock().push(Job {
+        let mut jobs = self.jobs.lock();
+        // Keep only the newest finished jobs (as many as `list` shows);
+        // running ones always stay.
+        let finished = jobs.iter().filter(|j| j.view.status != JobStatus::Running).count();
+        let mut excess = finished.saturating_sub(KEEP_FINISHED - 1);
+        jobs.retain(|j| {
+            let drop = excess > 0 && j.view.status != JobStatus::Running;
+            excess -= usize::from(drop);
+            !drop
+        });
+        jobs.push(Job {
             view: JobView {
                 id: id.clone(),
                 kind: kind.to_string(),
@@ -129,6 +141,7 @@ impl JobManager {
             lines: VecDeque::new(),
             cancel: cancel.clone(),
         });
+        drop(jobs);
         self.emit();
 
         let mgr = Arc::clone(self);

@@ -43,7 +43,12 @@ fn main() {
         },
         "files-transcribe" => {
             let rec = jarvis_lib::voice::stt::Recognizer::load_default().expect("GigaAM");
-            let pcm = jarvis_lib::filekit::media::decode_pcm16k(std::path::Path::new(&args[1]), || false).expect("decode");
+            let mut pcm = Vec::new();
+            jarvis_lib::filekit::media::decode_pcm16k(std::path::Path::new(&args[1]), |s| {
+                pcm.extend_from_slice(s);
+                Ok(true)
+            })
+            .expect("decode");
             let t0 = std::time::Instant::now();
             let phrases = jarvis_lib::voice::transcribe_segments(&pcm, |s| rec.transcribe(s), |_| true).expect("transcribe");
             format!("{:.1} s audio in {} ms

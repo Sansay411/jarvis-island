@@ -341,9 +341,14 @@ impl Store {
         Ok(rows.filter_map(Result::ok).collect())
     }
 
-    /// Mark fired once; returns false if it already was (no double alerts).
-    pub fn mark_fired(&self, id: i64) -> AppResult<bool> {
-        Ok(self.conn.lock().execute("UPDATE reminders SET fired_at = ?2 WHERE id = ?1 AND fired_at IS NULL", params![id, now()])? == 1)
+    /// Mark fired once; returns false if it already was (no double alerts),
+    /// or if it was finished or moved to another time since `due_at` was read.
+    pub fn mark_fired(&self, id: i64, due_at: &str) -> AppResult<bool> {
+        Ok(self
+            .conn
+            .lock()
+            .execute("UPDATE reminders SET fired_at = ?2 WHERE id = ?1 AND fired_at IS NULL AND done = 0 AND due_at = ?3", params![id, now(), due_at])?
+            == 1)
     }
 
     pub fn finish_reminder(&self, id: i64) -> AppResult<bool> {

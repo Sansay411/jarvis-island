@@ -260,9 +260,14 @@ impl VoiceManager {
     /// Recognise a whole recording (16 kHz mono): Silero cuts it into
     /// phrases, GigaAM reads each. Returns (start s, end s, text) per phrase.
     /// Uses the same loaded model as the live voice session.
-    pub fn transcribe_long(&self, pcm: &[f32], progress: impl FnMut(f32) -> bool) -> AppResult<Vec<(f64, f64, String)>> {
+    /// Phrases of a recording whose samples `decode` hands over piece by
+    /// piece (mono 16 kHz), with start and end in seconds.
+    pub fn transcribe_stream(&self, decode: impl FnOnce(&mut dyn FnMut(&[f32]) -> AppResult<()>) -> AppResult<()>) -> AppResult<Vec<(f64, f64, String)>> {
         let path = models::asset("gigaam-v3").expect("catalog").path();
-        transcribe_segments(pcm, |seg| self.stt.transcribe(&path, seg), progress)
+        let mut recognise = |seg: &[f32]| self.stt.transcribe(&path, seg);
+        let mut segments = SegmentTranscriber::new()?;
+        decode(&mut |samples| segments.feed(samples, &mut recognise))?;
+        segments.finish(&mut recognise)
     }
 
     /// Say a line through the open voice session (reminders, timers).
@@ -658,34 +663,85 @@ mod key_tests {
     }
 }
 
-/// Cut a recording into phrases with Silero and recognise each with `recognise`.
+/// Cut a recording already in memory into phrases with Silero and recognise
+/// each with `recognise` (tools and tests; files go through `transcribe_stream`).
 pub fn transcribe_segments(
     pcm: &[f32],
     mut recognise: impl FnMut(&[f32]) -> AppResult<stt::Transcript>,
     mut progress: impl FnMut(f32) -> bool,
 ) -> AppResult<Vec<(f64, f64, String)>> {
-    let (asr, silero) = (models::asset("gigaam-v3").expect("catalog"), models::asset("silero-vad").expect("catalog"));
+    let mut segments = SegmentTranscriber::new()?;
+    let total = pcm.len().max(1);
+    for (i, piece) in pcm.chunks(512 * 64).enumerate() {
+        if !progress((i * 512 * 64) as f32 / total as f32) {
+            return Err(AppError::Cancelled);
+        }
+        segments.feed(piece, &mut recognise)?;
+    }
+    segments.finish(&mut recognise)
+}
+
+/// Cuts a recording into phrases with Silero as samples arrive and
+/// recognises each one, so a long file is never held in memory whole.
+struct SegmentTranscriber {
+    vad: vad::Vad,
+    out: Vec<(f64, f64, String)>,
+    /// Samples short of a whole 512-sample VAD frame.
+    pending: Vec<f32>,
+}
+
+impl SegmentTranscriber {
+    fn new() -> AppResult<Self> {
+        let (asr, silero) = (models::asset("gigaam-v3").expect("catalog"), models::asset("silero-vad").expect("catalog"));
         if !asr.installed() || !silero.installed() {
             return Err(AppError::invalid("Для расшифровки нужна модель распознавания речи — скачайте её в Настройках → Голос"));
         }
-        let mut vad = vad::Vad::new(&silero.path())?;
-        let mut out = Vec::new();
-        let tail = vec![0.0f32; 16_000 * 2];
-        let total = pcm.len().max(1);
-        for (i, chunk) in pcm.chunks(512).chain(tail.chunks(512)).enumerate() {
-            if i % 64 == 0 && !progress(((i * 512) as f32 / total as f32).min(1.0)) {
-                return Err(AppError::Cancelled);
-            }
-            for ev in vad.push(chunk) {
-                if let vad::VadEvent::Ended(seg) = ev {
-                    let start = vad.last_segment_start as f64 / 16_000.0;
-                    let end = start + seg.len() as f64 / 16_000.0;
-                    let t = recognise(&seg)?;
-                    if stt::is_meaningful(&t.text) {
-                        out.push((start, end, t.text));
-                    }
+        Ok(SegmentTranscriber { vad: vad::Vad::new(&silero.path())?, out: Vec::new(), pending: Vec::with_capacity(512) })
+    }
+
+    fn push(&mut self, chunk: &[f32], recognise: &mut impl FnMut(&[f32]) -> AppResult<stt::Transcript>) -> AppResult<()> {
+        for ev in self.vad.push(chunk) {
+            if let vad::VadEvent::Ended(seg) = ev {
+                let start = self.vad.last_segment_start as f64 / 16_000.0;
+                let end = start + seg.len() as f64 / 16_000.0;
+                let t = recognise(&seg)?;
+                if stt::is_meaningful(&t.text) {
+                    self.out.push((start, end, t.text));
                 }
             }
         }
-        Ok(out)
+        Ok(())
     }
+
+    fn feed(&mut self, mut samples: &[f32], recognise: &mut impl FnMut(&[f32]) -> AppResult<stt::Transcript>) -> AppResult<()> {
+        if !self.pending.is_empty() {
+            let need = (512 - self.pending.len()).min(samples.len());
+            self.pending.extend_from_slice(&samples[..need]);
+            samples = &samples[need..];
+            if self.pending.len() < 512 {
+                return Ok(());
+            }
+            let frame = std::mem::take(&mut self.pending);
+            self.push(&frame, recognise)?;
+        }
+        let whole = samples.len() / 512 * 512;
+        for chunk in samples[..whole].chunks(512) {
+            self.push(chunk, recognise)?;
+        }
+        self.pending.extend_from_slice(&samples[whole..]);
+        Ok(())
+    }
+
+    /// Flush the last partial frame and two seconds of silence, which ends a
+    /// phrase still open at the end of the recording.
+    fn finish(mut self, recognise: &mut impl FnMut(&[f32]) -> AppResult<stt::Transcript>) -> AppResult<Vec<(f64, f64, String)>> {
+        let rest = std::mem::take(&mut self.pending);
+        if !rest.is_empty() {
+            self.push(&rest, recognise)?;
+        }
+        for chunk in [0.0f32; 16_000 * 2].chunks(512) {
+            self.push(chunk, recognise)?;
+        }
+        Ok(self.out)
+    }
+}

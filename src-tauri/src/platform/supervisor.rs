@@ -22,6 +22,9 @@ use windows::Win32::System::JobObjects::{
 use crate::error::{AppError, AppResult};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+pub(crate) const CREATE_SUSPENDED: u32 = 0x0000_0004;
+/// One output line longer than this is cut (the rest is read and dropped).
+const MAX_LINE_BYTES: usize = 64 * 1024;
 /// Keep at most this many characters of combined output for the model.
 const MAX_RETAINED: usize = 24_000;
 
@@ -46,20 +49,69 @@ impl Job {
         }
     }
 
-    /// Put a child (and whatever it starts later) into the job.
-    pub(crate) fn assign(&self, child: &tokio::process::Child) {
-        if let Some(raw) = child.raw_handle() {
-            unsafe {
-                if let Err(e) = AssignProcessToJobObject(self.0, HANDLE(raw)) {
-                    tracing::warn!("job assignment failed: {e}");
-                }
-            }
+    /// Put a child started with `CREATE_SUSPENDED` into the job, then let it
+    /// run. Assigning before it runs means nothing it starts can escape the
+    /// job; if assignment fails the child stays suspended for the caller to kill.
+    pub(crate) fn contain(&self, child: &tokio::process::Child) -> AppResult<()> {
+        let (Some(raw), Some(pid)) = (child.raw_handle(), child.id()) else {
+            return Err(AppError::platform("Процесс завершился при запуске"));
+        };
+        unsafe {
+            AssignProcessToJobObject(self.0, HANDLE(raw)).map_err(|e| AppError::platform(format!("Не удалось ограничить процесс: {e}")))?;
         }
+        resume_threads(pid);
+        Ok(())
     }
 
     fn kill(&self) {
         unsafe {
             let _ = TerminateJobObject(self.0, 1);
+        }
+    }
+}
+
+/// Resume every thread of a process created suspended.
+fn resume_threads(pid: u32) {
+    use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32};
+    use windows::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) else { return };
+        let mut entry = THREADENTRY32 { dwSize: std::mem::size_of::<THREADENTRY32>() as u32, ..Default::default() };
+        let mut ok = Thread32First(snap, &mut entry).is_ok();
+        while ok {
+            if entry.th32OwnerProcessID == pid {
+                if let Ok(t) = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) {
+                    ResumeThread(t);
+                    let _ = CloseHandle(t);
+                }
+            }
+            ok = Thread32Next(snap, &mut entry).is_ok();
+        }
+        let _ = CloseHandle(snap);
+    }
+}
+
+/// Read one `\n`-terminated line, keeping at most `max` bytes of it: a
+/// process that writes without newlines cannot grow our memory. Returns the
+/// line (without `\n`) and whether it was cut, or `None` at end of stream.
+pub(crate) async fn read_line_capped<R: tokio::io::AsyncBufRead + Unpin>(r: &mut R, max: usize) -> std::io::Result<Option<(Vec<u8>, bool)>> {
+    let mut out = Vec::new();
+    let (mut cut, mut any) = (false, false);
+    loop {
+        let buf = r.fill_buf().await?;
+        if buf.is_empty() {
+            return Ok(any.then_some((out, cut)));
+        }
+        any = true;
+        let newline = buf.iter().position(|&b| b == b'\n');
+        let chunk = &buf[..newline.unwrap_or(buf.len())];
+        let room = max.saturating_sub(out.len());
+        cut |= chunk.len() > room;
+        out.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        let used = newline.map_or(buf.len(), |i| i + 1);
+        r.consume(used);
+        if newline.is_some() {
+            return Ok(Some((out, cut)));
         }
     }
 }
@@ -129,7 +181,7 @@ pub async fn run(spec: Spec, cancel: CancellationToken, on_line: Option<LineSink
         .stdin(if spec.stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
+        .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED)
         .kill_on_drop(true);
     if let Some(cwd) = &spec.cwd {
         cmd.current_dir(cwd);
@@ -142,14 +194,13 @@ pub async fn run(spec: Spec, cancel: CancellationToken, on_line: Option<LineSink
         _ => AppError::platform(format!("Не удалось запустить «{}»: {e}", spec.program)),
     })?;
 
-    let job = Job::new()?;
-    if let Some(raw) = child.raw_handle() {
-        unsafe {
-            if let Err(e) = AssignProcessToJobObject(job.0, HANDLE(raw)) {
-                tracing::warn!("job assignment failed: {e}");
-            }
+    let job = match Job::new().and_then(|j| j.contain(&child).map(|()| j)) {
+        Ok(j) => j,
+        Err(e) => {
+            let _ = child.kill().await;
+            return Err(e);
         }
-    }
+    };
 
     if let (Some(text), Some(mut stdin)) = (spec.stdin.clone(), child.stdin.take()) {
         use tokio::io::AsyncWriteExt;
@@ -169,9 +220,12 @@ pub async fn run(spec: Spec, cancel: CancellationToken, on_line: Option<LineSink
         let retained = retained.clone();
         let sink = on_line.clone();
         readers.push(tokio::spawn(async move {
-            let mut lines = BufReader::new(stream).split(b'\n');
-            while let Ok(Some(raw)) = lines.next_segment().await {
-                let line = String::from_utf8_lossy(&raw).trim_end_matches('\r').to_string();
+            let mut reader = BufReader::new(stream);
+            while let Ok(Some((raw, cut))) = read_line_capped(&mut reader, MAX_LINE_BYTES).await {
+                let mut line = String::from_utf8_lossy(&raw).trim_end_matches('\r').to_string();
+                if cut {
+                    line.push('…');
+                }
                 let shown = if is_err { format!("! {line}") } else { line };
                 if let Some(s) = &sink {
                     s(&shown);
@@ -192,7 +246,12 @@ pub async fn run(spec: Spec, cancel: CancellationToken, on_line: Option<LineSink
         let _ = child.kill().await;
     }
     for r in readers {
-        let _ = tokio::time::timeout(Duration::from_secs(2), r).await;
+        // A grandchild can keep the pipe open: stop reading rather than
+        // leave the task behind.
+        let abort = r.abort_handle();
+        if tokio::time::timeout(Duration::from_secs(2), r).await.is_err() {
+            abort.abort();
+        }
     }
     let r = retained.lock();
     let exit_code = status.and_then(|s| s.code());
@@ -228,4 +287,36 @@ pub fn which(name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(args: &[&str]) -> Spec {
+        Spec {
+            program: "cmd.exe".into(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            cwd: None,
+            env: vec![],
+            timeout: Duration::from_secs(20),
+            stdin: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn suspended_child_runs_after_joining_the_job() {
+        let r = run(spec(&["/c", "echo hello"]), CancellationToken::new(), None).await.unwrap();
+        assert!(r.success);
+        assert!(r.output.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn endless_line_is_cut_not_buffered() {
+        // 200 KB on one line: kept to MAX_LINE_BYTES and marked as cut.
+        let script = "powershell -NoProfile -Command \"[Console]::Out.Write('x' * 200000)\"";
+        let r = run(spec(&["/c", script]), CancellationToken::new(), None).await.unwrap();
+        assert!(r.success);
+        assert!(r.output.chars().filter(|c| *c == 'x').count() <= MAX_LINE_BYTES);
+    }
 }

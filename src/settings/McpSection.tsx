@@ -140,6 +140,14 @@ function parseSecrets(text: string, kind: Draft["kind"]): Record<string, string>
   return out;
 }
 
+function sameOrigin(a: string, b: string): boolean {
+  try {
+    return new URL(a).origin === new URL(b).origin;
+  } catch {
+    return false;
+  }
+}
+
 function where(t: Transport): string {
   return t.type === "stdio" ? [t.command, ...t.args].join(" ") : t.url;
 }
@@ -217,7 +225,14 @@ function ServerForm({ initial, onDone, notify }: { initial: Draft; onDone: () =>
         </>
       ) : (
         <Row label="Адрес">
-          <input className="mono" value={d.url} spellCheck={false} placeholder="https://…/mcp" onChange={(e) => patch({ url: e.target.value })} />
+          <input
+            className="mono"
+            value={d.url}
+            spellCheck={false}
+            placeholder="https://…/mcp"
+            // Saved headers stay with the address they were entered for.
+            onChange={(e) => patch({ url: e.target.value, ...(d.secrets === null && !sameOrigin(initial.url, e.target.value) ? { secrets: "" } : {}) })}
+          />
         </Row>
       )}
       <Row
@@ -232,15 +247,20 @@ function ServerForm({ initial, onDone, notify }: { initial: Draft; onDone: () =>
             </button>
           </div>
         ) : (
-          <textarea
-            className="mono"
-            rows={2}
-            value={d.secrets}
-            spellCheck={false}
-            autoComplete="off"
-            placeholder={d.kind === "stdio" ? "GITHUB_TOKEN=…" : "Authorization: Bearer …"}
-            onChange={(e) => patch({ secrets: e.target.value })}
-          />
+          <>
+            <textarea
+              className="mono"
+              rows={2}
+              value={d.secrets}
+              spellCheck={false}
+              autoComplete="off"
+              placeholder={d.kind === "stdio" ? "GITHUB_TOKEN=…" : "Authorization: Bearer …"}
+              onChange={(e) => patch({ secrets: e.target.value })}
+            />
+            {d.kind === "http" && d.storedKeys.length > 0 && !sameOrigin(initial.url, d.url) && (
+              <span className="note">Адрес изменился, поэтому сохранённые заголовки не переносятся. Введите их заново.</span>
+            )}
+          </>
         )}
       </Row>
       <div className="actions mcp-form-actions">

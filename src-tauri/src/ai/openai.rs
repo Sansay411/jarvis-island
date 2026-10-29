@@ -22,6 +22,9 @@ use crate::error::{AppError, AppResult};
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Bounds on what a (possibly misbehaving) server can make us hold.
+const MAX_TOOL_CALLS: usize = 64;
+const MAX_TOOL_ARGS: usize = 1 << 20;
 
 #[derive(Clone)]
 pub struct OpenAiCompatible {
@@ -352,8 +355,23 @@ impl OpenAiCompatible {
             return Err(AppError::RateLimited(secs.clamp(1, 120)));
         }
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(error_from_response(status, &text, &self.model));
+            // The error body is only for the message: read at most 64 KB and
+            // never wait on it longer than 15 seconds or past a cancel.
+            let mut resp = resp;
+            let mut body = Vec::new();
+            let read = async {
+                while body.len() < 64 * 1024 {
+                    match resp.chunk().await {
+                        Ok(Some(c)) => body.extend_from_slice(&c),
+                        _ => break,
+                    }
+                }
+            };
+            tokio::select! {
+                _ = cancel.cancelled() => return Err(AppError::Cancelled),
+                _ = tokio::time::timeout(Duration::from_secs(15), read) => {}
+            }
+            return Err(error_from_response(status, &String::from_utf8_lossy(&body), &self.model));
         }
 
         let mut stream = resp.bytes_stream().eventsource();
@@ -363,6 +381,7 @@ impl OpenAiCompatible {
         let mut finish_reason = None;
         let mut first_token_ms = None;
         let mut think = ThinkFilter::default();
+        let mut done = false;
 
         loop {
             let next = tokio::select! {
@@ -376,6 +395,7 @@ impl OpenAiCompatible {
                 Ok(Some(Ok(ev))) => ev,
             };
             if ev.data.trim() == "[DONE]" {
+                done = true;
                 break;
             }
             let Ok(chunk) = serde_json::from_str::<Value>(&ev.data) else { continue };
@@ -415,6 +435,10 @@ impl OpenAiCompatible {
                 first_token_ms.get_or_insert(started.elapsed().as_millis() as u64);
                 for tc in tcs {
                     let index = tc.get("index").and_then(Value::as_u64).map(|i| i as usize).unwrap_or(calls.len());
+                    // The index comes from the server: never let it size memory.
+                    if index >= MAX_TOOL_CALLS {
+                        return Err(AppError::Provider(format!("Модель прислала вызов инструмента с номером {index}, это больше допустимого")));
+                    }
                     if calls.len() <= index {
                         calls.resize_with(index + 1, PartialCall::default);
                     }
@@ -432,6 +456,9 @@ impl OpenAiCompatible {
                             }
                         }
                         match f.get("arguments") {
+                            Some(Value::String(a)) if slot.args.len() + a.len() > MAX_TOOL_ARGS => {
+                                return Err(AppError::Provider("Аргументы вызова инструмента слишком длинные".into()));
+                            }
                             Some(Value::String(a)) => slot.args.push_str(a),
                             // Some servers send already-parsed arguments.
                             Some(v @ Value::Object(_)) => slot.args = v.to_string(),
@@ -440,6 +467,14 @@ impl OpenAiCompatible {
                     }
                 }
             }
+        }
+
+        // A stream that stops without `[DONE]` or a finish reason was cut off:
+        // its tool calls may be incomplete and must not run. Calls cut by the
+        // token limit are incomplete too.
+        let cut = !done && finish_reason.is_none();
+        if !calls.is_empty() && (cut || finish_reason.as_deref() == Some("length")) {
+            return Err(AppError::Network("Ответ модели оборвался посреди вызова инструмента".into()));
         }
 
         let tail = think.finish();

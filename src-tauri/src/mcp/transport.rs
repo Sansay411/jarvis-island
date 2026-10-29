@@ -15,20 +15,23 @@ use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use super::{Secrets, ServerConfig, TransportConfig};
 use crate::error::{AppError, AppResult};
-use crate::platform::supervisor::{which, Job};
+use crate::platform::supervisor::{read_line_capped, which, Job, CREATE_SUSPENDED};
 
 /// The revision we speak; servers answer with the one they support and the
 /// parts we use (tools, ping) are the same in all of them.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const STDERR_LINES: usize = 20;
+/// Largest JSON-RPC message accepted from a stdio server (a big `tools/list`
+/// is well under 1 MB).
+const MAX_MESSAGE_BYTES: usize = 16 << 20;
 
 type Reply = Result<Value, String>;
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Reply>>>>;
@@ -258,7 +261,7 @@ impl StdioConn {
             .stdin(PipeMode::piped())
             .stdout(PipeMode::piped())
             .stderr(PipeMode::piped())
-            .creation_flags(CREATE_NO_WINDOW)
+            .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED)
             .kill_on_drop(true);
         let dir = if cwd.trim().is_empty() { dirs::home_dir() } else { Some(PathBuf::from(expand(cwd.trim()))) };
         if let Some(d) = dir.filter(|d| d.is_dir()) {
@@ -268,10 +271,14 @@ impl StdioConn {
             cmd.env(k, v);
         }
         let mut child = cmd.spawn().map_err(|e| AppError::platform(format!("Не удалось запустить «{command}»: {e}")))?;
-        let job = Job::new().ok();
-        if let Some(j) = &job {
-            j.assign(&child);
-        }
+        // The server and everything it starts live in a job that dies with it.
+        let job = match Job::new().and_then(|j| j.contain(&child).map(|()| j)) {
+            Ok(j) => Some(j),
+            Err(e) => {
+                let _ = child.start_kill();
+                return Err(e);
+            }
+        };
         let (Some(stdin), Some(stdout), Some(stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else {
             return Err(AppError::internal("Нет каналов ввода-вывода MCP-сервера"));
         };
@@ -284,8 +291,8 @@ impl StdioConn {
             let tail = tail.clone();
             let name = command.to_string();
             tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).split(b'\n');
-                while let Ok(Some(raw)) = lines.next_segment().await {
+                let mut reader = BufReader::new(stderr);
+                while let Ok(Some((raw, _))) = read_line_capped(&mut reader, 4096).await {
                     let line = String::from_utf8_lossy(&raw).trim_end().to_string();
                     if line.is_empty() {
                         continue;
@@ -302,8 +309,13 @@ impl StdioConn {
         {
             let (pending, alive, stdin) = (pending.clone(), alive.clone(), stdin.clone());
             tokio::spawn(async move {
-                let mut lines = BufReader::new(stdout).split(b'\n');
-                while let Ok(Some(raw)) = lines.next_segment().await {
+                let mut reader = BufReader::new(stdout);
+                while let Ok(Some((raw, cut))) = read_line_capped(&mut reader, MAX_MESSAGE_BYTES).await {
+                    // An oversized message is dropped whole; its caller times out.
+                    if cut {
+                        tracing::warn!("mcp message over {MAX_MESSAGE_BYTES} bytes dropped");
+                        continue;
+                    }
                     let Ok(msg) = serde_json::from_slice::<Value>(&raw) else {
                         // Servers sometimes log to stdout; that is not protocol.
                         continue;

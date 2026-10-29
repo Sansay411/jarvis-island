@@ -48,6 +48,9 @@ interface AgentStore {
 let seq = 0;
 const uid = () => `l${Date.now().toString(36)}${(seq++).toString(36)}`;
 let flashTimer: number | undefined;
+/** Turns already reported finished: a fast turn can finish before the
+ * `agent_send` reply arrives, and must not be marked active again by it. */
+const finishedTurns: string[] = [];
 
 export const useAgent = create<AgentStore>((set, get) => ({
   items: [],
@@ -95,7 +98,7 @@ export const useAgent = create<AgentStore>((set, get) => ({
     set((s) => ({ items: [...s.items, { kind: "user", id: uid(), text, attachments }] }));
     try {
       const res = await invoke<SendResult>("agent_send", { text, attachments });
-      set({ activeTurn: res.turnId, phase: "thinking" });
+      if (!finishedTurns.includes(res.turnId)) set({ activeTurn: res.turnId, phase: "thinking" });
     } catch (e) {
       set((s) => ({ items: [...s.items, { kind: "notice", id: uid(), tone: "error", text: errorMessage(e) }] }));
     }
@@ -217,6 +220,8 @@ function apply(ev: AgentEvent) {
       break;
     }
     case "turnFinished": {
+      finishedTurns.push(ev.turnId);
+      if (finishedTurns.length > 20) finishedTurns.shift();
       window.clearTimeout(flashTimer);
       const flash = ev.status === "completed" ? "happy" : ev.status === "failed" ? "error" : null;
       set((s) => ({

@@ -270,6 +270,32 @@ pub fn render(s: &Snapshot) -> String {
     out
 }
 
+/// Names of the element under a screen point and of its nearest ancestors,
+/// so a click can be judged by what is really there rather than by the
+/// model's description of it. `None` when UI Automation cannot see it.
+pub fn names_at_point(x: i32, y: i32) -> Option<Vec<String>> {
+    super::com::ensure_mta();
+    let uia = automation().ok()?;
+    unsafe {
+        let mut el = uia.ElementFromPoint(windows::Win32::Foundation::POINT { x, y }).ok()?;
+        let walker = uia.ControlViewWalker().ok()?;
+        let mut names = Vec::new();
+        for _ in 0..4 {
+            if let Ok(n) = el.CurrentName() {
+                let n = n.to_string();
+                if !n.trim().is_empty() {
+                    names.push(n);
+                }
+            }
+            match walker.GetParentElement(&el) {
+                Ok(p) => el = p,
+                Err(_) => break,
+            }
+        }
+        Some(names)
+    }
+}
+
 /// Name of an element in the latest snapshot (for risk assessment).
 pub fn element_name(snapshot_id: u64, id: usize) -> Option<String> {
     let last = LAST.lock();

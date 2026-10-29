@@ -101,13 +101,14 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 fn handle_cli(app: &tauri::AppHandle, argv: &[String]) -> bool {
     if let Some(pos) = argv.iter().position(|a| a == "--ask") {
         if let Some(text) = argv.get(pos + 1).cloned() {
-            // --quiet runs the task without opening the chat (scripts, tests).
-            if !argv.iter().any(|a| a == "--quiet") {
+            // Another program can send this, so the user always sees it. Only
+            // debug builds may run it hidden (`--quiet`, for the e2e scripts).
+            if !(cfg!(debug_assertions) && argv.iter().any(|a| a == "--quiet")) {
                 app.state::<AppState>().island.set_user_hidden(false);
                 emit_command(app, "open-workspace");
             }
             let agent = app.state::<Arc<agent::Agent>>();
-            if let Err(e) = agent.send(text, Vec::new()) {
+            if let Err(e) = agent.send_external(text) {
                 tracing::warn!("--ask rejected: {e}");
                 agent.post_report(format!("Не удалось начать задачу: {e}"), false);
             }

@@ -8,3 +8,4 @@ src-tauri/gen/schemas/
 .env.*
 voice-samples/
 .claude/
+review/
