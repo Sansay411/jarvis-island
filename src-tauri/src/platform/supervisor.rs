@@ -25,13 +25,13 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// Keep at most this many characters of combined output for the model.
 const MAX_RETAINED: usize = 24_000;
 
-struct Job(HANDLE);
+pub(crate) struct Job(HANDLE);
 
 unsafe impl Send for Job {}
 unsafe impl Sync for Job {}
 
 impl Job {
-    fn new() -> AppResult<Job> {
+    pub(crate) fn new() -> AppResult<Job> {
         unsafe {
             let h = CreateJobObjectW(None, None)?;
             let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
@@ -43,6 +43,17 @@ impl Job {
                 std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             )?;
             Ok(Job(h))
+        }
+    }
+
+    /// Put a child (and whatever it starts later) into the job.
+    pub(crate) fn assign(&self, child: &tokio::process::Child) {
+        if let Some(raw) = child.raw_handle() {
+            unsafe {
+                if let Err(e) = AssignProcessToJobObject(self.0, HANDLE(raw)) {
+                    tracing::warn!("job assignment failed: {e}");
+                }
+            }
         }
     }
 

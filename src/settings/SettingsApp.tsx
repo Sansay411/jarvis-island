@@ -13,6 +13,8 @@ import { errorMessage } from "../lib/ipc";
 import { Eyes, type EyeMood } from "../island/Eyes";
 import "./settings.css";
 import { TitleBar } from "./TitleBar";
+import { Group, Row, Segmented, Switch } from "./controls";
+import { McpSection } from "./McpSection";
 import { ACTIVITIES, EMOTES, emote, useEmote, type Activity } from "../store/emote";
 
 interface Preset {
@@ -115,7 +117,7 @@ interface Diagnostics {
   monitors: { name: string; primary: boolean; scale: number; bounds: { width: number; height: number } }[];
 }
 
-type Section = "persona" | "voice" | "model" | "behaviour" | "shortcuts" | "privacy" | "memory" | "diagnostics";
+type Section = "persona" | "voice" | "model" | "behaviour" | "mcp" | "shortcuts" | "privacy" | "memory" | "diagnostics";
 type Tone = "ok" | "error" | "info";
 
 /** Section titles, and the line JARVIS says about each (ты / вы). */
@@ -124,6 +126,7 @@ const SECTIONS: { id: Section; label: string; line: [string, string] }[] = [
   { id: "voice", label: "Голос", line: ["Так я тебя слышу и так отвечаю. Речь не покидает этот компьютер.", "Так я вас слышу и так отвечаю. Речь не покидает этот компьютер."] },
   { id: "model", label: "Модель", line: ["Здесь решается, чем я думаю. Без модели я умею только моргать.", "Здесь решается, чем я думаю. Без модели я умею только моргать."] },
   { id: "behaviour", label: "Поведение", line: ["Где я спрашиваю разрешения, а где действую сам.", "Где я спрашиваю разрешения, а где действую сам."] },
+  { id: "mcp", label: "MCP-серверы", line: ["Чужие инструменты, которыми я умею пользоваться.", "Чужие инструменты, которыми я умею пользоваться."] },
   { id: "shortcuts", label: "Сочетания клавиш", line: ["Как позвать меня с клавиатуры.", "Как позвать меня с клавиатуры."] },
   { id: "privacy", label: "Приватность", line: ["Что мне можно видеть и что хранить.", "Что мне можно видеть и что хранить."] },
   { id: "memory", label: "Память", line: ["Что я о тебе помню. Любую запись можно стереть.", "Что я о вас помню. Любую запись можно стереть."] },
@@ -247,48 +250,6 @@ function useVoicePreview() {
 }
 
 // ---------- building blocks ----------
-
-function Row({ label, hint, children, wide }: { label: ReactNode; hint?: ReactNode; children: ReactNode; wide?: boolean }) {
-  return (
-    <div className={`row${wide ? " is-wide" : ""}`}>
-      <div className="row-text">
-        <div className="row-label">{label}</div>
-        {hint && <div className="row-hint">{hint}</div>}
-      </div>
-      <div className="row-control">{children}</div>
-    </div>
-  );
-}
-
-function Group({ title, children }: { title?: string; children: ReactNode }) {
-  return (
-    <div className="group">
-      {title && <h2>{title}</h2>}
-      <div className="group-rows">{children}</div>
-    </div>
-  );
-}
-
-function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
-  return (
-    <button role="switch" aria-checked={checked} aria-label={label} className={`switch${checked ? " is-on" : ""}`} onClick={() => onChange(!checked)}>
-      <span />
-    </button>
-  );
-}
-
-function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: { id: T; label: string }[]; onChange: (v: T) => void; label: string }) {
-  return (
-    <div className="segmented" role="radiogroup" aria-label={label}>
-      {options.map((o) => (
-        <button key={o.id} role="radio" aria-checked={value === o.id} className={value === o.id ? "is-on" : ""} onClick={() => onChange(o.id)}>
-          {value === o.id && <motion.span layoutId={`seg-${label}`} className="segmented-thumb" transition={{ type: "spring", stiffness: 500, damping: 38 }} />}
-          <span className="segmented-text">{o.label}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
 
 function Keycaps({ value }: { value: string }) {
   const keys = value
@@ -934,6 +895,8 @@ export default function SettingsApp() {
               </Row>
             </Group>
           )}
+
+          {section === "mcp" && <McpSection notify={notify} vy={vy} />}
 
           {section === "shortcuts" && (
             <>

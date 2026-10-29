@@ -5,6 +5,7 @@
 //!   store     → SQLite settings/history/audit, Credential Manager secrets
 //!   ai        → provider adapters (OpenAI-compatible)
 //!   tools     → registry of verified agent capabilities
+//!   mcp       → client for the MCP servers the user connected
 //!   agent     → the Observe → Reason → Act → Verify loop
 //!   ipc*      → Tauri commands/events, thin adapters
 //!   state     → shared handles managed by Tauri
@@ -16,6 +17,8 @@ pub mod filekit;
 mod ipc;
 mod ipc_files;
 pub mod jobs;
+mod ipc_mcp;
+pub mod mcp;
 mod ipc_agent;
 pub mod platform;
 pub mod reminders;
@@ -187,7 +190,10 @@ pub fn run() {
                 store,
                 started_at: Instant::now(),
             });
-            let registry = Arc::new(tools::Registry::new());
+            let mcp = mcp::Hub::new(app.handle().clone());
+            mcp.spawn_background();
+            app.manage(mcp.clone());
+            let registry = Arc::new(tools::Registry::new(mcp));
             app.manage(agent::Agent::new(app.handle().clone(), registry));
             app.manage(jobs::JobManager::new(app.handle().clone()));
             app.manage(voice::VoiceManager::new(app.handle().clone()));
@@ -304,6 +310,13 @@ pub fn run() {
             ipc_agent::history_clear,
             ipc_agent::tasks_recent,
             ipc_agent::settings_open,
+            ipc_mcp::mcp_list,
+            ipc_mcp::mcp_save,
+            ipc_mcp::mcp_import,
+            ipc_mcp::mcp_remove,
+            ipc_mcp::mcp_refresh,
+            ipc_mcp::mcp_set_enabled,
+            ipc_mcp::mcp_set_tool,
         ])
         .run(tauri::generate_context!())
         .expect("error while running JARVIS");

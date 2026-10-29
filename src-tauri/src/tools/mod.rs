@@ -1,9 +1,8 @@
 //! Tool registry. Every capability the agent can use is a [`Tool`] with a
 //! JSON-schema input, a risk level computed from the actual arguments, a
 //! timeout, a human-readable title for the UI and an async handler that
-//! returns a *verified* [`ToolOutput`]. The registry is provider-agnostic and
-//! can be exposed through MCP-style adapters later (name + description +
-//! input schema + structured output).
+//! returns a *verified* [`ToolOutput`]. Tools of the MCP servers the user
+//! connected ([`crate::mcp`]) are listed and run through the same registry.
 
 mod apps;
 mod browser;
@@ -134,10 +133,19 @@ pub fn str_arg<'a>(args: &'a Value, key: &str) -> &'a str {
 
 pub struct Registry {
     tools: BTreeMap<&'static str, Tool>,
+    mcp: Arc<crate::mcp::Hub>,
+}
+
+/// What the agent needs to decide on a call before running it.
+pub struct ToolMeta {
+    pub name: String,
+    pub risk: Risk,
+    pub title: String,
+    pub parallel_safe: bool,
 }
 
 impl Registry {
-    pub fn new() -> Self {
+    pub fn new(mcp: Arc<crate::mcp::Hub>) -> Self {
         let mut tools = BTreeMap::new();
         for t in system::tools()
             .into_iter()
@@ -154,27 +162,39 @@ impl Registry {
         {
             tools.insert(t.name, t);
         }
-        Registry { tools }
+        Registry { tools, mcp }
     }
 
-    pub fn get(&self, name: &str) -> Option<&Tool> {
-        self.tools.get(name)
+    /// Risk (assessed from the arguments), title and concurrency of a tool.
+    pub fn describe(&self, name: &str, args: &Value) -> Option<ToolMeta> {
+        if let Some(t) = self.tools.get(name) {
+            return Some(ToolMeta { name: t.name.to_string(), risk: (t.risk)(args), title: (t.title)(args), parallel_safe: t.parallel_safe });
+        }
+        let m = self.mcp.describe(name)?;
+        Some(ToolMeta { name: name.to_string(), risk: m.risk, title: m.title, parallel_safe: m.parallel_safe })
     }
 
     pub fn specs(&self) -> Vec<ToolSpec> {
-        self.tools
+        let mut specs: Vec<ToolSpec> = self
+            .tools
             .values()
             .map(|t| ToolSpec { name: t.name.to_string(), description: t.description.to_string(), parameters: t.schema.clone() })
-            .collect()
+            .collect();
+        specs.extend(self.mcp.specs());
+        specs
     }
 
-    pub fn names(&self) -> Vec<&'static str> {
-        self.tools.keys().copied().collect()
+    pub fn names(&self) -> Vec<String> {
+        self.tools.keys().map(|n| n.to_string()).chain(self.mcp.names()).collect()
     }
 
     /// Run a tool with its timeout and the task's cancellation token.
     pub async fn run(&self, name: &str, ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
-        let tool = self.get(name).ok_or_else(|| AppError::not_found(format!("Инструмент «{name}» не существует")))?;
+        if !self.tools.contains_key(name) && name.starts_with(crate::mcp::PREFIX) {
+            // MCP calls keep their own start-up and call timeouts.
+            return self.mcp.call(name, args, &ctx.cancel).await;
+        }
+        let tool = self.tools.get(name).ok_or_else(|| AppError::not_found(format!("Инструмент «{name}» не существует")))?;
         let fut = (tool.handler)(ctx.clone(), args);
         tokio::select! {
             _ = ctx.cancel.cancelled() => Err(AppError::Cancelled),
@@ -182,12 +202,6 @@ impl Registry {
                 Err(AppError::Timeout(format!("Инструмент не уложился в {} с", tool.timeout.as_secs())))
             }),
         }
-    }
-}
-
-impl Default for Registry {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

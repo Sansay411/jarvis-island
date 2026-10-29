@@ -142,7 +142,8 @@ fn ext_of(p: &str) -> String {
 /// in a messenger, a UI action) or for a destructive shell command — things
 /// that cannot be taken back or reach other people.
 fn still_confirmed(tool: &str) -> bool {
-    matches!(tool, "input_key" | "input_click" | "ui_act" | "shell_run")
+    // An MCP tool is high only when its server calls it destructive.
+    matches!(tool, "input_key" | "input_click" | "ui_act" | "shell_run") || tool.starts_with(crate::mcp::PREFIX)
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -356,8 +357,8 @@ impl Agent {
             Ok(v) => v,
             Err(e) => return json!({ "ok": false, "error": format!("invalid JSON arguments: {e}") }).to_string(),
         };
-        let risk = match self.registry.get(name) {
-            Some(t) => self.effective_risk(&turn, t.name, (t.risk)(&args), &args),
+        let risk = match self.registry.describe(name, &args) {
+            Some(t) => self.effective_risk(&turn, &t.name, t.risk, &args),
             None => return json!({ "ok": false, "error": format!("unknown tool {name}") }).to_string(),
         };
         match self.execute_one(&turn, &call, args, risk).await {
@@ -701,7 +702,7 @@ impl Agent {
 
     fn title_for(&self, call: &ToolCall) -> String {
         let args: Value = serde_json::from_str(&call.arguments).unwrap_or(json!({}));
-        self.registry.get(&call.name).map(|t| (t.title)(&args)).unwrap_or_else(|| call.name.clone())
+        self.registry.describe(&call.name, &args).map(|t| t.title).unwrap_or_else(|| call.name.clone())
     }
 
     /// Policy adjustments on top of a tool's own risk assessment.
@@ -756,9 +757,9 @@ impl Agent {
         let mut prepared = Vec::new();
         for call in calls {
             let args: Result<Value, _> = serde_json::from_str(&call.arguments);
-            let tool = self.registry.get(&call.name);
+            let tool = args.as_ref().ok().and_then(|a| self.registry.describe(&call.name, a));
             let (risk, parallel) = match (&tool, &args) {
-                (Some(t), Ok(a)) => (self.effective_risk(turn, t.name, (t.risk)(a), a), t.parallel_safe),
+                (Some(t), Ok(a)) => (self.effective_risk(turn, &t.name, t.risk, a), t.parallel_safe),
                 _ => (Risk::Low, false),
             };
             prepared.push((call.clone(), args, risk, parallel));
@@ -830,22 +831,22 @@ impl Agent {
     }
 
     async fn execute_one(&self, turn: &Turn, call: &ToolCall, args: Value, risk: Risk) -> AppResult<ToolOutput> {
-        let Some(tool) = self.registry.get(&call.name) else {
+        let Some(tool) = self.registry.describe(&call.name, &args) else {
             return Err(AppError::not_found(format!("Инструмента «{}» нет. Доступные: {}", call.name, self.registry.names().join(", "))));
         };
-        let title = (tool.title)(&args);
+        let title = tool.title.clone();
         let store = self.state().store.clone();
         let args_text = truncate_chars(&args.to_string(), 4000);
 
         let full = turn.settings.agent.full_control;
         let needs_confirm = match risk {
-            Risk::High => !full || still_confirmed(tool.name),
-            Risk::Moderate => !full && turn.settings.agent.confirm_moderate && !self.inner.lock().approved_tools.contains(tool.name),
+            Risk::High => !full || still_confirmed(&tool.name),
+            Risk::Moderate => !full && turn.settings.agent.confirm_moderate && !self.inner.lock().approved_tools.contains(tool.name.as_str()),
             Risk::Low => false,
         };
         if needs_confirm {
             let approved = self.ask_confirmation(turn, call, &title, risk, &args).await?;
-            store.audit(Some(&turn.id), tool.name, risk.as_str(), &args_text, if approved { "approved" } else { "declined" }, None);
+            store.audit(Some(&turn.id), &tool.name, risk.as_str(), &args_text, if approved { "approved" } else { "declined" }, None);
             if !approved {
                 self.emit(AgentEvent::ToolFinished {
                     turn_id: turn.id.clone(),
@@ -893,7 +894,7 @@ impl Agent {
             Err(e) => (false, String::new(), Some(e.to_string())),
         };
         if risk >= Risk::Moderate {
-            store.audit(Some(&turn.id), tool.name, risk.as_str(), &args_text, "executed", Some(if ok { &summary } else { error.as_deref().unwrap_or(&summary) }));
+            store.audit(Some(&turn.id), &tool.name, risk.as_str(), &args_text, "executed", Some(if ok { &summary } else { error.as_deref().unwrap_or(&summary) }));
         }
         self.emit(AgentEvent::ToolFinished { turn_id: turn.id.clone(), call_id: call.id.clone(), ok, summary, error });
         res

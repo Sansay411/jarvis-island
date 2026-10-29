@@ -859,3 +859,147 @@
   color: var(--text-3);
   font-size: var(--fs-12);
 }
+
+/* ---------- MCP servers ---------- */
+
+.mcp-servers,
+.mcp-tools {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.mcp-server {
+  border-bottom: 1px solid var(--line);
+}
+.mcp-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 0;
+}
+.mcp-title {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 8px auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 12px;
+  row-gap: 3px;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.mcp-name {
+  font-size: var(--fs-14);
+  font-weight: 500;
+  color: var(--text-1);
+}
+.mcp-meta {
+  font-size: var(--fs-12);
+  color: var(--text-3);
+}
+.mcp-where {
+  grid-column: 2 / 4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-4);
+}
+.mcp-dot-running {
+  background: var(--ok);
+}
+.mcp-dot-connecting {
+  background: var(--amber);
+  animation: mcp-pulse 1s var(--ease-out) infinite alternate;
+}
+.mcp-dot-failed {
+  background: var(--danger);
+}
+.mcp-dot-idle {
+  background: var(--text-3);
+}
+@keyframes mcp-pulse {
+  to {
+    opacity: 0.35;
+  }
+}
+.mcp-error {
+  margin: 0 0 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.mcp-body {
+  overflow: hidden;
+}
+.mcp-body > .note:first-child {
+  margin-top: 0;
+}
+.mcp-tools li {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 0 10px 20px;
+  border-top: 1px solid var(--line);
+}
+.mcp-tool-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 10px;
+  row-gap: 2px;
+}
+.mcp-tool-name {
+  font-size: var(--fs-13);
+  color: var(--text-1);
+}
+.mcp-risk {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.mcp-risk.risk-high {
+  color: #ff8a7d;
+}
+.mcp-tool-desc {
+  flex-basis: 100%;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-3);
+}
+.mcp-card-actions {
+  gap: 8px;
+  margin: 4px 0 14px;
+}
+.mcp-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 14px;
+}
+.mcp-add-sep {
+  width: 1px;
+  height: 22px;
+  margin: 0 6px;
+  background: var(--line-strong);
+}
+.mcp-form .row-control > textarea {
+  resize: vertical;
+}
+.mcp-import {
+  width: 100%;
+  margin-top: 14px;
+  resize: vertical;
+}
+.mcp-form-actions {
+  gap: 8px;
+}
