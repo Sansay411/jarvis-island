@@ -1,6 +1,6 @@
 [package]
 name = "jarvis"
-version = "0.1.0"
+version = "0.1.1"
 description = "JARVIS — native AI desktop agent for Windows 11"
 edition = "2021"
 rust-version = "1.85"
