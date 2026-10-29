@@ -18,11 +18,11 @@
 <br>
 
 <div align="center">
-<a href="https://github.com/Sansay411/jarvis-island/releases/download/v0.1.1/jarvis-demo.mp4">
-<img src="docs/media/demo.webp" width="900" alt="Демо Джарвиса: голос, действия, файлы, подтверждения">
+<a href="https://github.com/Sansay411/jarvis-island/releases/download/v0.1.1/jarvis-ad.mp4">
+<img src="docs/media/demo.webp" width="900" alt="Ролик Джарвиса: глаза, голос, действия, файлы, подтверждения">
 </a>
 <br>
-<sub>▶ <a href="https://github.com/Sansay411/jarvis-island/releases/download/v0.1.1/jarvis-demo.mp4">Полное демо в 1080p, 39 секунд</a></sub>
+<sub>▶ <a href="https://github.com/Sansay411/jarvis-island/releases/download/v0.1.1/jarvis-ad.mp4">Ролик со звуком, 1080p</a> · <a href="https://github.com/Sansay411/jarvis-island/releases/download/v0.1.1/jarvis-demo.mp4">Подробное демо</a></sub>
 </div>
 
 <br>
