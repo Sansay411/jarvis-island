@@ -71,7 +71,7 @@ export const ACTIVITIES: { id: Activity; label: string }[] = [
 /** What a running tool looks like on the face. */
 export function activityOf(tool: string): Activity | null {
   if (["web_search", "files_search", "apps_find", "projects_list", "reminders_list"].includes(tool)) return "search";
-  if (["web_fetch", "file_read", "browser_read_page", "clipboard_read", "file_action"].includes(tool)) return "read";
+  if (["web_fetch", "file_read", "browser_read_page", "clipboard_read", "clipboard_history", "file_action"].includes(tool)) return "read";
   if (["input_type", "input_key", "clipboard_write", "shell_run"].includes(tool)) return "type";
   if (["screen_capture", "ui_inspect", "context_snapshot", "windows_list", "browser_tabs"].includes(tool)) return "scan";
   return null;

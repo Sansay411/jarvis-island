@@ -19,6 +19,8 @@ import { PeekView } from "./views/PeekView";
 import { DropView } from "./views/DropView";
 import { VoiceView, useVoiceClock } from "./views/VoiceView";
 import { FilesView } from "./views/FilesView";
+import { ClipsView } from "./views/ClipsView";
+import { closeClips, toggleClips, useClips } from "../store/clips";
 import { closeFiles, showFiles, useFiles } from "../store/files";
 import { NoticeView } from "./views/NoticeView";
 import { useAlerts, useNextTimer } from "../store/reminders";
@@ -71,20 +73,26 @@ function useIslandController() {
           const dwell = useIsland.getState().topCovered ? 150 : 45;
           enterTimer.current = window.setTimeout(() => set({ hovered: true }), dwell);
         } else {
-          leaveTimer.current = window.setTimeout(() => set({ hovered: false }), 320);
+          leaveTimer.current = window.setTimeout(() => {
+            set({ hovered: false });
+            // Opened by the pointer, closed with it; the keyboard flow stays.
+            const s = useIsland.getState();
+            if (s.clipsOpen && !s.clipsKeyboard) closeClips();
+          }, 320);
         }
       }),
     );
     unsubs.push(on("island:presence", ({ visible }) => set({ visible })));
     unsubs.push(on("island:context", ({ topCovered }) => set({ topCovered })));
     void invoke<{ topCovered: boolean }>("island_context").then(({ topCovered }) => set({ topCovered }));
-    unsubs.push(on("island:blur", () => set({ workspaceOpen: false, hovered: false })));
+    unsubs.push(on("island:blur", () => set({ workspaceOpen: false, hovered: false, clipsOpen: false, clipsKeyboard: false })));
     unsubs.push(
       on("island:command", (cmd) => {
         const s = useIsland.getState();
         if (cmd === "toggle-workspace") set({ workspaceOpen: !s.workspaceOpen });
         else if (cmd === "open-workspace") set({ workspaceOpen: true });
         else if (cmd === "toggle-voice") void toggleVoice();
+        else if (cmd === "toggle-clips") toggleClips();
       }),
     );
     // Drops arrive from our own drop target (re-armed as a drag approaches)
@@ -113,6 +121,7 @@ function useIslandController() {
         if (useFiles.getState().open) closeFiles();
         else if (s.workspaceOpen) set({ workspaceOpen: false });
         else if (s.voiceOpen) void invoke("voice_stop");
+        else if (s.clipsOpen) closeClips();
         else if (s.hovered) set({ hovered: false });
       }
     };
@@ -140,6 +149,21 @@ function useIslandController() {
     }
     if (workspaceOpen) void ipc.island.beginInput().then(() => window.dispatchEvent(new Event("jarvis:input-ready")));
     else void ipc.island.endInput(true);
+  }, [workspaceOpen]);
+
+  // The clipboard panel's search box needs the keyboard; it goes back to the
+  // window it came from when the panel closes (unless the chat took over).
+  const clipsKeyboard = useIsland((s) => s.clipsOpen && s.clipsKeyboard);
+  const clipsInput = useRef(false);
+  useEffect(() => {
+    if (clipsKeyboard === clipsInput.current) return;
+    clipsInput.current = clipsKeyboard;
+    if (clipsKeyboard) void ipc.island.beginInput().then(() => window.dispatchEvent(new Event("jarvis:input-ready")));
+    else if (!useIsland.getState().workspaceOpen) void ipc.island.endInput(true);
+  }, [clipsKeyboard]);
+  // The chat takes over from the panel.
+  useEffect(() => {
+    if (workspaceOpen) closeClips();
   }, [workspaceOpen]);
 }
 
@@ -188,7 +212,7 @@ function voiceMood(state: VoiceState, agentMood: EyeMood | null): EyeMood {
 
 function moodFor(mode: IslandMode, agentMood: EyeMood | null, hovered: boolean): EyeMood {
   if (agentMood) return agentMood;
-  if (mode === "drop" || mode === "files" || mode === "notice") return "attentive";
+  if (mode === "drop" || mode === "files" || mode === "notice" || mode === "clips") return "attentive";
   if (mode === "peek" || mode === "workspace" || hovered) return "attentive";
   return "idle";
 }
@@ -203,6 +227,7 @@ export function Island() {
 
   const filesOpen = useFiles((s) => s.open);
   const filesH = useFiles((s) => s.height);
+  const clipsH = useClips((s) => s.height);
   const alerting = useAlerts().length > 0;
   const timer = useNextTimer();
   const stopwatch = useStopwatch((s) => s.active);
@@ -235,8 +260,8 @@ export function Island() {
   const jobRows = Math.min(2, useRunningJobs().length);
   const confirmPending = useAgent((s) => s.items.some((it) => it.kind === "tool" && it.status === "awaiting"));
   const dims = useMemo(
-    () => dimsFor(mode, { hasMedia: withMedia, hasActivity: jobRows > 0 || !!timer || stopwatch, jobRows, clockRows, voiceClock, lip: st.topCovered, confirm: confirmPending, filesH }),
-    [mode, withMedia, jobRows, clockRows, voiceClock, st.topCovered, confirmPending, filesH, !!timer, stopwatch],
+    () => dimsFor(mode, { hasMedia: withMedia, hasActivity: jobRows > 0 || !!timer || stopwatch, jobRows, clockRows, voiceClock, lip: st.topCovered, confirm: confirmPending, filesH, clipsH }),
+    [mode, withMedia, jobRows, clockRows, voiceClock, st.topCovered, confirmPending, filesH, clipsH, !!timer, stopwatch],
   );
 
   const lip = mode === "compact" && st.topCovered;
@@ -306,6 +331,7 @@ export function Island() {
               {mode === "voice" && <VoiceView />}
               {mode === "files" && <FilesView />}
               {mode === "notice" && <NoticeView />}
+              {mode === "clips" && <ClipsView />}
             </motion.div>}
           </AnimatePresence>
           {(workspaceWarm || mode==="workspace") && <motion.div

@@ -14,6 +14,10 @@ interface IslandStore {
   dragOver: boolean;
   workspaceOpen: boolean;
   voiceOpen: boolean;
+  /** The clipboard history panel. */
+  clipsOpen: boolean;
+  /** The keyboard belongs to the panel (hotkey, or a click into the search). */
+  clipsKeyboard: boolean;
   visible: boolean;
   topCovered: boolean;
   pendingAttachments: DroppedFile[];
@@ -26,6 +30,8 @@ export const useIsland = create<IslandStore>((set) => ({
   dragOver: false,
   workspaceOpen: false,
   voiceOpen: false,
+  clipsOpen: false,
+  clipsKeyboard: false,
   visible: true,
   topCovered: false,
   pendingAttachments: [],
@@ -37,7 +43,7 @@ export const useIsland = create<IslandStore>((set) => ({
     }),
 }));
 
-export function resolveMode(s: Pick<IslandStore, "hovered" | "dragOver" | "workspaceOpen" | "voiceOpen">): IslandMode {
+export function resolveMode(s: Pick<IslandStore, "hovered" | "dragOver" | "workspaceOpen" | "voiceOpen" | "clipsOpen">): IslandMode {
   // Only a real file drag opens the drop zone: the native drop catcher
   // reports «enter» once Windows hands it files, so a plain press-and-drag
   // near the island changes nothing.
@@ -45,6 +51,7 @@ export function resolveMode(s: Pick<IslandStore, "hovered" | "dragOver" | "works
   // A live voice session takes over; the workspace returns when it ends.
   if (s.voiceOpen) return "voice";
   if (s.workspaceOpen) return "workspace";
+  if (s.clipsOpen) return "clips";
   if (s.hovered) return "peek";
   return "compact";
 }

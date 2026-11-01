@@ -43,8 +43,9 @@ interface Settings {
     outputDevice: string;
   };
   persona: { userName: string; address: "ty" | "vy"; style: "witty" | "warm" | "concise" };
-  shortcuts: { workspace: string; voice: string };
+  shortcuts: { workspace: string; voice: string; clipboard: string };
   privacy: { storeHistory: boolean; allowScreen: boolean; allowClipboardRead: boolean };
+  clipboard: { enabled: boolean; maxItems: number; keepDays: number; skipSecrets: boolean; ignoredApps: string[] };
   agent: { maxSteps: number; confirmModerate: boolean; fullControl: boolean; projectRoots: string[] };
   launchAtStartup: boolean;
   reduceMotion: boolean;
@@ -913,6 +914,12 @@ export default function SettingsApp() {
                     <Keycaps value={draft.shortcuts.voice} />
                   </div>
                 </Row>
+                <Row label="История буфера обмена" hint="Открывает историю с поиском: Enter вставляет, Esc закрывает.">
+                  <div className="inline">
+                    <input className="mono narrow-wide" value={draft.shortcuts.clipboard} spellCheck={false} onChange={(e) => set((s) => ({ ...s, shortcuts: { ...s.shortcuts, clipboard: e.target.value } }))} />
+                    <Keycaps value={draft.shortcuts.clipboard} />
+                  </div>
+                </Row>
               </Group>
               {shortcutProblems.length > 0 && (
                 <div className="callout">
@@ -926,6 +933,7 @@ export default function SettingsApp() {
           )}
 
           {section === "privacy" && (
+            <>
             <Group>
               <Row label="Хранить историю разговоров" hint="Локально, в базе на этом компьютере. Снимки экрана и звук не сохраняются никогда.">
                 <Switch label="Хранить историю разговоров" checked={draft.privacy.storeHistory} onChange={(v) => set((s) => ({ ...s, privacy: { ...s.privacy, storeHistory: v } }))} />
@@ -941,6 +949,49 @@ export default function SettingsApp() {
                 />
               </Row>
             </Group>
+            <Group title="История буфера обмена">
+              <Row label="Запоминать, что копируется" hint="Текст, картинки и списки файлов — только на этом компьютере, в той же базе. Если выключить, буфер вообще не читается.">
+                <Switch label="Запоминать, что копируется" checked={draft.clipboard.enabled} onChange={(v) => set((s) => ({ ...s, clipboard: { ...s.clipboard, enabled: v } }))} />
+              </Row>
+              <Row label="Не запоминать похожее на пароль" hint="Ключи API, токены, закрытые ключи и номера банковских карт пропускаются. Менеджеры паролей и так помечают свои копии как приватные — их я не читаю.">
+                <Switch label="Не запоминать похожее на пароль" checked={draft.clipboard.skipSecrets} onChange={(v) => set((s) => ({ ...s, clipboard: { ...s.clipboard, skipSecrets: v } }))} />
+              </Row>
+              <Row label="Программы, которые не слушать" hint="Часть имени процесса, по одной на строке: keepass подойдёт к KeePassXC.exe.">
+                <textarea
+                  className="mono"
+                  rows={4}
+                  value={draft.clipboard.ignoredApps.join("\n")}
+                  spellCheck={false}
+                  onChange={(e) => set((s) => ({ ...s, clipboard: { ...s.clipboard, ignoredApps: e.target.value.split("\n").map((l) => l.trim()).filter(Boolean) } }))}
+                />
+              </Row>
+              <Row label="Сколько записей хранить" hint="Закреплённые не считаются и не удаляются сами.">
+                <input
+                  className="narrow"
+                  type="number"
+                  min={10}
+                  max={1000}
+                  value={draft.clipboard.maxItems}
+                  onChange={(e) => set((s) => ({ ...s, clipboard: { ...s.clipboard, maxItems: Math.min(1000, Math.max(10, Number(e.target.value) || 100)) } }))}
+                />
+              </Row>
+              <Row label="Сколько дней хранить" hint="0 — пока не вытеснят новые.">
+                <input
+                  className="narrow"
+                  type="number"
+                  min={0}
+                  max={365}
+                  value={draft.clipboard.keepDays}
+                  onChange={(e) => set((s) => ({ ...s, clipboard: { ...s.clipboard, keepDays: Math.min(365, Math.max(0, Number(e.target.value) || 0)) } }))}
+                />
+              </Row>
+              <div className="actions">
+                <button className="btn btn-danger" onClick={() => void invoke<number>("clips_clear", { keepPinned: true }).then((n) => notify("ok", n ? `Из истории буфера удалено: ${n}` : "История буфера уже пуста"))}>
+                  Очистить историю буфера
+                </button>
+              </div>
+            </Group>
+            </>
           )}
 
           {section === "memory" && (

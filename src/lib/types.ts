@@ -33,7 +33,7 @@ export interface PresenceEvent {
   reason: "fullscreen" | "user";
 }
 
-export type IslandCommand = "toggle-workspace" | "open-workspace" | "toggle-voice" | "cancel";
+export type IslandCommand = "toggle-workspace" | "open-workspace" | "toggle-voice" | "toggle-clips" | "cancel";
 
 export interface AudioState {
   volume: number;

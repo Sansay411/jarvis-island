@@ -168,12 +168,42 @@ impl Default for VoiceSettings {
 pub struct ShortcutSettings {
     pub workspace: String,
     pub voice: String,
+    /// The clipboard history. Win+V belongs to Windows.
+    pub clipboard: String,
 }
 
 impl Default for ShortcutSettings {
     fn default() -> Self {
         // Ctrl+Alt+Space is commonly taken (IME switchers, launchers).
-        ShortcutSettings { workspace: "Ctrl+Alt+J".into(), voice: "Ctrl+Alt+K".into() }
+        ShortcutSettings { workspace: "Ctrl+Alt+J".into(), voice: "Ctrl+Alt+K".into(), clipboard: "Ctrl+Alt+V".into() }
+    }
+}
+
+/// Clipboard history (Settings → Приватность). Everything stays on this PC.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ClipboardSettings {
+    /// Record what is copied. Off: the clipboard is not even read.
+    pub enabled: bool,
+    /// Unpinned entries kept.
+    pub max_items: u32,
+    /// Days an unpinned entry is kept; 0 keeps it until the limit pushes it out.
+    pub keep_days: u32,
+    /// Skip text that looks like a password, token or card number.
+    pub skip_secrets: bool,
+    /// Parts of program names whose copies are never recorded.
+    pub ignored_apps: Vec<String>,
+}
+
+impl Default for ClipboardSettings {
+    fn default() -> Self {
+        ClipboardSettings {
+            enabled: true,
+            max_items: 100,
+            keep_days: 7,
+            skip_secrets: true,
+            ignored_apps: crate::clips::privacy::DEFAULT_IGNORED_APPS.iter().map(|s| s.to_string()).collect(),
+        }
     }
 }
 
@@ -238,6 +268,7 @@ pub struct Settings {
     pub persona: PersonaSettings,
     pub shortcuts: ShortcutSettings,
     pub privacy: PrivacySettings,
+    pub clipboard: ClipboardSettings,
     pub agent: AgentSettings,
     pub launch_at_startup: bool,
     pub reduce_motion: bool,

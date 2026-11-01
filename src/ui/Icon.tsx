@@ -112,6 +112,25 @@ const paths = {
       <path d="M10 8v3.2l2 1.3M8.2 3h3.6" />
     </>
   ),
+  clipboard: (
+    <>
+      <rect x="4.5" y="4.6" width="11" height="12.4" rx="2" />
+      <path d="M7.6 4.6V4a1 1 0 0 1 1-1h2.8a1 1 0 0 1 1 1v.6M7.5 9h5M7.5 12h3.5" />
+    </>
+  ),
+  search: (
+    <>
+      <circle cx="9" cy="9" r="5" />
+      <path d="m13 13 3.5 3.5" />
+    </>
+  ),
+  pin: (
+    <>
+      <path d="M7.2 3.8h5.6l-.8 4.3 2.3 2.5H5.7L8 8.1Z" />
+      <path d="M10 10.6v5.6" />
+    </>
+  ),
+  trash: <path d="M4.5 6h11M8 6V4.3a.8.8 0 0 1 .8-.8h2.4a.8.8 0 0 1 .8.8V6M5.8 6l.7 9.2a1.2 1.2 0 0 0 1.2 1.1h4.6a1.2 1.2 0 0 0 1.2-1.1L14.2 6M8.6 9v4.2M11.4 9v4.2" />,
 } as const;
 
 export type IconName = keyof typeof paths;

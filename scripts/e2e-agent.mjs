@@ -19,7 +19,8 @@ const db = new DatabaseSync(dbPath);
 const backup = db.prepare("SELECT value FROM kv WHERE key = 'settings'").get()?.value ?? null;
 const settings = backup ? JSON.parse(backup) : {};
 settings.provider = { ...(settings.provider ?? {}), preset: "ollama", baseUrl: `http://127.0.0.1:${port}`, model: "mock-model", visionModel: "", temperature: 0.3 };
-settings.privacy = { ...(settings.privacy ?? {}), storeHistory: true };
+// allowClipboardRead: the clipboard-history scenario must run without a question.
+settings.privacy = { ...(settings.privacy ?? {}), storeHistory: true, allowClipboardRead: true };
 db.prepare("INSERT INTO kv(key, value) VALUES('settings', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(JSON.stringify(settings));
 
 // Run in a conversation of its own and put the user back in theirs after:
@@ -101,12 +102,22 @@ try {
   check("recover: tool error captured", tools.length === 1 && tools[0].toolOk === 0, text(tools[0] ?? {}));
   check("recover: model informed", text(final).includes("ошибка"), text(final));
 
+  // 5. The clipboard history is a tool of its own: it runs unasked when the
+  //    user allowed clipboard reading, and the model sees its verified result.
+  r = await ask("покажи историю буфера");
+  tools = r.msgs.filter((m) => m.role === "tool");
+  final = r.msgs.filter((m) => m.role === "assistant").pop();
+  check("clipboard history: tool ran without a question", tools.length === 1 && tools[0].toolOk === 1, tools.map((t) => `${t.toolTitle}:${t.toolOk}`));
+  check("clipboard history: model saw the result", /^Проверил: (Записей из истории буфера|История буфера пуста)/.test(text(final)), text(final));
+
   // Request shape sent to the provider.
   const reqs = fs.readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
   check("single tool: zero network requests", reqs.every((q) => q.body.messages.filter((m) => m.role === "user").at(-1)?.content !== "какая сейчас громкость"), "");
   const first = reqs[0].body;
   check("request: streaming + tools", first.stream === true && Array.isArray(first.tools) && first.tools.length >= 20, `${first.tools?.length} tools`);
-  check("request: system prompt with context", first.messages[0].role === "system" && first.messages[0].content.includes("Foreground window"), "");
+  // The context block rides on the user's turn (the system prompt stays stable).
+  const lastUser = String(first.messages.filter((m) => m.role === "user").at(-1)?.content ?? "");
+  check("request: system prompt, context on the user turn", first.messages[0].role === "system" && lastUser.includes("[Контекст запроса]") && lastUser.includes("Foreground window"), "");
   check("request: no auth header for keyless preset", reqs.every((q) => q.auth === null), "");
 } catch (e) {
   results.push({ name: "harness", ok: false, detail: String(e) });

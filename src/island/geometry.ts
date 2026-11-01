@@ -16,7 +16,7 @@ export function shoulderFor(h: number): number {
   return Math.min(SHOULDER, Math.max(4, h * 0.6));
 }
 
-export type IslandMode = "compact" | "peek" | "workspace" | "voice" | "drop" | "files" | "notice";
+export type IslandMode = "compact" | "peek" | "workspace" | "voice" | "drop" | "files" | "notice" | "clips";
 
 export interface Dims {
   w: number;
@@ -38,6 +38,8 @@ export interface DimsContext {
   voiceClock?: boolean;
   /** Measured height of the file card. */
   filesH?: number;
+  /** Measured height of the clipboard panel. */
+  clipsH?: number;
 }
 
 export function dimsFor(mode: IslandMode, ctx: DimsContext): Dims {
@@ -60,6 +62,8 @@ export function dimsFor(mode: IslandMode, ctx: DimsContext): Dims {
       return { w: 420, h: 124 };
     case "files":
       return { w: 480, h: Math.min(440, Math.max(150, Math.round(ctx.filesH ?? 0))) };
+    case "clips":
+      return { w: 460, h: Math.min(430, Math.max(170, Math.round(ctx.clipsH ?? 0))) };
     case "workspace":
       return { w: 528, h: 492 };
   }

@@ -9,6 +9,7 @@ pub mod brightness;
 pub mod browser;
 pub mod capture;
 pub mod clipboard;
+pub mod clipwatch;
 pub mod com;
 pub mod display;
 pub mod drop_target;

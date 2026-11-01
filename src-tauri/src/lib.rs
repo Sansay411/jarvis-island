@@ -12,9 +12,11 @@
 
 pub mod agent;
 pub mod ai;
+pub mod clips;
 pub mod error;
 pub mod filekit;
 mod ipc;
+mod ipc_clips;
 mod ipc_files;
 pub mod jobs;
 mod ipc_mcp;
@@ -203,6 +205,9 @@ pub fn run() {
             app.manage(reminders.clone());
             app.manage(Arc::new(stopwatch::Stopwatch::new(app.handle().clone())));
             reminders.spawn();
+            let clips = clips::Clips::new(app.handle().clone());
+            app.manage(clips.clone());
+            clips.start();
             // Start listening for «Джарвис» if that is on — after WebView2 has
             // booted and painted the island, so model loading does not pile
             // onto the busiest second of start-up.
@@ -295,6 +300,14 @@ pub fn run() {
             ipc_files::reminder_extend,
             ipc_files::stopwatch_get,
             ipc_files::stopwatch_action,
+            ipc_clips::clips_list,
+            ipc_clips::clips_status,
+            ipc_clips::clips_set_enabled,
+            ipc_clips::clips_paste,
+            ipc_clips::clips_copy,
+            ipc_clips::clips_pin,
+            ipc_clips::clips_delete,
+            ipc_clips::clips_clear,
             ipc_agent::agent_status,
             ipc_agent::agent_send,
             ipc_agent::agent_cancel,

@@ -2,13 +2,16 @@
 
 use std::time::Duration;
 
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardOwner, GetClipboardSequenceNumber,
+    IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
-use windows::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT};
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
+use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
 use crate::error::{AppError, AppResult};
 
@@ -42,35 +45,173 @@ pub struct ClipboardContent {
 
 pub fn read() -> AppResult<ClipboardContent> {
     let _guard = Open::acquire()?;
-    let mut out = ClipboardContent { text: None, files: Vec::new() };
-    unsafe {
-        if IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_ok() {
-            if let Ok(h) = GetClipboardData(CF_UNICODETEXT.0 as u32) {
-                let hg = HGLOBAL(h.0);
-                let p = GlobalLock(hg) as *const u16;
-                if !p.is_null() {
-                    let mut len = 0;
-                    while *p.add(len) != 0 {
-                        len += 1;
-                    }
-                    out.text = Some(String::from_utf16_lossy(std::slice::from_raw_parts(p, len)));
-                    let _ = GlobalUnlock(hg);
-                }
+    unsafe { Ok(ClipboardContent { text: text_open(usize::MAX), files: files_open() }) }
+}
+
+/// The text on the clipboard, which must be open. `max_bytes` skips larger
+/// ones without copying them.
+unsafe fn text_open(max_bytes: usize) -> Option<String> {
+    if IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_err() {
+        return None;
+    }
+    let h = GetClipboardData(CF_UNICODETEXT.0 as u32).ok()?;
+    let hg = HGLOBAL(h.0);
+    if GlobalSize(hg) > max_bytes {
+        return None;
+    }
+    let p = GlobalLock(hg) as *const u16;
+    if p.is_null() {
+        return None;
+    }
+    let mut len = 0;
+    while *p.add(len) != 0 {
+        len += 1;
+    }
+    let text = String::from_utf16_lossy(std::slice::from_raw_parts(p, len));
+    let _ = GlobalUnlock(hg);
+    Some(text)
+}
+
+/// The copied files, which must be open.
+unsafe fn files_open() -> Vec<String> {
+    let mut files = Vec::new();
+    if IsClipboardFormatAvailable(CF_HDROP.0 as u32).is_ok() {
+        if let Ok(h) = GetClipboardData(CF_HDROP.0 as u32) {
+            let drop = HDROP(h.0);
+            let count = DragQueryFileW(drop, u32::MAX, None);
+            for i in 0..count {
+                let mut buf = [0u16; 1024];
+                let n = DragQueryFileW(drop, i, Some(&mut buf));
+                files.push(String::from_utf16_lossy(&buf[..n as usize]));
             }
         }
-        if IsClipboardFormatAvailable(CF_HDROP.0 as u32).is_ok() {
-            if let Ok(h) = GetClipboardData(CF_HDROP.0 as u32) {
-                let drop = HDROP(h.0);
-                let count = DragQueryFileW(drop, u32::MAX, None);
-                for i in 0..count {
-                    let mut buf = [0u16; 1024];
-                    let n = DragQueryFileW(drop, i, Some(&mut buf));
-                    out.files.push(String::from_utf16_lossy(&buf[..n as usize]));
+    }
+    files
+}
+
+/// Largest text or picture the history even looks at.
+const MAX_TEXT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_IMAGE_BYTES: usize = 200 * 1024 * 1024;
+
+/// What the history sees on the clipboard right now.
+#[derive(Debug, Default)]
+pub struct Snapshot {
+    pub sequence: u32,
+    pub owner_pid: Option<u32>,
+    /// The program that copied asked for this to stay out of histories
+    /// (password managers do). Nothing else was read.
+    pub private: bool,
+    pub text: Option<String>,
+    pub files: Vec<String>,
+    /// Raw clipboard formats of a picture: "PNG" and CF_DIBV5 / CF_DIB.
+    pub png: Option<Vec<u8>>,
+    pub dib: Option<Vec<u8>>,
+}
+
+fn registered(name: PCWSTR) -> u32 {
+    unsafe { RegisterClipboardFormatW(name) }
+}
+
+unsafe fn available(format: u32) -> bool {
+    format != 0 && IsClipboardFormatAvailable(format).is_ok()
+}
+
+/// The bytes behind a clipboard handle, if there are not too many.
+unsafe fn bytes_of(handle: HANDLE, limit: usize) -> Option<Vec<u8>> {
+    let hg = HGLOBAL(handle.0);
+    let size = GlobalSize(hg);
+    if size == 0 || size > limit {
+        return None;
+    }
+    let p = GlobalLock(hg) as *const u8;
+    if p.is_null() {
+        return None;
+    }
+    let bytes = std::slice::from_raw_parts(p, size).to_vec();
+    let _ = GlobalUnlock(hg);
+    Some(bytes)
+}
+
+/// One look at the clipboard for the history: files, else text, else a
+/// picture. Copies the owner marked private are not read at all — the two
+/// registered formats are those documented for the Windows clipboard history
+/// (`ExcludeClipboardContentFromMonitorProcessing`, and
+/// `CanIncludeInClipboardHistory` holding a DWORD 0).
+pub fn snapshot() -> AppResult<Snapshot> {
+    let _guard = Open::acquire()?;
+    let mut s = Snapshot { sequence: unsafe { GetClipboardSequenceNumber() }, ..Default::default() };
+    unsafe {
+        if let Ok(owner) = GetClipboardOwner() {
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(owner, Some(&mut pid));
+            s.owner_pid = (pid != 0).then_some(pid);
+        }
+        if available(registered(w!("ExcludeClipboardContentFromMonitorProcessing"))) {
+            s.private = true;
+            return Ok(s);
+        }
+        let history = registered(w!("CanIncludeInClipboardHistory"));
+        if available(history) {
+            let flag = GetClipboardData(history).ok().and_then(|h| bytes_of(h, 64));
+            if flag.is_some_and(|b| b.len() >= 4 && b[..4] == [0, 0, 0, 0]) {
+                s.private = true;
+                return Ok(s);
+            }
+        }
+        s.files = files_open();
+        if !s.files.is_empty() {
+            return Ok(s);
+        }
+        s.text = text_open(MAX_TEXT_BYTES).filter(|t| !t.trim().is_empty());
+        if s.text.is_some() {
+            return Ok(s);
+        }
+        let png = registered(w!("PNG"));
+        if available(png) {
+            s.png = GetClipboardData(png).ok().and_then(|h| bytes_of(h, MAX_IMAGE_BYTES));
+        }
+        if s.png.is_none() {
+            // Windows converts between DIB formats, so a bitmap from any
+            // program is available as DIBV5 (with alpha when it has some).
+            for format in [CF_DIBV5.0 as u32, CF_DIB.0 as u32] {
+                if available(format) {
+                    s.dib = GetClipboardData(format).ok().and_then(|h| bytes_of(h, MAX_IMAGE_BYTES));
+                    if s.dib.is_some() {
+                        break;
+                    }
                 }
             }
         }
     }
-    Ok(out)
+    Ok(s)
+}
+
+/// Put a picture back: raw PNG for programs that read it, and a 24-bit DIB
+/// that every program understands.
+pub fn write_image(png: &[u8], dib: &[u8]) -> AppResult<()> {
+    let png_format = registered(w!("PNG"));
+    let _guard = Open::acquire()?;
+    unsafe {
+        EmptyClipboard()?;
+        if png_format != 0 {
+            set_bytes(png_format, png)?;
+        }
+        set_bytes(CF_DIB.0 as u32, dib)?;
+    }
+    Ok(())
+}
+
+unsafe fn set_bytes(format: u32, bytes: &[u8]) -> AppResult<()> {
+    let hg = GlobalAlloc(GMEM_MOVEABLE, bytes.len())?;
+    let p = GlobalLock(hg) as *mut u8;
+    if p.is_null() {
+        return Err(AppError::platform("Не удалось выделить память для буфера обмена"));
+    }
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
+    let _ = GlobalUnlock(hg);
+    // On success the system owns the memory.
+    SetClipboardData(format, Some(HANDLE(hg.0)))?;
+    Ok(())
 }
 
 /// Put files on the clipboard as Explorer does (CF_HDROP, «copy»): Ctrl+V

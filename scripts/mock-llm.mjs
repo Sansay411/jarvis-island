@@ -16,6 +16,7 @@ const logPath = process.argv[3] ?? "mock-llm.jsonl";
 /** user text → tool calls for the first step */
 function plan(userText) {
   const t = userText.toLowerCase();
+  if (t.includes("историю буфера")) return [{ name: "clipboard_history", args: { action: "list", limit: 5 } }];
   if (t.includes("громкость и яркость")) {
     return [
       { name: "system_volume", args: { action: "get" } },

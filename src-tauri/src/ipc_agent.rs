@@ -84,7 +84,10 @@ pub fn settings_save(app: AppHandle, state: State<'_, AppState>, settings: Setti
         let res = if settings.launch_at_startup { al.enable() } else { al.disable() };
         res.map_err(|e| AppError::platform(format!("Автозапуск: {e}")))?;
     }
-    if old.shortcuts.workspace != settings.shortcuts.workspace || old.shortcuts.voice != settings.shortcuts.voice {
+    if old.shortcuts.workspace != settings.shortcuts.workspace
+        || old.shortcuts.voice != settings.shortcuts.voice
+        || old.shortcuts.clipboard != settings.shortcuts.clipboard
+    {
         crate::shortcuts::apply(&app, &settings.shortcuts);
     }
     let _ = app.emit("settings:changed", ());

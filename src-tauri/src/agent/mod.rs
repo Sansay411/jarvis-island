@@ -757,6 +757,14 @@ impl Agent {
                 if attached { Risk::Low } else { base }
             }
             "clipboard_read" if turn.settings.privacy.allow_clipboard_read => Risk::Low,
+            // Reading the history is reading the clipboard; pasting types into
+            // a window, so it stays confirmed.
+            "clipboard_history"
+                if turn.settings.privacy.allow_clipboard_read
+                    && matches!(args.get("action").and_then(Value::as_str).unwrap_or("list"), "list" | "get") =>
+            {
+                Risk::Low
+            }
             // Enter in a messenger or mail client sends a message to someone:
             // always confirmed, with the window (chat) shown. Live use: a voice
             // note for «Избранное» was typed and sent with no question asked.

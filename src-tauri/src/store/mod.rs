@@ -2,6 +2,7 @@
 //! log of consequential actions and explicit user memories. Secrets live in
 //! Windows Credential Manager (see [`secrets`]).
 
+pub mod clips;
 pub mod secrets;
 pub mod settings;
 
@@ -133,6 +134,7 @@ impl Store {
         }
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(clips::SCHEMA)?;
         Ok(Store { conn: Mutex::new(conn) })
     }
 
@@ -140,6 +142,7 @@ impl Store {
     pub fn in_memory() -> AppResult<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(clips::SCHEMA)?;
         Ok(Store { conn: Mutex::new(conn) })
     }
 
@@ -385,6 +388,20 @@ mod tests {
         s.kv_set("settings", r#"{"provider":{"preset":"alem","model":"qwen3-8"}}"#).unwrap();
         assert_eq!(s.settings().provider.model, "deepseek-flash");
         assert_eq!(s.kv_get("llm_key_origin").as_deref(), Some("https://llm.alem.ai"));
+    }
+
+    #[test]
+    fn settings_saved_before_the_clipboard_history_get_its_defaults() {
+        let s = Store::in_memory().unwrap();
+        s.kv_set("settings", r#"{"shortcuts":{"workspace":"Ctrl+Alt+J","voice":"Ctrl+Alt+K"},"persona":{"userName":"Павел"}}"#).unwrap();
+        let cfg = s.settings();
+        assert!(cfg.clipboard.enabled);
+        assert_eq!((cfg.clipboard.max_items, cfg.clipboard.keep_days), (100, 7));
+        assert!(cfg.clipboard.skip_secrets);
+        assert!(cfg.clipboard.ignored_apps.iter().any(|a| a == "keepass"));
+        assert_eq!(cfg.shortcuts.clipboard, "Ctrl+Alt+V");
+        assert_eq!(cfg.shortcuts.workspace, "Ctrl+Alt+J");
+        assert_eq!(cfg.persona.user_name, "Павел");
     }
 
     #[test]

@@ -6,6 +6,7 @@
 
 mod apps;
 mod browser;
+mod clipboard_history;
 mod dev;
 mod file_actions;
 mod files;
@@ -159,6 +160,7 @@ impl Registry {
             .chain(web::tools())
             .chain(file_actions::tools())
             .chain(reminders::tools())
+            .chain(clipboard_history::tools())
         {
             tools.insert(t.name, t);
         }

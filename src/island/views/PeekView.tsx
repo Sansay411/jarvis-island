@@ -7,6 +7,7 @@ import { QuickControls } from "./QuickControls";
 import { JobsStrip } from "./JobsStrip";
 import { ClocksStrip } from "./ClocksStrip";
 import { toggleVoice } from "../../store/voice";
+import { openClips } from "../../store/clips";
 
 export function PeekView() {
   const media = useSystem((s) => s.media);
@@ -19,6 +20,9 @@ export function PeekView() {
       <div className="brow">
         <span className="brow-name">Джарвис</span>
         <div className="brow-actions">
+          <button className="icon-btn" aria-label="История буфера обмена" title="История буфера обмена" onClick={() => openClips(false)}>
+            <Icon name="clipboard" size={16} />
+          </button>
           <button className="icon-btn" aria-label="Голосовой режим" onClick={() => void toggleVoice()}>
             <Icon name="mic" size={16} />
           </button>

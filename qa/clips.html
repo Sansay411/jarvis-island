@@ -1,0 +1,61 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><title>Jarvis clipboard QA</title>
+<style>body{margin:0;background:#3a3f48;color:#fff;font-family:sans-serif}#controls{position:fixed;bottom:16px;left:16px;display:flex;flex-wrap:wrap;gap:8px;z-index:1000;max-width:96vw}button{padding:8px 10px}#root{width:640px;height:600px;margin:0 auto}#log{position:fixed;right:12px;bottom:12px;max-width:340px;font:12px monospace;color:#cfd3da;white-space:pre-wrap}</style>
+<div id="root"></div><div id="controls"><button id="hover">Наведение</button><button id="leave">Курсор ушёл</button><button id="hotkey">Хоткей</button><button id="empty">Пусто</button><button id="full">Полная история</button><button id="copy">Новое копирование</button><button id="fail">Вставка с ошибкой</button><output>Тестовая страница: данные поддельные, системные действия отключены</output></div><div id="log"></div>
+<script type="module">
+let callbackId=0;const callbacks=new Map();const listeners=new Map();
+window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener(){}};
+const ago=(min)=>new Date(Date.now()-min*60000).toISOString();
+const canvas=document.createElement('canvas');canvas.width=200;canvas.height=100;
+{const c=canvas.getContext('2d');const g=c.createLinearGradient(0,0,200,100);g.addColorStop(0,'#2b5876');g.addColorStop(1,'#4e4376');c.fillStyle=g;c.fillRect(0,0,200,100);c.fillStyle='rgba(255,255,255,.85)';c.fillRect(24,26,92,10);c.fillRect(24,46,140,10);c.fillRect(24,66,70,10)}
+const THUMB=canvas.toDataURL('image/png');
+let nextId=100;
+const clip=(id,kind,preview,source,min,extra={})=>({id,kind,preview,size:preview.length,width:null,height:null,thumb:null,source,pinned:false,createdAt:ago(min),usedAt:ago(min),...extra});
+const base=()=>[
+ clip(1,'text','Встреча в четверг в 15:30, кабинет 204. Взять с собой ноутбук и подписанный договор, а также распечатать акт сверки за октябрь.','chrome',2),
+ clip(2,'text','npm run build && npx tauri build','WindowsTerminal',7,{pinned:true}),
+ clip(3,'image','Изображение 1920×1080','SnippingTool',12,{width:1920,height:1080,thumb:THUMB}),
+ clip(4,'files','Отчёт_октябрь.xlsx, Презентация.pptx, Фото.jpg и ещё 1','Explorer',48,{size:4}),
+ clip(5,'text','https://islandapp.pro/','msedge',130),
+ clip(6,'text','Привет! Напомни мне завтра в десять созвониться с бухгалтером.','Telegram',60*26),
+];
+const more=()=>Array.from({length:10},(_,i)=>clip(10+i,'text',`Заметка ${i+1}: проверить, что список прокручивается и строки не ломают панель`,'Code',200+i*30));
+let items=base();let enabled=true;let failPaste=false;
+const log=(t)=>{document.getElementById('log').textContent=t+'\n'+document.getElementById('log').textContent};
+const emit=(event,payload)=>{for(const [id,ev] of listeners) if(ev===event) callbacks.get(id)?.({event,id:1,payload})};
+const ordered=()=>[...items].sort((a,b)=>(b.pinned-a.pinned)||(Date.parse(b.usedAt)-Date.parse(a.usedAt)));
+window.__TAURI_INTERNALS__={
+ metadata:{currentWindow:{label:'island'},currentWebview:{label:'island'}},
+ transformCallback(fn){const id=++callbackId;callbacks.set(id,fn);return id},
+ unregisterCallback(id){callbacks.delete(id)},
+ async invoke(cmd,args){
+  if(cmd==='plugin:event|listen'){listeners.set(args.handler,args.event);return args.handler}
+  if(cmd==='island_context')return {topCovered:false};
+  if(cmd==='audio_get')return {volume:30,muted:false,device:'QA'};
+  if(cmd==='brightness_list'||cmd==='reminders_list')return [];
+  if(cmd==='island_begin_input'){log('begin_input');return null}
+  if(cmd==='island_end_input'){log('end_input restore='+args.restore);return null}
+  if(cmd==='clips_status')return {enabled,shortcut:'Ctrl+Alt+V'};
+  if(cmd==='clips_set_enabled'){enabled=args.enabled;log('recording '+enabled);return null}
+  if(cmd==='clips_list'){const q=(args.query||'').toLowerCase();return ordered().filter(c=>!q||(c.preview+' '+c.source).toLowerCase().includes(q)).slice(0,args.limit)}
+  if(cmd==='clips_paste'){await new Promise(r=>setTimeout(r,150));if(failPaste)throw {code:'platform',message:'Не вижу окна, куда вставить. Запись уже в буфере — нажмите Ctrl+V.'};log('paste #'+args.id);return 'Code'}
+  if(cmd==='clips_pin'){const c=items.find(c=>c.id===args.id);if(c)c.pinned=args.pinned;return null}
+  if(cmd==='clips_delete'){items=items.filter(c=>c.id!==args.id);return null}
+  if(cmd==='clips_clear'){const n=items.filter(c=>!c.pinned).length;items=items.filter(c=>c.pinned);return n}
+  return null;
+ }
+};
+const [{createRoot},React,{Island}]=await Promise.all([import('react-dom/client'),import('react'),import('/src/island/Island.tsx')]);
+await import('/src/styles/tokens.css');await import('/src/styles/base.css');
+const clips=await import('/src/store/clips.ts');await clips.startClipsFeed();
+const rem=await import('/src/store/reminders.ts');await rem.startRemindersFeed();
+createRoot(document.getElementById('root')).render(React.createElement(Island));
+const $=(id)=>document.getElementById(id);
+$('hover').onclick=()=>emit('island:pointer',{inside:true,dragApproach:false});
+$('leave').onclick=()=>emit('island:pointer',{inside:false,dragApproach:false});
+$('hotkey').onclick=()=>emit('island:command','toggle-clips');
+$('empty').onclick=()=>{items=[];emit('clips:changed',null)};
+$('full').onclick=()=>{items=[...base(),...more()];emit('clips:changed',null)};
+$('copy').onclick=()=>{items.unshift(clip(nextId++,'text','Только что скопированный текст '+nextId,'Code',0));emit('clips:changed',null)};
+$('fail').onclick=()=>{failPaste=!failPaste;log('paste fails: '+failPaste)};
+window.__qa={emit,get items(){return items}};
+</script></html>

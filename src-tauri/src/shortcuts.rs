@@ -16,9 +16,10 @@ pub const EVT_COMMAND: &str = "island:command";
 struct Bound {
     workspace: Option<Shortcut>,
     voice: Option<Shortcut>,
+    clipboard: Option<Shortcut>,
 }
 
-static BOUND: Mutex<Bound> = Mutex::new(Bound { workspace: None, voice: None });
+static BOUND: Mutex<Bound> = Mutex::new(Bound { workspace: None, voice: None, clipboard: None });
 static PROBLEMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 enum LaunchAction {
@@ -106,6 +107,8 @@ pub fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                     tracing::warn!("voice start failed: {e}");
                     let _ = app.emit(crate::voice::EVT_STATE, serde_json::json!({ "state": "error", "error": e.to_string() }));
                 }
+            } else if b.clipboard.as_ref() == Some(shortcut) {
+                emit_command(app, "toggle-clips");
             }
         })
         .build()
@@ -123,7 +126,7 @@ fn parse(s: &str) -> Option<Shortcut> {
 pub fn apply(app: &AppHandle, cfg: &ShortcutSettings) -> Vec<String> {
     let gs = app.global_shortcut();
     let mut b = BOUND.lock();
-    for sc in [b.workspace.take(), b.voice.take()].into_iter().flatten() {
+    for sc in [b.workspace.take(), b.voice.take(), b.clipboard.take()].into_iter().flatten() {
         let _ = gs.unregister(sc);
     }
     let mut problems = Vec::new();
@@ -147,6 +150,7 @@ pub fn apply(app: &AppHandle, cfg: &ShortcutSettings) -> Vec<String> {
     };
     b.workspace = register("Чат", &cfg.workspace);
     b.voice = register("Голос", &cfg.voice);
+    b.clipboard = register("История буфера", &cfg.clipboard);
     *PROBLEMS.lock() = problems.clone();
     problems
 }
