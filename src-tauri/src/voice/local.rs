@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::audio::{AudioIo, SPEAKER_RATE};
+use super::intent::{self, is_stop, Intent};
 use super::phrases::PhraseSplitter;
 use super::models;
 use super::stt::{self, Recognizer, Transcript};
@@ -74,9 +75,11 @@ fn continues_thought(gap:Duration,awaiting_first_audio:bool)->bool { awaiting_fi
 /// if background sound keeps the detector open.
 const STABLE_FOR: Duration = Duration::from_millis(1300);
 
-/// A conversation with no speech for this long goes back to waiting for
-/// the name (when that is on).
-const SLEEP_AFTER: Duration = Duration::from_secs(60);
+/// A conversation with nothing going on for this long goes back to waiting
+/// for the name (when that is on). Counted from the end of JARVIS's own
+/// work and speech — the room's voices do not keep it open: with a film
+/// on, every line of dialogue used to be a command for the next minute.
+const SLEEP_AFTER: Duration = Duration::from_secs(25);
 
 /// What JARVIS says when called by name alone.
 fn acknowledgement(vy: bool) -> String {
@@ -123,16 +126,8 @@ fn progress_line(tool: &str, args: &serde_json::Value) -> Option<String> {
     })
 }
 
-/// GigaAM writes a lone «стоп» in Latin («Stop.») — seen live.
-const STOP_WORDS: &[&str] = &["стоп", "хватит", "отмена", "отмени", "замолчи", "тихо", "стой", "stop"];
-
-fn is_stop(text: &str) -> bool {
-    let t: String = text.to_lowercase().chars().filter(|c| c.is_alphabetic() || c.is_whitespace()).collect();
-    let words: Vec<&str> = t.split_whitespace().filter(|w| !super::wake::is_name(w)).collect();
-    !words.is_empty() && words.len() <= 2 && words.iter().all(|w| STOP_WORDS.contains(w))
-}
-
-/// Words that cut JARVIS off without its name.
+/// Words that cut JARVIS off without its name (when no task is running —
+/// see `intent::classify` for what counts while one is).
 const INTERRUPT_WORDS: &[&str] = &["подожди", "погоди", "постой", "секунду", "нет", "не", "отмена", "тише", "замолчи", "wait"];
 
 /// Speech heard while JARVIS talks. Through speakers the microphone also
@@ -229,6 +224,8 @@ struct Pipeline {
     /// When the running turn started and when it was last narrated.
     turn_started: Option<Instant>,
     last_progress: Option<Instant>,
+    /// The turn the user cut off: what it still sends is not said.
+    cancelled_turn: Option<u64>,
 }
 
 impl Pipeline {
@@ -280,6 +277,7 @@ impl Pipeline {
         self.pending_request = None;
         self.utterance_seq += 1;
         if self.turn_active {
+            self.cancelled_turn = Some(self.turn_seq);
             self.vm.app.state::<Arc<Agent>>().cancel();
         }
         if self.awake {
@@ -341,22 +339,68 @@ impl Pipeline {
         });
     }
 
+    /// «Стоп», «хватит»: silence, cancel, and end the voice mode — back to
+    /// waiting for the name, or microphone off.
+    fn stop_all(&mut self) {
+        let agent = self.vm.app.state::<Arc<Agent>>().inner().clone();
+        tracing::info!(busy = agent.is_busy(), "stop word");
+        self.hush();
+        if agent.is_busy() {
+            self.cancelled_turn = Some(self.turn_seq);
+            agent.cancel();
+        }
+        self.pending_request = None;
+        if self.wake_enabled {
+            self.sleep();
+        } else {
+            self.rest();
+        }
+    }
+
+    /// The name alone, or an interruption with nothing to do yet: drop what
+    /// is being said and done, and listen. The words that follow are the
+    /// command, not a remark.
+    fn call(&mut self) {
+        let agent = self.vm.app.state::<Arc<Agent>>().inner().clone();
+        let t = Instant::now();
+        self.hush();
+        if self.turn_active {
+            tracing::info!("running voice turn cut off by the name");
+            self.cancelled_turn = Some(self.turn_seq);
+            self.pending_request = None;
+            agent.cancel();
+        }
+        self.vm.metrics.lock().last_barge_in_ms = Some(t.elapsed().as_millis() as u64);
+        self.wake();
+        self.say(acknowledgement(self.address_vy));
+        self.ack_gen = Some(self.speech_gen);
+    }
+
+    /// The user spoke up over a running task or a reply: drop it and handle
+    /// the new words. A task is cancelled first and the words start the next
+    /// turn when it reports back (`Ev::TurnDone`).
+    fn take_over(&mut self, text: String) {
+        let agent = self.vm.app.state::<Arc<Agent>>().inner().clone();
+        let t = Instant::now();
+        self.hush();
+        self.last_activity = Instant::now();
+        self.vm.metrics.lock().last_barge_in_ms = Some(t.elapsed().as_millis() as u64);
+        if self.turn_active {
+            tracing::info!("running voice turn replaced by new words");
+            self.cancelled_turn = Some(self.turn_seq);
+            self.pending_request = Some(text);
+            agent.cancel();
+        } else if agent.is_busy() {
+            self.say("Сейчас я выполняю задачу из чата. Скажите ещё раз, когда я закончу.".into());
+        } else {
+            self.start_turn(text);
+        }
+    }
+
     fn on_request(&mut self, text: String, continues: bool) {
         let agent = self.vm.app.state::<Arc<Agent>>().inner().clone();
         if is_stop(&text) {
-            // «Стоп», «хватит»: silence, cancel, and end the voice mode —
-            // back to waiting for the name, or microphone off.
-            tracing::info!(busy = agent.is_busy(), "stop word");
-            self.hush();
-            if agent.is_busy() {
-                agent.cancel();
-            }
-            self.pending_request = None;
-            if self.wake_enabled {
-                self.sleep();
-            } else {
-                self.rest();
-            }
+            self.stop_all();
             return;
         }
         if self.turn_active && continues {
@@ -364,6 +408,7 @@ impl Pipeline {
             // answers (their speech already hushed any reply).
             tracing::info!("phrase merged into the running voice turn");
             self.pending_request = Some(format!("{} {}", self.turn_text, text));
+            self.cancelled_turn = Some(self.turn_seq);
             agent.cancel();
         } else if continues && !self.turn_active && !self.turn_text.is_empty() && self.turn_finished.is_some_and(|t| t.elapsed() < Duration::from_secs(6)) {
             // The answer came while the user was still talking, and their
@@ -524,6 +569,7 @@ impl VoiceManager {
             last_progress: None,
             ack_gen: None,
             resting_since: None,
+            cancelled_turn: None,
         };
         let mut level_tick = tokio::time::interval(Duration::from_millis(33));
         let mut last_mic=Instant::now();
@@ -564,9 +610,9 @@ impl VoiceManager {
                             pl.utterance_seq += 1;
                             pl.hearing_since=Some(Instant::now());
                             pl.hearing_continues = pl.last_ended.is_some_and(|e| continues_thought(e.elapsed(),pl.first_audio_pending));
-                            if pl.awake {
-                                pl.last_activity = Instant::now();
-                            }
+                            // The conversation is not kept open by sound alone: the
+                            // room's voices are not the user. Accepted requests and
+                            // JARVIS's own work refresh `last_activity`.
                             // VAD is only a candidate: breaths and room noise
                             // must not destroy a spoken answer. Confirm below
                             // after ASR returns meaningful words.
@@ -676,6 +722,50 @@ impl VoiceManager {
                                 if invited && meaningful {
                                     pl.hush();
                                 }
+                                // Awake with the name listener on: whose words are these?
+                                // While JARVIS works or speaks only a stop word, the name
+                                // or the rest of a thought count — not the film or the
+                                // person next to the user (see `intent`).
+                                let mut t = t;
+                                if pl.awake && pl.wake_enabled && meaningful && !invited {
+                                    let ctx = intent::Context {
+                                        busy: pl.turn_active || reply_busy,
+                                        turn_active: pl.turn_active,
+                                        continues,
+                                        turn_age: pl.turn_started.map_or(Duration::ZERO, |s| s.elapsed()),
+                                        headphones: pl.audio.headphones,
+                                    };
+                                    match intent::classify(&t.text, &ctx) {
+                                        Intent::Ignore => {
+                                            tracing::info!(words, turn_active = pl.turn_active, "voice: room speech ignored while busy");
+                                            pl.refresh_state(&vad);
+                                            continue;
+                                        }
+                                        Intent::Stop => {
+                                            pl.emit_transcript("user", &t.text, true);
+                                            pl.stop_all();
+                                            pl.refresh_state(&vad);
+                                            continue;
+                                        }
+                                        Intent::Call => {
+                                            pl.emit_transcript("user", &t.text, true);
+                                            pl.call();
+                                            pl.refresh_state(&vad);
+                                            continue;
+                                        }
+                                        Intent::Replace(text) => {
+                                            tracing::info!(words, "voice: user spoke over the running turn");
+                                            pl.emit_transcript("user", &text, true);
+                                            pl.speech_end_at = Some(ended);
+                                            pl.first_audio_pending = true;
+                                            pl.take_over(text);
+                                            pl.refresh_state(&vad);
+                                            continue;
+                                        }
+                                        // The words to use, with any chatter before the name cut off.
+                                        Intent::Request(text) => t.text = text,
+                                    }
+                                }
                                 if pl.awake && reply_busy && !is_reply_interruption(&t.text, continues, pl.audio.headphones) {
                                     tracing::info!("ignored non-speech during reply");
                                     pl.refresh_state(&vad);
@@ -732,7 +822,7 @@ impl VoiceManager {
                         }
                         pl.refresh_state(&vad);
                     }
-                    Ev::Delta(seq, d) if seq == pl.turn_seq => {
+                    Ev::Delta(seq, d) if seq == pl.turn_seq && pl.cancelled_turn != Some(seq) => {
                         pl.filler_at = None;
                         pl.reply.push_str(&d);
                         pl.emit_transcript("assistant", &d, false);
@@ -746,6 +836,8 @@ impl VoiceManager {
                         pl.filler_at = None;
                         pl.turn_finished = Some(Instant::now());
                         match res {
+                            // Cut off by the user just as it finished: say nothing of it.
+                            Ok(_) if pl.cancelled_turn == Some(seq) => {}
                             Ok(final_text) => {
                                 if let Some(rest) = pl.splitter.finish() {
                                     pl.say(rest);

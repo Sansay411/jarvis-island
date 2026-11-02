@@ -17,7 +17,7 @@ const NAMES: &[&str] = &[
 ];
 
 /// Words that may come before the name: «эй, Джарвис», «окей, Джар».
-const LEADS: &[&str] = &[
+pub(super) const LEADS: &[&str] = &[
     "эй", "окей", "ок", "хей", "слушай", "привет", "здравствуй", "здравствуйте", "алло", "ну", "а", "так", "о", "йо", "хай",
 ];
 
@@ -105,6 +105,35 @@ fn short_name_alone(text: &str, w: &str) -> bool {
     after.is_none_or(|c| !c.is_alphabetic() && !c.is_whitespace())
 }
 
+/// The words of `text` (lower-case, «ё» as «е») with the byte offset where
+/// each begins, so a slice of the original keeps its punctuation.
+pub(super) fn spans(text: &str) -> Vec<(usize, String)> {
+    let mut out: Vec<(usize, String)> = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, c) in text.char_indices().chain(std::iter::once((text.len(), ' '))) {
+        match (c.is_alphabetic(), start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                out.push((s, text[s..i].to_lowercase().replace('ё', "е")));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The rest of a remark from the name on: «Он сказал… А Джарвис, открывай
+/// Ведьму» → «Джарвис, открывай Ведьму». The name must be among the first
+/// `within + 1` words and something besides greetings must follow it.
+/// Cut-off forms («Дар», «Жар») are ordinary words here and do not count.
+pub fn from_name(text: &str, within: usize) -> Option<&str> {
+    let w = spans(text);
+    let at = w.iter().take(within + 1).position(|(_, word)| is_name(word))?;
+    let follows = w[at + 1..].iter().any(|(_, word)| !is_name(word) && !LEADS.contains(&word.as_str()));
+    follows.then(|| &text[w[at].0..])
+}
+
 pub fn addressed(text: &str) -> Option<Addressed> {
     let w = words(text);
     if w.is_empty() || w.len() > MAX_WORDS {
@@ -181,6 +210,31 @@ mod tests {
         for t in ["Сервис не работает", "Жарко сегодня", "Дар речи пропал", "Чарли, иди сюда", "Жарить картошку"] {
             assert!(!yes(t), "must not wake: {t}");
         }
+    }
+
+    #[test]
+    fn command_is_taken_from_the_name_on_when_chatter_comes_first() {
+        // Heard live 2026-11-01 while watching a film with company.
+        let live = "Он сказал сначала... А Джарвис, открывай Ведьму. Будем смотреть Ведьму.";
+        assert_eq!(from_name(live, 5), Some("Джарвис, открывай Ведьму. Будем смотреть Ведьму."));
+        assert_eq!(from_name("Алло, Джарвис. Открывай ведьму", 4), Some("Джарвис. Открывай ведьму"));
+        // The name alone, or only greetings after it, is not a command.
+        assert_eq!(from_name("Ну вот, Джарвис", 4), None);
+        assert_eq!(from_name("Ну вот, Джарвис, эй", 4), None);
+        // A name too deep in the remark is a mention, not a call.
+        assert_eq!(from_name("Мы вчера смотрели фильм где Джарвис помогает Тони", 4), None);
+        // Ordinary words that merely sound like a cut name.
+        assert_eq!(from_name("Жар у меня уже спал", 4), None);
+        assert_eq!(from_name("", 4), None);
+    }
+
+    #[test]
+    fn word_spans_point_into_the_original_text() {
+        let t = "Эй, Джарвис! Ёлка";
+        let w = spans(t);
+        assert_eq!(w.iter().map(|(_, x)| x.as_str()).collect::<Vec<_>>(), ["эй", "джарвис", "елка"]);
+        assert_eq!(&t[w[1].0..w[1].0 + "Джарвис".len()], "Джарвис");
+        assert_eq!(&t[w[2].0..], "Ёлка");
     }
 
     #[test]
