@@ -1003,3 +1003,429 @@
 .mcp-form-actions {
   gap: 8px;
 }
+
+/* ---------- Free Neural HD TTS Studio ---------- */
+
+.tts-studio-card {
+  margin-top: 28px;
+  padding: 20px 22px;
+  border-radius: 16px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.tts-studio-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.tts-studio-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--amber-hi);
+  margin-bottom: 6px;
+}
+
+.tts-studio-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 8px rgba(124, 217, 146, 0.55);
+}
+
+.tts-studio-title {
+  margin: 0 0 6px;
+  font-size: 17px;
+  font-weight: 620;
+  letter-spacing: -0.015em;
+  color: var(--text-1);
+}
+
+.tts-studio-desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.tts-hd-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.tts-hd-card {
+  position: relative;
+  border-radius: 12px;
+  background: var(--field);
+  border: 1px solid var(--line-strong);
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 12px 12px 14px;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+.tts-hd-card:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.tts-hd-card.is-selected {
+  background: #141310;
+  border-color: rgba(255, 178, 63, 0.52);
+}
+
+.tts-hd-pick {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.tts-hd-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tts-hd-mark {
+  flex: none;
+  width: 5px;
+  height: 13px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1.5px var(--text-4);
+}
+.tts-hd-card.is-selected .tts-hd-mark {
+  background: linear-gradient(180deg, var(--amber-hi), var(--amber) 55%, var(--amber-lo));
+  box-shadow: 0 0 8px var(--amber-glow);
+}
+
+.tts-hd-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tts-hd-badge {
+  flex: none;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-2);
+  font-size: 10.5px;
+  font-weight: 560;
+  display: inline-flex;
+  align-items: center;
+}
+.tts-hd-card.is-selected .tts-hd-badge {
+  background: rgba(255, 178, 63, 0.14);
+  color: var(--amber-hi);
+}
+
+.tts-hd-desc {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-3);
+}
+
+.tts-hd-play {
+  align-self: center;
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 550;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.tts-hd-play:hover {
+  background: var(--field-hi);
+  color: var(--text-1);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.tts-hd-play.is-playing {
+  background: rgba(255, 178, 63, 0.14);
+  border-color: rgba(255, 178, 63, 0.48);
+  color: var(--amber-hi);
+}
+
+/* Interactive Voice Preview & Speed Benchmark */
+.tts-bench-box {
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tts-bench-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tts-bench-label {
+  font-size: 12.5px;
+  font-weight: 560;
+  color: var(--text-2);
+}
+
+.tts-bench-active-voice {
+  font-size: 11.5px;
+  color: var(--amber-hi);
+}
+
+.tts-bench-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tts-bench-input-row input {
+  flex: 1;
+}
+
+.tts-bench-stop-btn {
+  border-color: rgba(255, 178, 63, 0.5);
+  background: rgba(255, 178, 63, 0.12);
+  color: var(--amber-hi);
+}
+
+.tts-bench-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.tts-metric-pill {
+  height: 26px;
+  padding: 0 11px;
+  border-radius: var(--r-pill);
+  background: var(--field);
+  border: 1px solid var(--line-strong);
+  font-size: 12px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.tts-metric-pill strong {
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+.tts-metric-pill.is-fast {
+  border-color: rgba(124, 217, 146, 0.38);
+  background: rgba(124, 217, 146, 0.08);
+}
+.tts-metric-pill.is-fast strong {
+  color: var(--ok);
+}
+.tts-metric-pill.is-cache {
+  border-color: rgba(255, 178, 63, 0.38);
+  background: rgba(255, 178, 63, 0.08);
+}
+.tts-metric-pill.is-cache strong {
+  color: var(--amber-hi);
+}
+.tts-metric-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+.tts-metric-meta {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-left: auto;
+}
+
+.slider-readout {
+  min-width: 48px;
+  text-align: right;
+  font-size: 12.5px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Autopilot Hero Card & Routines Manager in Settings ---------- */
+
+.autopilot-hero-card {
+  margin-top: 28px;
+  padding: 20px 22px;
+  border-radius: 16px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  transition: border-color var(--dur-med) var(--ease-out), background var(--dur-med) var(--ease-out);
+}
+.autopilot-hero-card.is-on {
+  background: #13120f;
+  border-color: rgba(255, 178, 63, 0.48);
+}
+.autopilot-hero-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.autopilot-hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--amber-hi);
+}
+.autopilot-hero-main h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 620;
+  color: var(--text-1);
+}
+.autopilot-hero-main p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.autopilot-hero-main code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--field);
+  color: var(--text-1);
+}
+
+.settings-routines-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+}
+.settings-routine-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+.settings-routine-icon {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--field);
+  border: 1px solid var(--line-strong);
+  color: var(--text-1);
+  display: grid;
+  place-items: center;
+  margin-top: 2px;
+}
+.settings-routine-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.settings-routine-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.settings-routine-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.settings-routine-badge {
+  height: 19px;
+  padding: 0 7px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 178, 63, 0.12);
+  color: var(--amber-hi);
+  font-size: 11px;
+  font-weight: 560;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.settings-routine-sub {
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.settings-routine-prompt {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-2);
+  word-break: break-word;
+}
+.settings-routine-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.settings-routine-editor {
+  margin-top: 16px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+}
+.settings-routine-editor-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+  margin-bottom: 6px;
+}
+
+@media (max-width: 900px) {
+  .tts-hd-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .tts-bench-input-row {
+    flex-wrap: wrap;
+  }
+  .settings-routine-row {
+    flex-direction: column;
+  }
+}
+

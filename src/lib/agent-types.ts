@@ -2,6 +2,13 @@
 
 export type AgentPhase = "thinking" | "acting" | "verifying";
 export type RiskLevel = "low" | "moderate" | "high";
+export type PlanStepStatus = "pending" | "running" | "done" | "failed";
+
+export interface PlanStep {
+  id: string;
+  title: string;
+  status: PlanStepStatus;
+}
 
 export type AgentEvent =
   | { type: "turnStarted"; turnId: string; conversationId: string; userText: string }
@@ -26,7 +33,10 @@ export type AgentEvent =
       risk: RiskLevel;
       details: string;
     }
+  | { type: "plan_updated"; turnId: string; steps: PlanStep[] }
+  | { type: "planUpdated"; turnId: string; steps: PlanStep[] }
   | { type: "turnFinished"; turnId: string; status: "completed" | "cancelled" | "failed"; error: string | null }
+  | { type: "turn_done"; turnId: string; status?: "completed" | "cancelled" | "failed"; error?: string | null }
   | { type: "report"; text: string; tone: "ok" | "error" }
   | { type: "waiting"; turnId: string; seconds: number };
 
