@@ -390,10 +390,22 @@
 }
 .eq-bar {
   width: 2.2px;
-  height: 3px;
+  height: 4px;
   border-radius: 2px;
   background: var(--text-2);
-  transition: height 160ms ease;
+  transition: height 160ms ease, opacity 160ms ease;
+}
+.eq-bars:not(.is-playing) {
+  opacity: 0.58;
+}
+.eq-bars:not(.is-playing) .eq-bar.b1 {
+  height: 4.5px;
+}
+.eq-bars:not(.is-playing) .eq-bar.b2 {
+  height: 9px;
+}
+.eq-bars:not(.is-playing) .eq-bar.b3 {
+  height: 6px;
 }
 .eq-bars.tone-amber .eq-bar {
   background: var(--amber);
@@ -1338,11 +1350,13 @@
   text-decoration: line-through;
 }
 .focus-task-time {
+  grid-column: 3;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--text-3);
 }
 .focus-task-del {
+  grid-column: 4;
   width: 20px;
   height: 20px;
   border-radius: 5px;
@@ -1783,11 +1797,15 @@
 .mission-strip.is-awaiting .mission-headline {
   color: var(--amber);
 }
-.mission-step-badge {
+.island-mission-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
   height: 18px;
-  padding: 0 6px;
+  padding: 0 6.5px;
   border-radius: var(--r-pill);
   background: rgba(255, 178, 63, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(255, 178, 63, 0.28);
   color: var(--amber);
   font-family: var(--font-mono);
   font-size: 10.5px;
