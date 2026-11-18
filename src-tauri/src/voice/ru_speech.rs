@@ -65,6 +65,8 @@ const NAMES: &[(&str, &str)] = &[
     ("obs", "О Би Эс"),
     ("alem", "Алем"),
     ("qwen", "Квен"),
+    ("deepseek", "Дипсик"),
+    ("tauri", "Таури"),
 ];
 
 const LETTERS: &[(char, &str)] = &[
@@ -356,6 +358,102 @@ pub fn normalize(text: &str) -> String {
     out.join(" ").replace(" ,", ",").replace(" .", ".")
 }
 
+/// Normalize text with awareness of multilingual and English neural voices:
+/// - Russian-only voices (`ru-RU-*`, Piper, Supertonic, Windows): full Russian
+///   normalization including Latin transliteration so no word is skipped.
+/// - Multilingual voices (`*Multilingual*`): preserve Latin words so English
+///   technical terms are pronounced natively, while still expanding Russian
+///   numbers/units/times when Cyrillic text is present.
+/// - Pure English voices (`en-*` without `Multilingual`): if the input has no
+///   Cyrillic, clean markdown/symbols without converting numbers to Russian.
+pub fn normalize_for_voice(text: &str, voice_id: &str) -> String {
+    let has_cyrillic = text.chars().any(|c| ('\u{0400}'..='\u{04FF}').contains(&c));
+    let is_multilingual = voice_id.contains("Multilingual");
+    let is_english_only = (voice_id.starts_with("en-") || voice_id.contains(":en-")) && !is_multilingual;
+
+    if is_english_only && !has_cyrillic {
+        return text
+            .replace(['*', '#', '_', '`', '|'], " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+
+    if is_multilingual {
+        if !has_cyrillic {
+            return text
+                .replace(['*', '#', '_', '`', '|'], " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
+        // Mixed Russian + English: expand numbers/times/units in Russian, but keep Latin words intact!
+        let cleaned = text
+            .replace('№', " номер ")
+            .replace('&', " и ")
+            .replace('+', " плюс ")
+            .replace(['*', '#', '_', '`', '|'], " ")
+            .replace('~', " около ")
+            .replace(" / ", ", ")
+            .replace('%', " %");
+        let tokens: Vec<&str> = cleaned.split_whitespace().collect();
+        let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+        let mut i = 0;
+        while i < tokens.len() {
+            let tok = tokens[i];
+            let core = tok.trim_end_matches(['.', ',', '!', '?', ';', ':', '…', ')', '»']);
+            let tail = &tok[core.len()..];
+            let core_lead = core.trim_start_matches(['(', '«']);
+            let lead = &core[..core.len() - core_lead.len()];
+
+            if let Some((h, m)) = core_lead.split_once(':') {
+                if let (Ok(h), Ok(mm)) = (h.parse::<u64>(), m.parse::<u64>()) {
+                    if h < 24 && m.len() == 2 && mm < 60 {
+                        let minutes = if mm == 0 {
+                            "ноль ноль".to_string()
+                        } else if mm < 10 {
+                            format!("ноль {}", number_words(mm, Gender::Fem))
+                        } else {
+                            number_words(mm, Gender::Fem)
+                        };
+                        out.push(format!("{lead}{} {minutes}{tail}", number_words(h, Gender::Masc)));
+                        i += 1;
+                        continue;
+                    }
+                }
+            }
+            if let Some((a, b)) = core_lead.split_once(['.', ',']) {
+                if let (Ok(x), Ok(_)) = (a.parse::<u64>(), b.parse::<u64>()) {
+                    if !b.is_empty() && b.len() <= 3 {
+                        let digits: Vec<String> = b.chars().map(|c| UNITS[c.to_digit(10).unwrap_or(0) as usize].to_string()).collect();
+                        out.push(format!("{lead}{} и {}{tail}", number_words(x, Gender::Fem), digits.join(" ")));
+                        i += 1;
+                        continue;
+                    }
+                }
+            }
+            if let Ok(n) = core_lead.parse::<u64>() {
+                let next = tokens.get(i + 1).copied().unwrap_or("");
+                if let Some((one, few, many, g, replace)) = unit_after(next) {
+                    let ntail = &next[next.trim_end_matches(['.', ',', '!', '?', ';', ':']).len()..];
+                    let noun = if replace { plural(n, one, few, many).to_string() } else { next.to_string() };
+                    out.push(format!("{lead}{}{tail} {noun}{ntail}", number_words(n, g)));
+                    i += 2;
+                    continue;
+                }
+                out.push(format!("{lead}{}{tail}", number_words(n, noun_gender(next))));
+                i += 1;
+                continue;
+            }
+            out.push(tok.to_string());
+            i += 1;
+        }
+        return out.join(" ").replace(" ,", ",").replace(" .", ".");
+    }
+
+    normalize(text)
+}
+
 /// Pause after a phrase, by how it ends — sentences are synthesised one by
 /// one, and without a gap they run together.
 pub fn pause_after_ms(phrase: &str) -> u32 {
@@ -413,5 +511,17 @@ mod tests {
     fn pauses_follow_punctuation() {
         assert!(pause_after_ms("Ну что ж…") > pause_after_ms("Готово."));
         assert!(pause_after_ms("Правда?") > pause_after_ms("И ещё,"));
+    }
+
+    #[test]
+    fn multilingual_and_english_preserve_latin_terms() {
+        let multi = normalize_for_voice("Открыл VS Code и GitHub за 250 мс.", "en-US-AndrewMultilingualNeural");
+        assert_eq!(multi, "Открыл VS Code и GitHub за двести пятьдесят миллисекунд.");
+
+        let eng = normalize_for_voice("System ready in 150 ms on GitHub.", "en-GB-RyanNeural");
+        assert_eq!(eng, "System ready in 150 ms on GitHub.");
+
+        let ru = normalize_for_voice("Открыл VS Code за 25 мс.", "ru-RU-DmitryNeural");
+        assert_eq!(ru, "Открыл Ви Эс Код за двадцать пять миллисекунд.");
     }
 }

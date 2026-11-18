@@ -6,13 +6,14 @@
 #[derive(Default)]
 pub struct PhraseSplitter {
     buf: String,
-    /// The first phrase was cut: later ones wait for sentence ends.
+    /// The first speakable phrase was cut: later ones wait for full sentence ends.
     started: bool,
 }
 
-/// The first phrase may end at a comma or dash: synthesis time grows with
-/// length, and the first sound is what the user waits for.
-const MIN_FIRST_CLAUSE: usize = 18;
+/// Turbo first-clause flush: on the very first emitted chunk of a response,
+/// flush on `,`, `—`, `–`, `:`, `;` (or spaced `-`) once >= 24 chars (3–5 words)
+/// have arrived so synthesis begins ~2–3× sooner.
+const MIN_FIRST_CLAUSE: usize = 24;
 
 /// Short fragments are held back and joined with the next sentence so
 /// speech doesn't stutter phrase by phrase.
@@ -26,13 +27,23 @@ impl PhraseSplitter {
             let chars: Vec<(usize, char)> = self.buf.char_indices().collect();
             let mut cut = None;
             for (i, &(pos, c)) in chars.iter().enumerate() {
+                let prev = i.checked_sub(1).and_then(|p| chars.get(p)).map(|&(_, pc)| pc);
                 let next = chars.get(i + 1).map(|&(_, n)| n);
                 let spaced = next.is_some_and(char::is_whitespace);
-                let len = || self.buf[..pos].chars().count() + 1;
+                let prev_spaced = prev.is_some_and(char::is_whitespace);
+                let len = || i + 1;
                 let boundary = match c {
                     '\n' => true,
-                    '.' | '!' | '?' | '…' | ';' => spaced && len() >= MIN_PHRASE,
-                    ',' | ':' | '—' => spaced && !self.started && len() >= MIN_FIRST_CLAUSE,
+                    '.' | '!' | '?' | '…' => spaced && len() >= MIN_PHRASE,
+                    ',' | ':' | '—' | '–' => spaced && !self.started && len() >= MIN_FIRST_CLAUSE,
+                    ';' => {
+                        if !self.started {
+                            spaced && len() >= MIN_FIRST_CLAUSE
+                        } else {
+                            false
+                        }
+                    }
+                    '-' => prev_spaced && spaced && !self.started && len() >= MIN_FIRST_CLAUSE,
                     _ => false,
                 };
                 if boundary {
@@ -42,9 +53,9 @@ impl PhraseSplitter {
             }
             let Some(at) = cut else { break };
             let phrase: String = self.buf.drain(..at).collect();
-            self.started = true;
             let s = speakable(&phrase);
             if !s.is_empty() {
+                self.started = true;
                 out.push(s);
             }
         }
@@ -56,6 +67,18 @@ impl PhraseSplitter {
         let s = speakable(&std::mem::take(&mut self.buf));
         (!s.is_empty()).then_some(s)
     }
+}
+
+/// Split a complete text into speakable phrases using `PhraseSplitter` rules
+/// (fast first clause, then natural sentences) so standalone `tts_speak` starts
+/// streaming the first clause immediately while queueing the rest.
+pub fn split_all(text: &str) -> Vec<String> {
+    let mut sp = PhraseSplitter::default();
+    let mut out = sp.push(text);
+    if let Some(tail) = sp.finish() {
+        out.push(tail);
+    }
+    out
 }
 
 /// Markdown and other written-only notation → plain speakable text.
@@ -148,6 +171,33 @@ mod tests {
         assert_eq!(p.push("Отличный вопрос, честно говоря, давно думаю об этом. "), vec!["Отличный вопрос, честно говоря,"]);
         assert!(p.push("Ну что ж, ").is_empty());
         assert_eq!(p.finish().as_deref(), Some("давно думаю об этом. Ну что ж,"));
+    }
+
+    #[test]
+    fn first_clause_flushes_on_dash_colon_semicolon_at_24_chars_only_once() {
+        let mut p = PhraseSplitter::default();
+        // Short clause (<24 chars) holds back until >=24 chars.
+        assert!(p.push("Да, конечно — ").is_empty());
+        // Once >= 24 chars arrive and hit `:`, flushes immediately.
+        assert_eq!(
+            p.push("система проверена: память свободна, диски в норме; продолжаю мониторинг. "),
+            vec![
+                "Да, конечно — система проверена:",
+                "память свободна, диски в норме; продолжаю мониторинг."
+            ]
+        );
+        assert_eq!(p.finish(), None);
+    }
+
+    #[test]
+    fn leading_blank_lines_do_not_consume_first_clause_fast_flush() {
+        let mut p = PhraseSplitter::default();
+        assert!(p.push("\n\n").is_empty());
+        assert_eq!(
+            p.push("Добрый день, я уже открыл нужную вкладку; всё готово"),
+            vec!["Добрый день, я уже открыл нужную вкладку;"]
+        );
+        assert_eq!(p.finish().as_deref(), Some("всё готово"));
     }
 
     #[test]

@@ -515,6 +515,175 @@ impl Drop for AudioIo {
     }
 }
 
+/// Lightweight output-only WASAPI audio stream (`cpal`) for universal TTS
+/// (`tts_speak`, `speak_aloud`, chat readouts, reminders, focus completion).
+/// Never opens the microphone, so Windows never shows a mic indicator and PCs
+/// without a microphone play crystal-clear 24 kHz neural speech in ~10 ms.
+pub struct AudioOutput {
+    cmd: std::sync::mpsc::Sender<Cmd>,
+    playback: Arc<Mutex<VecDeque<f32>>>,
+    out_rate: u32,
+    pub levels: Arc<Levels>,
+    play_resampler: Mutex<Resampler>,
+    pub output_device: String,
+    speaking: Arc<AtomicBool>,
+}
+
+impl AudioOutput {
+    pub fn start(output_name: &str) -> AppResult<Arc<AudioOutput>> {
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<AppResult<(u32, String)>>();
+        let playback = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(SPEAKER_RATE as usize * 4)));
+        let levels = Arc::new(Levels::default());
+        let speaking = Arc::new(AtomicBool::new(false));
+
+        let null_output = cfg!(debug_assertions) && std::env::var("JARVIS_VOICE_OUTPUT").is_ok_and(|v| v == "null");
+        let (pb, lv, sp) = (playback.clone(), levels.clone(), speaking.clone());
+        let out_name = output_name.to_string();
+
+        std::thread::Builder::new()
+            .name("tts-audio-out".into())
+            .spawn(move || {
+                if null_output {
+                    let _ = ready_tx.send(Ok((SPEAKER_RATE, "без устройства (тест)".into())));
+                    let frames = SPEAKER_RATE as usize / 50;
+                    while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                        cmd_rx.recv_timeout(std::time::Duration::from_millis(20))
+                    {
+                        let mut q = pb.lock();
+                        let n = frames.min(q.len());
+                        let sq: f32 = q.drain(..n).map(|s| s * s).sum();
+                        let playing = !q.is_empty();
+                        drop(q);
+                        let level = (sq / frames as f32).sqrt();
+                        Levels::set(&lv.output, perceptual(level));
+                        sp.store(playing || level > 0.001, Ordering::Relaxed);
+                    }
+                    return;
+                }
+
+                let host = cpal::default_host();
+                let res = (|| -> AppResult<(cpal::Stream, u32, String)> {
+                    let output = find_device(&host, &out_name, false)
+                        .ok_or_else(|| AppError::not_found("Устройство вывода звука не найдено"))?;
+                    let out_cfg = output
+                        .default_output_config()
+                        .map_err(|e| AppError::platform(format!("Вывод звука: {e}")))?;
+                    let out_conf: StreamConfig = out_cfg.config();
+                    let out_ch = out_conf.channels as usize;
+                    let out_rate = out_conf.sample_rate;
+                    let (pb_out, lv_out, sp_out) = (pb.clone(), lv.clone(), sp.clone());
+
+                    let fill = move |buf: &mut dyn FnMut(usize, f32), frames: usize| {
+                        let mut q = pb_out.lock();
+                        let mut sq = 0.0f32;
+                        for f in 0..frames {
+                            let s = q.pop_front().unwrap_or(0.0);
+                            sq += s * s;
+                            for c in 0..out_ch {
+                                buf(f * out_ch + c, s);
+                            }
+                        }
+                        let playing = !q.is_empty();
+                        drop(q);
+                        let level = if frames > 0 { (sq / frames as f32).sqrt() } else { 0.0 };
+                        Levels::set(&lv_out.output, perceptual(level));
+                        sp_out.store(playing || level > 0.001, Ordering::Relaxed);
+                    };
+
+                    let err_out = |e| tracing::warn!("tts speaker stream error: {e}");
+                    let out_stream = match out_cfg.sample_format() {
+                        SampleFormat::F32 => output.build_output_stream::<f32, _, _>(
+                            out_conf,
+                            move |d: &mut [f32], _| {
+                                let frames = d.len() / out_ch.max(1);
+                                fill(&mut |i, s| d[i] = s, frames)
+                            },
+                            err_out,
+                            None,
+                        ),
+                        SampleFormat::I16 => output.build_output_stream::<i16, _, _>(
+                            out_conf,
+                            move |d: &mut [i16], _| {
+                                let frames = d.len() / out_ch.max(1);
+                                fill(&mut |i, s| d[i] = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16, frames)
+                            },
+                            err_out,
+                            None,
+                        ),
+                        other => return Err(AppError::unsupported(format!("Формат вывода {other:?} не поддерживается"))),
+                    }
+                    .map_err(|e| AppError::platform(format!("Не удалось открыть вывод звука: {e}")))?;
+
+                    out_stream.play().map_err(|e| AppError::platform(format!("Вывод звука: {e}")))?;
+                    Ok((out_stream, out_rate, dev_name(&output)))
+                })();
+
+                match res {
+                    Ok((stream, out_rate, out_dev)) => {
+                        let _ = ready_tx.send(Ok((out_rate, out_dev)));
+                        let _ = cmd_rx.recv();
+                        drop(stream);
+                    }
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e));
+                    }
+                }
+            })
+            .map_err(|e| AppError::internal(format!("tts audio thread: {e}")))?;
+
+        let (out_rate, output_device) = ready_rx
+            .recv_timeout(std::time::Duration::from_secs(8))
+            .map_err(|_| AppError::Timeout("Устройство вывода звука не отвечает".into()))??;
+
+        Ok(Arc::new(AudioOutput {
+            cmd: cmd_tx,
+            playback,
+            out_rate,
+            levels,
+            play_resampler: Mutex::new(Resampler::new(SPEAKER_RATE, out_rate)),
+            output_device,
+            speaking,
+        }))
+    }
+
+    pub fn play_pcm16(&self, pcm: &[i16]) {
+        if pcm.is_empty() {
+            return;
+        }
+        let input: Vec<f32> = pcm.iter().map(|s| *s as f32 / 32768.0).collect();
+        let mut out = Vec::with_capacity(input.len() * self.out_rate as usize / SPEAKER_RATE as usize + 8);
+        self.play_resampler.lock().process(&input, &mut out);
+        let mut q = self.playback.lock();
+        q.extend(out);
+        let cap = self.out_rate as usize * 120;
+        while q.len() > cap {
+            q.pop_front();
+        }
+        self.speaking.store(true, Ordering::Relaxed);
+    }
+
+    pub fn clear_playback(&self) {
+        self.playback.lock().clear();
+        Levels::set(&self.levels.output, 0.0);
+        self.speaking.store(false, Ordering::Relaxed);
+    }
+
+    pub fn is_playing(&self) -> bool {
+        !self.playback.lock().is_empty() || self.speaking.load(Ordering::Relaxed)
+    }
+
+    pub fn stop(&self) {
+        let _ = self.cmd.send(Cmd::Stop);
+    }
+}
+
+impl Drop for AudioOutput {
+    fn drop(&mut self) {
+        let _ = self.cmd.send(Cmd::Stop);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

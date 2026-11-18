@@ -13,6 +13,7 @@
 
 pub mod audio;
 pub mod azure;
+pub mod edge;
 pub mod elevenlabs;
 mod intent;
 mod local;
@@ -26,15 +27,16 @@ pub mod tts;
 pub mod vad;
 pub mod wake;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Listener, Manager};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
@@ -44,12 +46,52 @@ use crate::agent::Agent;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use crate::store::secrets;
-use audio::AudioIo;
+use audio::{AudioIo, AudioOutput, SPEAKER_RATE};
 
 pub const EVT_STATE: &str = "voice:state";
 pub const EVT_LEVEL: &str = "voice:level";
 pub const EVT_TRANSCRIPT: &str = "voice:transcript";
 pub const EVT_MODEL: &str = "voice:model";
+pub const EVT_TTS_STATE: &str = "tts:state";
+pub const EVT_TTS_REQUEST: &str = "tts:request";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TtsSpeakOutcome {
+    pub started: bool,
+    pub voice: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TtsStatusPayload {
+    pub speaking: bool,
+    pub text: String,
+    pub voice: String,
+    pub latency_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TtsBenchResult {
+    pub voice: String,
+    pub first_chunk_ms: u64,
+    pub total_ms: u64,
+    pub samples: usize,
+    pub cached_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TtsRequestEvent {
+    text: String,
+    #[serde(default)]
+    voice: Option<String>,
+    #[serde(default)]
+    rate: Option<f32>,
+    #[serde(default)]
+    interrupt: Option<bool>,
+}
 
 fn reusable_voice_key(owner: &str, realtime_url: &str) -> bool {
     let Ok(mut url) = url::Url::parse(realtime_url) else { return false };
@@ -153,6 +195,8 @@ pub enum Ctl {
     /// devices for a few minutes (the fifine takes ~5 s to open) but hear
     /// nothing; the session closes by itself afterwards.
     Rest,
+    /// Silence current playback without closing the session.
+    Hush,
     /// Speak a line (reminders, timers) without starting a conversation.
     Say(String),
 }
@@ -169,6 +213,8 @@ fn finish_session(slot:&Mutex<Option<Session>>,id:u64)->bool {
     if current.as_ref().is_some_and(|s|s.id==id) { current.take();true } else { false }
 }
 
+const TTS_AUDIO_IDLE_KEEP: Duration = Duration::from_secs(90);
+
 pub struct VoiceManager {
     app: AppHandle,
     session: Mutex<Option<Session>>,
@@ -182,12 +228,16 @@ pub struct VoiceManager {
     /// Failed starts of the name listener in a row (retry back-off).
     listener_failures: std::sync::atomic::AtomicU32,
     session_seq:std::sync::atomic::AtomicU64,
+    /// Monotonic generation counter for universal standalone TTS (`tts_speak` / `speak_aloud`).
+    tts_gen: Arc<AtomicU64>,
+    tts_status: Arc<Mutex<TtsStatusPayload>>,
+    tts_audio: Arc<Mutex<Option<(String, Instant, Arc<AudioOutput>)>>>,
 }
 
 impl VoiceManager {
     pub fn new(app: AppHandle) -> Arc<Self> {
-        Arc::new(VoiceManager {
-            app,
+        let vm = Arc::new(VoiceManager {
+            app: app.clone(),
             session: Mutex::new(None),
             awake: std::sync::atomic::AtomicBool::new(false),
             state: Mutex::new(VoiceState::Idle),
@@ -196,8 +246,28 @@ impl VoiceManager {
             speech: Arc::new(tts::SpeechEngine::default()),
             download: Mutex::new(None),
             listener_failures: std::sync::atomic::AtomicU32::new(0),
-            session_seq:std::sync::atomic::AtomicU64::new(0),
-        })
+            session_seq: std::sync::atomic::AtomicU64::new(0),
+            tts_gen: Arc::new(AtomicU64::new(0)),
+            tts_status: Arc::new(Mutex::new(TtsStatusPayload::default())),
+            tts_audio: Arc::new(Mutex::new(None)),
+        });
+
+        // Allow internal subsystems (`speak_aloud`, Focus completion, etc.) to
+        // emit `"tts:request"` either as a plain string or `{ text, voice, rate, interrupt }`.
+        let weak = Arc::downgrade(&vm);
+        let _ = app.listen(EVT_TTS_REQUEST, move |ev| {
+            let Some(me) = weak.upgrade() else { return };
+            let raw = ev.payload();
+            if let Ok(req) = serde_json::from_str::<TtsRequestEvent>(raw) {
+                let _ = me.speak(req.text, req.voice, req.rate, req.interrupt.unwrap_or(true));
+            } else if let Ok(plain) = serde_json::from_str::<String>(raw) {
+                let _ = me.speak_aloud(&plain);
+            } else if !raw.trim().is_empty() {
+                let _ = me.speak_aloud(raw);
+            }
+        });
+
+        vm
     }
 
     pub fn state(&self) -> VoiceState {
@@ -231,13 +301,14 @@ impl VoiceManager {
         v.enabled && v.wake_word && v.engine != "realtime"
     }
 
-    /// Close the microphone completely.
+    /// Close the microphone completely and stop any standalone TTS speech.
     pub fn stop(&self) {
+        self.stop_speaking();
         if let Some(s) = self.session.lock().take() {
             s.cancel.cancel();
         }
         self.set_awake(false);
-        self.set_state(VoiceState::Idle,None,None);
+        self.set_state(VoiceState::Idle, None, None);
     }
 
     /// End the conversation: back to waiting for the name when that is on,
@@ -271,11 +342,350 @@ impl VoiceManager {
         segments.finish(&mut recognise)
     }
 
-    /// Say a line through the open voice session (reminders, timers).
-    /// Returns false when no local session is running.
-    pub fn say(&self, text: &str) -> bool {
+    /// Say a line (reminders, timers, alerts). Uses the open local voice
+    /// session if one is active; otherwise speaks via universal `TtsPlayer`
+    /// when voice is enabled in settings.
+    pub fn say(self: &Arc<Self>, text: &str) -> bool {
         let ctl = self.session.lock().as_ref().and_then(|s| s.ctl.clone());
-        ctl.is_some_and(|c| c.send(Ctl::Say(text.to_string())).is_ok())
+        if let Some(c) = ctl {
+            if c.send(Ctl::Say(text.to_string())).is_ok() {
+                return true;
+            }
+        }
+        let v = self.app.state::<AppState>().store.settings().voice;
+        if !v.enabled {
+            return false;
+        }
+        self.speak(text.to_string(), None, None, false)
+            .map(|o| o.started)
+            .unwrap_or(false)
+    }
+
+    /// Convenience entrypoint for `agent-core`'s `speak_aloud` tool, focus
+    /// completion, routines, or notifications: speaks `text` immediately with
+    /// the user's configured (or default free Edge Neural HD) voice.
+    pub fn speak_aloud(self: &Arc<Self>, text: &str) -> AppResult<TtsSpeakOutcome> {
+        self.speak(text.to_string(), None, None, true)
+    }
+
+    /// Universal TTS playback (`tts_speak` IPC, `speak_aloud`, chat read-aloud,
+    /// Settings voice preview). Streams sentence-by-sentence through a warm
+    /// output-only `cpal` stream (never opening the microphone), emits `"tts:state"`
+    /// on start, first-chunk latency measurement, and finish/stop, and drives
+    /// `"voice:level"` output amplitude so JARVIS's eyes come alive on the Island.
+    pub fn speak(
+        self: &Arc<Self>,
+        text: String,
+        voice: Option<String>,
+        rate: Option<f32>,
+        interrupt: bool,
+    ) -> AppResult<TtsSpeakOutcome> {
+        let settings = self.app.state::<AppState>().store.settings();
+        let effective_voice = voice
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| {
+                let sv = settings.voice.tts_voice.trim();
+                if sv.is_empty() { tts::default_voice() } else { sv.to_string() }
+            });
+        let effective_rate = rate.unwrap_or(settings.voice.tts_rate).clamp(0.5, 2.0);
+        let output_dev = settings.voice.output_device.clone();
+
+        let chunks = phrases::split_all(&text);
+        if chunks.is_empty() {
+            return Ok(TtsSpeakOutcome { started: false, voice: effective_voice });
+        }
+
+        if !interrupt && self.tts_status.lock().speaking {
+            return Ok(TtsSpeakOutcome { started: false, voice: effective_voice });
+        }
+
+        let gen = self.tts_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        if let Some((_, _, ao)) = self.tts_audio.lock().as_ref() {
+            ao.clear_playback();
+        }
+
+        let start_payload = TtsStatusPayload {
+            speaking: true,
+            text: text.clone(),
+            voice: effective_voice.clone(),
+            latency_ms: None,
+        };
+        *self.tts_status.lock() = start_payload.clone();
+        let _ = self.app.emit(EVT_TTS_STATE, start_payload);
+
+        let me = Arc::clone(self);
+        let voice_for_task = effective_voice.clone();
+        tauri::async_runtime::spawn(async move {
+            let started_at = Instant::now();
+
+            let audio_res = {
+                let existing = {
+                    let guard = me.tts_audio.lock();
+                    guard.as_ref().and_then(|(dev, used, ao)| {
+                        (dev == &output_dev && used.elapsed() < TTS_AUDIO_IDLE_KEEP).then(|| ao.clone())
+                    })
+                };
+                match existing {
+                    Some(ao) => Ok(ao),
+                    None => {
+                        let dev = output_dev.clone();
+                        tokio::task::spawn_blocking(move || AudioOutput::start(&dev))
+                            .await
+                            .map_err(|e| AppError::internal(e.to_string()))
+                            .and_then(|r| r)
+                    }
+                }
+            };
+
+            let speech_engine = me.speech.clone();
+            let v_req = voice_for_task.clone();
+            let speaker_res = tokio::task::spawn_blocking(move || speech_engine.get(&v_req, effective_rate))
+                .await
+                .map_err(|e| AppError::internal(e.to_string()))
+                .and_then(|r| r);
+
+            let (audio_out, speaker) = match (audio_res, speaker_res) {
+                (Ok(ao), Ok(sp)) => {
+                    *me.tts_audio.lock() = Some((output_dev.clone(), Instant::now(), ao.clone()));
+                    (ao, sp)
+                }
+                (Err(e), _) | (_, Err(e)) => {
+                    tracing::warn!("universal tts failed to start: {e}");
+                    me.finish_tts_gen(gen, voice_for_task, None);
+                    return;
+                }
+            };
+
+            if me.tts_gen.load(Ordering::Acquire) != gen {
+                return;
+            }
+
+            // Drive `"voice:level"` output meter at 30 Hz while speaking so the
+            // Island eyes react to JARVIS's voice even without an open mic session.
+            {
+                let vm_lvl = Arc::clone(&me);
+                let ao_lvl = audio_out.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut tick = tokio::time::interval(Duration::from_millis(33));
+                    while vm_lvl.tts_gen.load(Ordering::Acquire) == gen {
+                        tick.tick().await;
+                        if vm_lvl.tts_gen.load(Ordering::Acquire) != gen {
+                            break;
+                        }
+                        if !vm_lvl.is_active() {
+                            let _ = vm_lvl.app.emit(
+                                EVT_LEVEL,
+                                LevelEvent {
+                                    input: 0.0,
+                                    output: ao_lvl.levels.output(),
+                                },
+                            );
+                        }
+                    }
+                });
+            }
+
+            let resolved_voice = speaker.voice_id.clone();
+            let recorded_latency = Arc::new(Mutex::new(None::<u64>));
+            let total_phrases = chunks.len();
+
+            for (idx, phrase) in chunks.into_iter().enumerate() {
+                if me.tts_gen.load(Ordering::Acquire) != gen {
+                    return;
+                }
+                let sp = speaker.clone();
+                let ao = audio_out.clone();
+                let vm_chunk = Arc::clone(&me);
+                let lat_slot = recorded_latency.clone();
+                let full_text = text.clone();
+                let v_label = resolved_voice.clone();
+
+                let res = tokio::task::spawn_blocking(move || {
+                    sp.synthesize_stream(&phrase, &mut |pcm| {
+                        if vm_chunk.tts_gen.load(Ordering::Acquire) != gen {
+                            return false;
+                        }
+                        ao.play_pcm16(pcm);
+                        let mut lat_guard = lat_slot.lock();
+                        if lat_guard.is_none() && !pcm.is_empty() {
+                            let ms = started_at.elapsed().as_millis() as u64;
+                            *lat_guard = Some(ms);
+                            drop(lat_guard);
+                            let payload = TtsStatusPayload {
+                                speaking: true,
+                                text: full_text.clone(),
+                                voice: v_label.clone(),
+                                latency_ms: Some(ms),
+                            };
+                            *vm_chunk.tts_status.lock() = payload.clone();
+                            let _ = vm_chunk.app.emit(EVT_TTS_STATE, payload);
+                        }
+                        true
+                    })?;
+                    if idx + 1 < total_phrases && vm_chunk.tts_gen.load(Ordering::Acquire) == gen {
+                        let pause_samples =
+                            ru_speech::pause_after_ms(&phrase) as usize * SPEAKER_RATE as usize / 1000;
+                        ao.play_pcm16(&vec![0i16; pause_samples]);
+                    }
+                    Ok::<(), AppError>(())
+                })
+                .await;
+
+                if let Ok(Err(e)) = res {
+                    tracing::warn!("tts phrase synthesis error: {e}");
+                    break;
+                }
+            }
+
+            // Wait for queued audio samples to finish playing through speakers.
+            while me.tts_gen.load(Ordering::Acquire) == gen && audio_out.is_playing() {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+
+            let final_lat = *recorded_latency.lock();
+            me.finish_tts_gen(gen, resolved_voice, final_lat);
+
+            // Schedule idle release of AudioOutput after 90 s of silence.
+            {
+                let mut guard = me.tts_audio.lock();
+                if let Some((_, used, _)) = guard.as_mut() {
+                    *used = Instant::now();
+                }
+            }
+            let vm_idle = Arc::clone(&me);
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(TTS_AUDIO_IDLE_KEEP + Duration::from_secs(2)).await;
+                if vm_idle.tts_status.lock().speaking {
+                    return;
+                }
+                let mut guard = vm_idle.tts_audio.lock();
+                if guard.as_ref().is_some_and(|(_, used, ao)| used.elapsed() >= TTS_AUDIO_IDLE_KEEP && !ao.is_playing()) {
+                    if let Some((_, _, ao)) = guard.take() {
+                        ao.stop();
+                    }
+                }
+            });
+        });
+
+        Ok(TtsSpeakOutcome { started: true, voice: effective_voice })
+    }
+
+    fn finish_tts_gen(&self, gen: u64, voice: String, latency_ms: Option<u64>) {
+        if self.tts_gen.compare_exchange(gen, gen + 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            let done = TtsStatusPayload {
+                speaking: false,
+                text: String::new(),
+                voice,
+                latency_ms,
+            };
+            *self.tts_status.lock() = done.clone();
+            let _ = self.app.emit(EVT_TTS_STATE, done);
+            if !self.is_active() {
+                let _ = self.app.emit(EVT_LEVEL, LevelEvent { input: 0.0, output: 0.0 });
+            }
+        }
+    }
+
+    /// Immediately stop any active standalone TTS playback (and hush any
+    /// spoken reply in an open local voice session without closing the mic).
+    pub fn stop_speaking(&self) {
+        self.tts_gen.fetch_add(1, Ordering::AcqRel);
+        if let Some((_, _, ao)) = self.tts_audio.lock().as_ref() {
+            ao.clear_playback();
+        }
+        let voice = {
+            let mut st = self.tts_status.lock();
+            let was_speaking = st.speaking;
+            let v = st.voice.clone();
+            let lat = st.latency_ms;
+            *st = TtsStatusPayload {
+                speaking: false,
+                text: String::new(),
+                voice: v.clone(),
+                latency_ms: lat,
+            };
+            was_speaking.then_some((v, lat))
+        };
+        if let Some((v, lat)) = voice {
+            let _ = self.app.emit(
+                EVT_TTS_STATE,
+                TtsStatusPayload {
+                    speaking: false,
+                    text: String::new(),
+                    voice: v,
+                    latency_ms: lat,
+                },
+            );
+            if !self.is_active() {
+                let _ = self.app.emit(EVT_LEVEL, LevelEvent { input: 0.0, output: 0.0 });
+            }
+        }
+        if let Some(ctl) = self.session.lock().as_ref().and_then(|s| s.ctl.clone()) {
+            let _ = ctl.send(Ctl::Hush);
+        }
+    }
+
+    pub fn tts_status(&self) -> TtsStatusPayload {
+        self.tts_status.lock().clone()
+    }
+
+    /// Live synthesis + 2-tier cache speed benchmark for Settings → Голос.
+    pub async fn tts_benchmark(self: &Arc<Self>, voice: Option<String>) -> AppResult<TtsBenchResult> {
+        let settings = self.app.state::<AppState>().store.settings();
+        let effective_voice = voice
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| {
+                let sv = settings.voice.tts_voice.trim();
+                if sv.is_empty() { tts::default_voice() } else { sv.to_string() }
+            });
+        let rate = settings.voice.tts_rate.clamp(0.5, 2.0);
+        let speech = self.speech.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let cached_speaker = speech.get(&effective_voice, rate)?;
+            let phrase = "Добрый день. Системы в норме, готов к работе.";
+
+            // Pass 1: Live uncached streaming synthesis to measure real first-chunk & total time.
+            let t0 = Instant::now();
+            let mut first_chunk_ms = None;
+            let mut all_samples = Vec::new();
+            cached_speaker.speaker.synthesize_stream(phrase, &mut |pcm| {
+                if first_chunk_ms.is_none() && !pcm.is_empty() {
+                    first_chunk_ms = Some(t0.elapsed().as_millis() as u64);
+                }
+                all_samples.extend_from_slice(pcm);
+                true
+            })?;
+            let total_ms = t0.elapsed().as_millis() as u64;
+            let first_ms = first_chunk_ms.unwrap_or(total_ms);
+
+            // Populate 2-tier cache, then measure cold-disk + RAM lookup time.
+            cached_speaker
+                .cache
+                .put(&cached_speaker.voice_id, cached_speaker.rate_bits, phrase, &all_samples);
+            let disk_probe = tts::PcmCache::default();
+            let t_cache = Instant::now();
+            let _ = disk_probe
+                .get(&cached_speaker.voice_id, cached_speaker.rate_bits, phrase)
+                .or_else(|| {
+                    cached_speaker
+                        .cache
+                        .get(&cached_speaker.voice_id, cached_speaker.rate_bits, phrase)
+                });
+            let cached_ms = t_cache.elapsed().as_millis() as u64;
+
+            Ok(TtsBenchResult {
+                voice: cached_speaker.voice_id.clone(),
+                first_chunk_ms: first_ms,
+                total_ms,
+                samples: all_samples.len(),
+                cached_ms,
+            })
+        })
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
     }
 
     /// Shortcut, mic button: start a conversation or end it.
@@ -284,6 +694,7 @@ impl VoiceManager {
             self.end_conversation();
             return Ok(false);
         }
+        self.stop_speaking();
         let ctl = self.session.lock().as_ref().and_then(|s| s.ctl.clone());
         match ctl {
             Some(ctl) => {
@@ -295,8 +706,17 @@ impl VoiceManager {
     }
 
     /// Keep the name listener in line with the settings (app start, saving
-    /// settings, models downloaded).
+    /// settings, models downloaded), and pre-warm the free Edge Neural WS pool.
     pub fn apply_settings(self: &Arc<Self>) {
+        let v = self.app.state::<AppState>().store.settings().voice;
+        let chosen = if v.tts_voice.trim().is_empty() {
+            tts::default_voice()
+        } else {
+            v.tts_voice.trim().to_string()
+        };
+        if chosen.starts_with(edge::PREFIX) {
+            edge::prewarm();
+        }
         let has_session = self.session.lock().is_some();
         if self.wake_word_on() {
             if !has_session {

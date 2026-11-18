@@ -20,6 +20,7 @@ mod ipc_clips;
 mod ipc_files;
 pub mod jobs;
 mod ipc_mcp;
+pub mod ipc_tts;
 pub mod mcp;
 mod ipc_agent;
 pub mod platform;
@@ -331,6 +332,10 @@ pub fn run() {
             ipc_mcp::mcp_refresh,
             ipc_mcp::mcp_set_enabled,
             ipc_mcp::mcp_set_tool,
+            ipc_tts::tts_speak,
+            ipc_tts::tts_stop,
+            ipc_tts::tts_status,
+            ipc_tts::tts_benchmark,
         ])
         .run(tauri::generate_context!())
         .expect("error while running JARVIS");
