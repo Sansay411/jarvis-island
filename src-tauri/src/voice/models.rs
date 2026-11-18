@@ -113,6 +113,24 @@ pub const ASSETS: &[Asset] = &[
         sha256: "1fc0f54e5e084fe287c07909f2f6e0ba6d857864cf800e3ab80286a4e8233008",
         release: "tts-models",
     },
+    Asset {
+        id: "piper-denis",
+        kind: Kind::Tts,
+        label: "Piper Денис",
+        file: "vits-piper-ru_RU-denis-medium.tar.bz2",
+        size: 67_190_991,
+        sha256: "efa4c18e0b5e32b81d1b6df36b9d312831e5d545200e27848ef926a4cd930300",
+        release: "tts-models",
+    },
+    Asset {
+        id: "piper-dmitri-int8",
+        kind: Kind::Tts,
+        label: "Piper Дмитрий (быстрый INT8)",
+        file: "vits-piper-ru_RU-dmitri-medium-int8.tar.bz2",
+        size: 21_129_441,
+        sha256: "7636793307f634ce54c6e65528a91a61683114f1a6635a08caf64ba6c54e6a63",
+        release: "tts-models",
+    },
 ];
 
 pub fn asset(id: &str) -> Option<&'static Asset> {

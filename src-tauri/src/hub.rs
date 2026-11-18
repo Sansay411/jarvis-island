@@ -163,11 +163,16 @@ pub struct TtsRequestPayload {
 }
 
 /// Central TTS dispatch hook used by both `tools::executive::speak_aloud` and
-/// Focus session completion. Emits `"tts:request"` and speaks through `VoiceManager`
-/// (`@integrator`: connect your 2-line universal `VoiceManager` TTS call right here).
+/// Focus session completion. Speaks directly via `VoiceManager::speak` when
+/// managed in Tauri state (emitting `"tts:state"` and `"voice:level"` without
+/// opening the microphone or double-firing `"tts:request"`).
 pub fn request_tts(app: &AppHandle, text: &str, voice: Option<String>, rate: Option<f32>, interrupt: bool) {
     let clean = text.trim();
     if clean.is_empty() {
+        return;
+    }
+    if let Some(vm) = app.try_state::<Arc<crate::voice::VoiceManager>>() {
+        let _ = vm.speak(clean.to_string(), voice, rate, interrupt);
         return;
     }
     let payload = TtsRequestPayload {
@@ -177,9 +182,6 @@ pub fn request_tts(app: &AppHandle, text: &str, voice: Option<String>, rate: Opt
         interrupt,
     };
     let _ = app.emit(EVT_TTS_REQUEST, &payload);
-    if let Some(vm) = app.try_state::<Arc<crate::voice::VoiceManager>>() {
-        let _ = vm.say(clean);
-    }
 }
 
 #[derive(Debug, Clone, Default)]

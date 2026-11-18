@@ -906,6 +906,7 @@ impl VoiceManager {
                         Ctl::Wake => pl.wake(),
                         Ctl::Sleep => pl.sleep(),
                         Ctl::Rest => pl.rest(),
+                        Ctl::Hush => pl.hush(),
                         Ctl::Say(line) => pl.say(line),
                     }
                     pl.refresh_state(&vad);

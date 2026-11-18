@@ -37,10 +37,11 @@ fn exact(dir: &Path, name: &str) -> AppResult<Option<String>> {
     }
 }
 
-/// 4 threads on a 16-thread hybrid CPU beat 6 (efficiency cores slow it).
+/// Half of logical cores, clamped to 2..=4: avoids efficiency-core contention
+/// on hybrid CPUs while keeping 4-core/8-thread laptops responsive.
 fn threads() -> i32 {
     let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    (logical / 4).clamp(1, 4) as i32
+    (logical / 2).clamp(2, 4) as i32
 }
 
 impl NeuralVoice {
