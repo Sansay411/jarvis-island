@@ -107,12 +107,19 @@ function IslandWorkspaceFrame() {
   const ttsLevel = useWorkspaceTts((s) => s.level);
   const level = useMotionValue(0);
   const zero = useMotionValue(0);
+  const [vw, setVw] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 1280));
+
+  useEffect(() => {
+    const onResize = () => setVw(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   useEffect(() => {
     level.set(ttsSpeaking ? Math.max(0.28, ttsLevel) : 0);
   }, [ttsSpeaking, ttsLevel, level]);
 
-  const w = 548;
+  const w = Math.min(548, Math.max(432, vw - 28));
   const h = 516;
   const s = 14;
   const r = bottomRadius(h);
