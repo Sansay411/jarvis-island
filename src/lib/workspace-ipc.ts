@@ -93,7 +93,7 @@ export const FALLBACK_ROUTINES: RoutineItem[] = [
   {
     id: "routine-deep-work",
     title: "Глубокая работа",
-    subtitle: "Фокус 45 мин · чистый стол · код + браузер",
+    subtitle: "Фокус 45 мин · чистый стол · код 65/35",
     icon: "target",
     prompt:
       "Включи режим глубокой работы: сверни лишние окна через window_layout (focus_clean), разложи редактор кода и браузер 65/35 и запусти сессию фокуса на 45 минут.",
@@ -102,7 +102,7 @@ export const FALLBACK_ROUTINES: RoutineItem[] = [
   {
     id: "routine-morning-brief",
     title: "Утренний брифинг",
-    subtitle: "Задачи на день · состояние ПК · голосовой отчёт",
+    subtitle: "Задачи дня · ресурсы ПК · голосовой отчёт",
     icon: "sun",
     prompt:
       "Подготовь утренний брифинг: проверь список задач на сегодня (tasks_manage), оцени состояние системы (system_diagnostics) и коротко озвучь сводку вслух (speak_aloud).",
@@ -111,7 +111,7 @@ export const FALLBACK_ROUTINES: RoutineItem[] = [
   {
     id: "routine-window-order",
     title: "Порядок в окнах",
-    subtitle: "Снимок раскладки · тайлинг 50/50 активных окон",
+    subtitle: "Снимок окон · тайлинг 50/50 активной пары",
     icon: "window",
     prompt:
       "Сохрани текущее расположение окон (window_layout snapshot) и аккуратно выровняй два последних активных окна рядом 50/50 (tile_pair).",
@@ -120,7 +120,7 @@ export const FALLBACK_ROUTINES: RoutineItem[] = [
   {
     id: "routine-pc-diag",
     title: "Диагностика ПК",
-    subtitle: "CPU · ОЗУ · диск C: · тяжёлые процессы",
+    subtitle: "CPU · ОЗУ · диск C: · топ-5 процессов",
     icon: "cpu",
     prompt:
       "Проведи полную диагностику компьютера через system_diagnostics: нагрузка CPU, свободная память, место на диске и топ-5 процессов по потреблению ОЗУ.",

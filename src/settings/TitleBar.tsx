@@ -3,23 +3,32 @@
 // click maximises it, and three quiet buttons sit on the right.
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { hasTauri } from "../lib/workspace-ipc";
 
 export function TitleBar() {
-  const win = getCurrentWindow();
+  const withWin = (fn: (w: ReturnType<typeof getCurrentWindow>) => Promise<void>) => {
+    if (!hasTauri()) return;
+    try {
+      void fn(getCurrentWindow());
+    } catch {
+      /* ignore in browser preview */
+    }
+  };
+
   return (
     <div className="titlebar" data-tauri-drag-region>
       <div className="titlebar-buttons">
-        <button className="titlebar-btn" aria-label="Свернуть" onClick={() => void win.minimize()}>
+        <button className="titlebar-btn" aria-label="Свернуть" onClick={() => withWin((w) => w.minimize())}>
           <svg viewBox="0 0 10 10" aria-hidden="true">
             <path d="M1.5 5h7" />
           </svg>
         </button>
-        <button className="titlebar-btn" aria-label="Развернуть" onClick={() => void win.toggleMaximize()}>
+        <button className="titlebar-btn" aria-label="Развернуть" onClick={() => withWin((w) => w.toggleMaximize())}>
           <svg viewBox="0 0 10 10" aria-hidden="true">
             <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" />
           </svg>
         </button>
-        <button className="titlebar-btn is-close" aria-label="Закрыть" onClick={() => void win.close()}>
+        <button className="titlebar-btn is-close" aria-label="Закрыть" onClick={() => withWin((w) => w.close())}>
           <svg viewBox="0 0 10 10" aria-hidden="true">
             <path d="m2 2 6 6M8 2 2 8" />
           </svg>

@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { errorMessage } from "../lib/ipc";
+import { hasTauri } from "../lib/workspace-ipc";
 import { Group, Row, Segmented, Switch } from "./controls";
 
 type Transport = { type: "stdio"; command: string; args: string[]; cwd: string } | { type: "http"; url: string };
@@ -400,10 +401,17 @@ function ServerCard({ s, onEdit, notify }: { s: ServerView; onEdit: () => void; 
 export function McpSection({ notify, vy }: { notify: (tone: Tone, text: string) => void; vy: boolean }) {
   const [servers, setServers] = useState<ServerView[] | null>(null);
   const [form, setForm] = useState<Draft | "import" | null>(null);
-  const refresh = useCallback(() => void invoke<ServerView[]>("mcp_list").then(setServers), []);
+  const refresh = useCallback(() => {
+    if (!hasTauri()) {
+      setServers([]);
+      return;
+    }
+    void invoke<ServerView[]>("mcp_list").then(setServers).catch(() => setServers([]));
+  }, []);
 
   useEffect(() => {
     refresh();
+    if (!hasTauri()) return;
     const un = listen("mcp:changed", refresh);
     return () => void un.then((f) => f());
   }, [refresh]);

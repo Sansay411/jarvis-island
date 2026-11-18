@@ -362,6 +362,12 @@ export const WorkspaceView = memo(function WorkspaceView({ visible = true }: { v
         </div>
       </div>
 
+      {planSteps.length > 0 && (
+        <div className="ws-plan-slot">
+          <MissionPlanCard steps={planSteps} />
+        </div>
+      )}
+
       <div
         ref={body}
         className="ws-body scroll"
@@ -370,8 +376,6 @@ export const WorkspaceView = memo(function WorkspaceView({ visible = true }: { v
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
         }}
       >
-        {planSteps.length > 0 && <MissionPlanCard steps={planSteps} />}
-
         {items.length === 0 ? (
           <EmptyState />
         ) : (
