@@ -35,8 +35,8 @@ use crate::error::AppResult;
 
 pub const LABEL: &str = "island";
 /// Logical size of the transparent canvas window.
-pub const CANVAS_W: f64 = 640.0;
-pub const CANVAS_H: f64 = 600.0;
+pub const CANVAS_W: f64 = 760.0;
+pub const CANVAS_H: f64 = 640.0;
 
 pub const EVT_POINTER: &str = "island:pointer";
 pub const EVT_PRESENCE: &str = "island:presence";

@@ -236,6 +236,31 @@ pub fn control(action: MediaAction) -> AppResult<ControlOutcome> {
     }
 }
 
+/// Scrub playback position (`position_ms` relative to track start) via GSMTC.
+pub fn seek(position_ms: i64) -> AppResult<()> {
+    let mgr = manager()?;
+    let Some(session) = current_session(&mgr) else {
+        return Err(AppError::not_found("Нет активного медиасеанса"));
+    };
+    let timeline = session.GetTimelineProperties()?;
+    let start_ticks = timeline.StartTime().map(|t| t.Duration).unwrap_or(0);
+    let end_ticks = timeline.EndTime().map(|t| t.Duration).unwrap_or(0);
+    let offset_ticks = position_ms.max(0).saturating_mul(10_000);
+    let mut target_ticks = start_ticks.saturating_add(offset_ticks);
+    if end_ticks > start_ticks {
+        target_ticks = target_ticks.clamp(start_ticks, end_ticks);
+    }
+    let accepted = session.TryChangePlaybackPositionAsync(target_ticks)?.join()?;
+    if !accepted {
+        let app = session.SourceAppUserModelId().map(|h| h.to_string()).unwrap_or_default();
+        return Err(AppError::unsupported(format!(
+            "Приложение {} не поддерживает перемотку по шкале времени",
+            if app.is_empty() { "плеера".to_string() } else { format!("«{app}»") }
+        )));
+    }
+    Ok(())
+}
+
 enum Signal {
     SessionChanged,
     Properties,

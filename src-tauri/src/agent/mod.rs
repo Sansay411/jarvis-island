@@ -336,7 +336,7 @@ impl Agent {
     /// (used by the voice session for multi-step work).
     pub async fn delegate(self: &Arc<Self>, task: String) -> AppResult<String> {
         let (tx, rx) = oneshot::channel();
-        self.start_turn(task, Vec::new(), Some(tx), true, None, false)?;
+        self.start_turn(task, Vec::new(), Some(tx), true, None, None)?;
         rx.await.map_err(|_| AppError::internal("Задача агента прервалась"))?
     }
 
@@ -345,7 +345,7 @@ impl Agent {
     /// `deltas` for speech as it is generated. Resolves with the final answer.
     pub async fn voice_turn(self: &Arc<Self>, text: String, deltas: mpsc::UnboundedSender<String>) -> AppResult<String> {
         let (tx, rx) = oneshot::channel();
-        self.start_turn(text, Vec::new(), Some(tx), true, Some(deltas), false)?;
+        self.start_turn(text, Vec::new(), Some(tx), true, Some(deltas), None)?;
         rx.await.map_err(|_| AppError::internal("Задача агента прервалась"))?
     }
 
@@ -404,14 +404,20 @@ impl Agent {
     }
 
     pub fn send(self: &Arc<Self>, text: String, attachments: Vec<String>) -> AppResult<SendResult> {
-        self.start_turn(text, attachments, None, false, None, false)
+        self.start_turn(text, attachments, None, false, None, None)
     }
 
     /// A request from another program (`jarvis.exe --ask`). Anyone on this
     /// computer can start one, so full control does not apply: every action
     /// that changes something is confirmed as if it were off.
     pub fn send_external(self: &Arc<Self>, text: String) -> AppResult<SendResult> {
-        self.start_turn(text, Vec::new(), None, false, None, true)
+        self.start_turn(text, Vec::new(), None, false, None, Some(false))
+    }
+
+    /// Launch an autonomous playbook/routine explicitly chosen by the user in JARVIS.
+    /// Irreversible / external actions remain guarded by `still_confirmed`.
+    pub fn send_routine(self: &Arc<Self>, text: String, autonomy: bool) -> AppResult<SendResult> {
+        self.start_turn(text, Vec::new(), None, false, None, if autonomy { Some(true) } else { None })
     }
 
     fn start_turn(
@@ -421,15 +427,15 @@ impl Agent {
         waiter: Option<oneshot::Sender<AppResult<String>>>,
         voice: bool,
         deltas: Option<mpsc::UnboundedSender<String>>,
-        external: bool,
+        autonomy_override: Option<bool>,
     ) -> AppResult<SendResult> {
         let text = text.trim().to_string();
         if text.is_empty() {
             return Err(AppError::invalid("Пустое сообщение"));
         }
         let mut settings = self.state().store.settings();
-        if external {
-            settings.agent.full_control = false;
+        if let Some(full) = autonomy_override {
+            settings.agent.full_control = full;
         }
         let client = ai::client_from_settings(&settings, &self.state().store)?;
         self.ensure_loaded();

@@ -8,6 +8,7 @@ mod apps;
 mod browser;
 mod clipboard_history;
 mod dev;
+pub mod executive;
 mod file_actions;
 mod files;
 mod memory;
@@ -161,6 +162,7 @@ impl Registry {
             .chain(file_actions::tools())
             .chain(reminders::tools())
             .chain(clipboard_history::tools())
+            .chain(executive::tools())
         {
             tools.insert(t.name, t);
         }
