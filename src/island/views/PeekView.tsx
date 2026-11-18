@@ -7,14 +7,14 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, type WheelEvent } from "react";
 import { Icon, type IconName } from "../../ui/Icon";
-import { ipc } from "../../lib/ipc";
+import { ipc, isTauri } from "../../lib/ipc";
 import { hasActiveMedia, useSystem } from "../../store/system";
 import { useIsland } from "../../store/island";
 import { usePrefs } from "../../store/prefs";
 import { useHub } from "../../store/hub";
 import { useTts } from "../../store/tts";
-import { toggleVoice } from "../../store/voice";
-import { openClips } from "../../store/clips";
+import { toggleVoice, useVoice } from "../../store/voice";
+import { openClips, useClips } from "../../store/clips";
 import type { PeekDeck } from "../geometry";
 import { Artwork, EqualizerBars, MediaCard } from "./MediaCard";
 import { QuickControls } from "./QuickControls";
@@ -160,7 +160,13 @@ export function PeekView() {
             className="icon-btn icon-btn-sm"
             aria-label="История буфера обмена"
             title="Буфер обмена"
-            onClick={() => openClips(false)}
+            onClick={() => {
+              if (isTauri()) openClips(false);
+              else {
+                useClips.setState({ loaded: true, error: null });
+                setIsland({ clipsOpen: true, clipsKeyboard: false, workspaceOpen: false });
+              }
+            }}
           >
             <Icon name="clipboard" size={14} />
           </button>
@@ -169,7 +175,13 @@ export function PeekView() {
             className="icon-btn icon-btn-sm"
             aria-label="Голосовой режим"
             title="Голосовой режим"
-            onClick={() => void toggleVoice()}
+            onClick={() => {
+              if (isTauri()) void toggleVoice();
+              else {
+                useVoice.setState({ state: "listening", error: null, userLine: "", assistantLine: "" });
+                setIsland({ voiceOpen: true });
+              }
+            }}
           >
             <Icon name="mic" size={14} />
           </button>

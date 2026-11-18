@@ -46,7 +46,7 @@ export function AgentMissionBar() {
     <div className={`mission-strip${awaiting ? " is-awaiting" : ""}`}>
       <span className="job-ring" aria-hidden="true" />
       {steps.length > 0 && (
-        <span className="mission-step-badge">
+        <span className="island-mission-badge">
           {Math.min(steps.length, doneCount + (activeTurn ? 1 : 0))}/{steps.length}
         </span>
       )}

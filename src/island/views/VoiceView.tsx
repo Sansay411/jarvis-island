@@ -7,7 +7,9 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../../ui/Icon";
+import { ipc, isTauri } from "../../lib/ipc";
 import { inputLevel, outputLevel, useVoice, type VoiceState } from "../../store/voice";
+import { useIsland } from "../../store/island";
 import { useAgent } from "../../store/agent";
 import { useNextTimer, type Reminder } from "../../store/reminders";
 import { clock, elapsedMs, useStopwatch, useTick } from "../../store/stopwatch";
@@ -145,11 +147,24 @@ export function VoiceView() {
         <Wings state={state} />
         <div className="brow-actions">
           {state === "error" && (
-            <button className="btn btn-quiet" onClick={() => void invoke("settings_open")}>
+            <button className="btn btn-quiet" onClick={() => void ipc.settings.open()}>
               Настройки
             </button>
           )}
-          <button className="stop-ring" aria-label="Завершить голосовой режим" onClick={() => void invoke("voice_stop")}>
+          <button
+            className="stop-ring"
+            aria-label="Завершить голосовой режим"
+            onClick={() => {
+              if (isTauri()) {
+                void invoke("voice_stop");
+              } else {
+                inputLevel.set(0);
+                outputLevel.set(0);
+                useVoice.setState({ state: "idle", error: null, userLine: "", assistantLine: "" });
+                useIsland.getState().set({ voiceOpen: false });
+              }
+            }}
+          >
             <Icon name="stop" size={10} />
           </button>
         </div>
