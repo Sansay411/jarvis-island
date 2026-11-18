@@ -22,7 +22,7 @@ platform/     нативные интеграции, ничего не знаю�
   display.rs    мониторы, DPI, форма активного окна (полноэкранное / заголовок под островом)
   audio.rs      IAudioEndpointVolume, ISimpleAudioVolume
   brightness.rs WMI (встроенная панель), DDC/CI (внешние мониторы)
-  media.rs      GSMTC: метаданные, обложка, управление, события
+  media.rs      GSMTC: метаданные, обложка, управление, перемотка (TryChangePlaybackPositionAsync)
   winmgr.rs     окна: перечисление, фокус, сворачивание, закрытие (WM_CLOSE), snap, история
   apps.rs       индекс приложений (shell:AppsFolder + ярлыки Пуска), запуск с проверкой
   capture.rs    снимки GDI (BitBlt / PrintWindow), исключение острова из кадра
@@ -32,24 +32,31 @@ platform/     нативные интеграции, ничего не знаю�
   clipboard.rs  текст, файлы и картинки буфера обмена; снимок для истории (признаки «приватно»)
   clipwatch.rs  уведомления об изменении буфера (AddClipboardFormatListener, без опроса)
   supervisor.rs дочерние процессы в Job Object, построчный вывод, таймауты
-store/        SQLite (настройки, разговоры, задачи, аудит, память, история буфера), Credential Manager
+store/        SQLite (настройки, разговоры, задачи, аудит, память, история буфера, хаб), Credential Manager
+hub.rs        Notch Hub: задачи и календарь, таймер сессий фокуса, полка файлов/заметок,
+              честный 52-недельный стрик активности (SQLite + локальные Git-коммиты), сценарии
 clips/        история буфера обмена: решение «что сохранять» (mod.rs), приватность
               (privacy.rs), картинки DIB/PNG (image.rs)
 ai/           типы сообщений, OpenAI-совместимый стриминговый клиент
-tools/        реестр инструментов: system, apps, files, shell, screen, browser, dev, memory
+tools/        реестр инструментов: system, apps, files, shell, screen, browser, dev, memory,
+              executive (mission_plan, tasks_manage, focus_session, selection_grab,
+              window_layout, system_diagnostics, speak_aloud)
 mcp/          клиент MCP: серверы пользователя (stdio, Streamable HTTP), кэш списков
               инструментов, запуск по требованию и остановка после простоя
-agent/        цикл агента, системный промпт, события UI
+agent/        цикл агента, быстрые локальные команды (fast.rs), системный промпт, события UI
 jobs.rs       фоновые задачи (Claude Code, Codex) с разбором вывода
-voice/        аудиодвижок cpal/WASAPI; локальный конвейер на sherpa-onnx:
-              models.rs (каталог, загрузка, SHA-256, распаковка), vad.rs
-              (Silero), stt.rs (GigaAM), neural.rs (Supertonic 3, Piper),
-              tts.rs (выбор голоса, запасной голос Windows), phrases.rs
-              (фразы для озвучки), ru_speech.rs (числа, названия, символы
-              словами; паузы), wake.rs (обращение по имени), local.rs
-              (сессия: ожидание имени ⇄ разговор); Qwen Omni Realtime — mod.rs
+voice/        аудиодвижок cpal/WASAPI (полный дуплекс сессии и отдельный выход AudioOutput);
+              edge.rs (бесплатный потоковый синтез Edge ReadAloud Neural HD по TLS WebSocket
+              с пулом прогретых соединений и декодированием MP3 24 кГц → PCM16 через nanomp3);
+              локальный конвейер на sherpa-onnx: models.rs (каталог, загрузка, SHA-256,
+              распаковка), vad.rs (Silero), stt.rs (GigaAM), neural.rs (Supertonic 3, Piper),
+              tts.rs (выбор голоса, двухуровневый кэш PcmCache в ОЗУ и на диске, фолбэк),
+              phrases.rs (разбиение потока с быстрым сбросом первой клаузы), ru_speech.rs
+              (числа, названия, символы словами; сохранение латиницы для мультиязычных голосов),
+              wake.rs (обращение по имени), local.rs (сессия: ожидание имени ⇄ разговор);
+              Qwen Omni Realtime — mod.rs
 shortcuts.rs  настраиваемые глобальные сочетания
-ipc.rs, ipc_agent.rs, ipc_mcp.rs  Tauri-команды
+ipc.rs, ipc_agent.rs, ipc_hub.rs, ipc_tts.rs, ipc_clips.rs, ipc_files.rs, ipc_mcp.rs  Tauri-команды
 ```
 
 ## Агент
@@ -74,8 +81,43 @@ ipc.rs, ipc_agent.rs, ipc_mcp.rs  Tauri-команды
 равномерная подача запросов, обратный отсчёт в UI.
 
 Риск: **low** — сразу; **moderate** — подтверждение (по умолчанию, один раз
-на инструмент в разговоре); **high** — подтверждение всегда. Решения и
-выполнения moderate/high пишутся в `audit_log`.
+на инструмент в разговоре; при включённом режиме полного управления
+`agent.fullControl` / `Автопилот ⚡` выполняется без запроса); **high** —
+подтверждение всегда, даже на автопилоте. Решения и выполнения moderate/high
+пишутся в `audit_log`.
+
+### Исполнительные инструменты и Notch Hub
+
+* **Живой план (`mission_plan`, `AgentEvent::PlanUpdated`)**: для многошаговых
+  задач (от 3 шагов) агент публикует и обновляет чек-лист шагов
+  (`pending / running / done / failed`), отображаемый над потоком сообщений в
+  чате (`MissionPlanCard`) и в полосе активной миссии на острове (`AgentMissionBar`).
+* **Notch Hub (`hub.rs`, `ipc_hub.rs`)**: потокобезопасное состояние поверх
+  SQLite (`hub_tasks`, `focus_sessions`, `shelf_items`, `routines`) с событиями
+  `hub:tasks`, `hub:focus`, `hub:shelf`, `hub:routines`:
+  * **Задачи и повестка**: дата `YYYY-MM-DD`, время `HH:MM`, цветовая метка.
+  * **Фокус**: секундный тикер работает только во время активной неснятой с паузы
+    сессии; по достижении нуля записывает сессию в `focus_sessions`, закрывает
+    привязанную задачу и озвучивает завершение через `hub::request_tts`.
+  * **Полка (`Tray`)**: файлы (с живой проверкой `Path::exists()`), ссылки и
+    заметки.
+  * **52-недельный стрик активности (`hub_activity_get`)**: агрегирует реальные
+    данные за 364 дня из SQLite (`focus_sessions`, закрытые `hub_tasks`,
+    `audit_log`, реплики пользователя в `messages`) и дедуплицированные даты
+    локальных Git-коммитов (`git log --since=365.days --format=%cs` с
+    `CREATE_NO_WINDOW` по `project_roots`, недавним проектам VS Code и рабочей
+    директории, с 5-минутным кэшем в ОЗУ). Никаких синтетических цифр.
+  * **Сценарии (`routines`)**: при пустой таблице однократно засеваются 4
+    русскоязычных плейбука (*Глубокая работа*, *Утренний брифинг*, *Порядок в
+    окнах*, *Диагностика ПК*); запуск открывает рабочее пространство и передаёт
+    промпт агенту.
+* **Исполнительный набор Win32 (`tools/executive.rs`)**: `selection_grab`
+  (снимок буфера обмена → `Ctrl+C` → ожидание смены sequence number до 120 мс →
+  восстановление исходного буфера), `window_layout` (`snapshot`, `restore`,
+  `tile_pair` 50/50 или 65/35, `focus_clean` с проверкой координат через Win32),
+  `system_diagnostics` (`GlobalMemoryStatusEx`, 150-мс замер `GetSystemTimes`,
+  `GetDiskFreeSpaceExW`, `GetSystemPowerStatus`, топ-5 процессов по рабочему
+  набору), `tasks_manage`, `focus_session`, `speak_aloud`.
 
 ## MCP
 
@@ -105,9 +147,31 @@ Job Object без консольного окна. Команда ищется �
 (RNN-T от Сбера для русской речи, с пунктуацией; 0,2–0,6 с на фразу) →
 `Agent::voice_turn`: обычный ход агента (тот же промпт с припиской «ответ будет
 озвучен», инструменты, подтверждения, история чата) → текст ответа стримится в
-`PhraseSplitter` → по готовым предложениям синтез Supertonic 3 (10 голосов,
-5 шагов flow matching) или Piper → ресемплинг 24 кГц → очередь вывода. Начало
-речи пользователя поверх ответа очищает очередь (перебивание); новая просьба во
+`PhraseSplitter` (первая клауза сбрасывается уже от 24 символов на `,`, `—`, `:`,
+`;`, последующие — по границам предложений) → потоковый синтез `Speaker` →
+очередь вывода 24 кГц.
+
+**Потоковый синтез речи (TTS) и универсальная озвучка (`voice/edge.rs`, `voice/tts.rs`, `ipc_tts.rs`).**
+По умолчанию без ключей и скачивания используется `Speaker::Edge` — протокол
+Microsoft Edge ReadAloud Neural HD (`wss://speech.platform.bing.com/...`) с
+вычислением токена `Sec-MS-GEC` v2 (округление системного времени с автопоправкой
+сдвига часов по заголовку `Date` при 403), IPv4-приоритетным кэшем адреса
+(`TCP_NODELAY`) и пулом прогретых TLS WebSocket-соединений (`WARM_POOL`), благодаря
+чему первая порция звука 24 кГц моно `i16` PCM (покадровое декодирование MP3 в
+чистом Rust через `nanomp3`, полностью совместимое с `+crt-static`) приходит за
+~235–300 мс. Курируемые голоса в начале каталога: `edge:ru-RU-DmitryNeural`,
+`edge:ru-RU-SvetlanaNeural`, `edge:en-US-AndrewMultilingualNeural`,
+`edge:en-GB-RyanNeural`. Повторяющиеся фразы до 140 символов отдаются из
+двухуровневого кэша `PcmCache` (64 записи в ОЗУ за ~40 мкс + персистентный
+дисковый LRU в `%LOCALAPPDATA%\dev.jarvis.desktop\tts_cache` за ~5–6 мс). Если
+сеть недоступна до выдачи первого чанка, `Speaker::Edge` прозрачно переключается
+на скачанный локальный `NeuralVoice` (Supertonic 3 / Piper) → системный
+`WindowsSpeaker`. Вызов `VoiceManager::speak` (`tts_speak`, `tts_stop`,
+`tts_status`, `tts_benchmark`, инструмент `speak_aloud`, автоозвучка чата)
+открывает только выходной поток `AudioOutput` без обращения к микрофону и шлёт
+события `tts:state` и `voice:level` (30 Гц), оживляя глаза острова во время речи.
+
+Начало речи пользователя поверх ответа очищает очередь (перебивание); новая просьба во
 время хода ждёт его окончания (последняя побеждает); «стоп»/«хватит» отменяют
 всё; фраза, начатая меньше чем через ~2 с паузы, продолжает предыдущую и
 объединяется с ней. Перед синтезом текст нормализуется (`ru_speech`), после
@@ -178,7 +242,7 @@ Ctrl+V. Остров не активируется при клике, поэто
 
 ## Окно-остров
 
-* Одно прозрачное окно-холст 640×600 логических px, верх-центр рабочей
+* Одно прозрачное окно-холст 760×640 логических px, верх-центр рабочей
   области основного монитора; `WS_EX_TOOLWINDOW` (нет в панели задач),
   `WS_EX_TOPMOST`, `WS_EX_NOACTIVATE` (через `focusable=false` в tao),
   без скругления и рамки DWM.
@@ -207,11 +271,19 @@ Ctrl+V. Остров не активируется при клике, поэто
 ## Фронтенд (src)
 
 ```
-island/     Island.tsx (форма, пружины, контроллер), Eyes.tsx, geometry.ts, views/
-workspace/  чат: стриминг, строки инструментов, подтверждения, вложения
-store/      zustand: island (режимы), system (медиа/звук/яркость), agent, clips (история буфера)
-lib/        типизированные обёртки IPC и событий
+island/     Island.tsx (форма, пружины, фоновое свечение от обложки/режима), Eyes.tsx,
+            geometry.ts (760×640, плечи 14 px), views/ (CompactView, PeekView, MediaCard,
+            WeekCalendar, FocusDeck, TrayDeck, ActivityDeck, AgentMissionBar, VoiceView,
+            DropView, FilesView, ClipsView)
+workspace/  автономное рабочее пространство: WorkspaceView, MissionPlanCard, RoutinesBar,
+            ToolRow, озвучка ответов по кнопке и автоматически
+settings/   настройки: модель, студия голоса Edge Neural HD с живым замером задержки,
+            автопилот и редактор сценариев, история буфера, MCP, диагностика
+store/      zustand: island, system, hub (задачи/фокус/полка/стрик/сценарии), tts,
+            agent (стриминг + planSteps), prefs (fullControl, autoSpeakReplies), clips
+lib/        типизированные обёртки IPC и событий (ipc.ts, workspace-ipc.ts) с защитой для браузерного QA
 ui/         Icon (свой набор), Slider
+qa/         автономные витрины notch-showcase.html и workspace-showcase.html для визуальной проверки
 ```
 
 Режим острова выводится из фактов (`hovered`, `dragOver`, `workspaceOpen`,
