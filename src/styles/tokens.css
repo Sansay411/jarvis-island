@@ -6,6 +6,7 @@
  */
 :root {
   /* Surfaces */
+  --obsidian-deep: #040406;
   --obsidian: #08080a;
   --graphite-1: #101013;
   --graphite-2: #17171b;
@@ -28,6 +29,20 @@
   --amber-hi: #ffd88f;
   --amber-lo: #e2861c;
   --amber-glow: rgba(255, 178, 63, 0.5);
+
+  /* Hardware functional accents (Focus / Calendar / Streak) */
+  --cobalt: #0a84ff;
+  --cobalt-hi: #339dff;
+  --cobalt-glow: rgba(10, 132, 255, 0.35);
+  --emerald: #22c55e;
+  --emerald-hi: #39d353;
+
+  /* Task ring palette */
+  --ring-blue: #4c8dff;
+  --ring-amber: #ffb23f;
+  --ring-coral: #ff6b5a;
+  --ring-emerald: #34d399;
+  --ring-violet: #a78bfa;
 
   /* Outcomes */
   --ok: #7cd992;

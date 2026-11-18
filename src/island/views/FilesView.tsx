@@ -6,6 +6,8 @@
 import { useLayoutEffect, useRef } from "react";
 import { Icon } from "../../ui/Icon";
 import { cancelFileJob, closeFiles, resultAction, runFileAction, useFiles, type FileInfo } from "../../store/files";
+import { useHub } from "../../store/hub";
+import { useIsland } from "../../store/island";
 
 const KIND: Record<string, string> = {
   image: "Изображение",
@@ -43,8 +45,11 @@ function duration(s: number): string {
 }
 
 function meta(f: FileInfo): string {
-  const parts = [KIND[f.kind] ?? "Файл"];
-  if (f.ext && f.kind !== "folder") parts[0] += ` · ${f.ext.toUpperCase()}`;
+  const kindLabel = KIND[f.kind] ?? "Файл";
+  const parts = [kindLabel];
+  if (f.ext && f.kind !== "folder" && kindLabel.toUpperCase() !== f.ext.toUpperCase()) {
+    parts[0] += ` · ${f.ext.toUpperCase()}`;
+  }
   if (f.width && f.height) parts.push(`${f.width}×${f.height}`);
   if (f.durationS) parts.push(duration(f.durationS));
   if (f.pages) parts.push(`${f.pages} стр.`);
@@ -119,8 +124,10 @@ function Job() {
 
 export function FilesView() {
   const actions = useFiles((s) => s.actions);
+  const paths = useFiles((s) => s.paths);
   const error = useFiles((s) => s.error);
   const running = useFiles((s) => s.job?.state === "running");
+  const shelfAddFiles = useHub((s) => s.shelfAddFiles);
   const ref = useRef<HTMLDivElement>(null);
 
   // Report the natural height so the island shape fits the card.
@@ -136,6 +143,13 @@ export function FilesView() {
 
   const primary = actions.filter((a) => a.primary);
   const rest = actions.filter((a) => !a.primary);
+
+  const sendToShelf = async () => {
+    if (paths.length === 0) return;
+    await shelfAddFiles(paths);
+    closeFiles();
+    useIsland.getState().set({ hovered: true, peekDeck: "tray", focusBannerDismissed: true });
+  };
 
   return (
     <div className="view view-files">
@@ -158,15 +172,23 @@ export function FilesView() {
               </div>
             </div>
           )}
-          {primary.length > 0 && (
-            <div className="file-actions">
-              {primary.map((a) => (
-                <button key={a.id} className="file-action" disabled={running} title={a.hint ?? undefined} onClick={() => void runFileAction(a.id)}>
-                  {a.label}
-                </button>
-              ))}
-            </div>
-          )}
+          <div className="file-actions">
+            <button
+              type="button"
+              className="file-action is-shelf"
+              disabled={running || paths.length === 0}
+              title="Отложить на Полку острова для быстрого доступа"
+              onClick={() => void sendToShelf()}
+            >
+              <Icon name="tray" size={14} />
+              <span>На полку</span>
+            </button>
+            {primary.map((a) => (
+              <button key={a.id} className="file-action" disabled={running} title={a.hint ?? undefined} onClick={() => void runFileAction(a.id)}>
+                {a.label}
+              </button>
+            ))}
+          </div>
           {/* Everything at once: no hidden menu to open and search through. */}
           {rest.length > 0 && (
             <div className="file-more-list">
