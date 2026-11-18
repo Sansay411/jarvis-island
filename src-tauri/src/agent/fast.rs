@@ -129,6 +129,11 @@ fn tool_command(s: &str, question: bool) -> Option<ToolCall> {
         "сколько прошло" | "сколько на секундомере" | "сколько времени прошло" => Some(("stopwatch", json!({"action":"status"}))),
         "сколько осталось" | "сколько осталось на таймере" | "сколько до конца таймера" | "сколько еще осталось" => Some(("reminders_list", json!({}))),
         "отмени таймер" | "выключи таймер" | "останови таймер" | "сбрось таймер" | "убери таймер" => Some(("reminder_cancel", json!({}))),
+        "стоп фокус" | "останови фокус" | "выключи фокус" | "отмени фокус" | "сбрось фокус" => Some(("focus_session", json!({"action":"cancel"}))),
+        "пауза фокуса" | "фокус на паузу" | "поставь фокус на паузу" | "приостанови фокус" => Some(("focus_session", json!({"action":"pause"}))),
+        "продолжи фокус" | "возобнови фокус" | "сними фокус с паузы" => Some(("focus_session", json!({"action":"resume"}))),
+        "заверши фокус" | "фокус готов" => Some(("focus_session", json!({"action":"complete"}))),
+        "статус фокуса" | "сколько осталось фокуса" => Some(("focus_session", json!({"action":"status"}))),
         _ => None,
     };
     if let Some((name, args)) = clock { return Some(call(name, args)); }
@@ -159,6 +164,17 @@ fn tool_command(s: &str, question: bool) -> Option<ToolCall> {
         _ => None,
     };
     if let Some((name, args)) = exact { return Some(call(name, args)); }
+    if matches!(s, "включи фокус" | "запусти фокус" | "режим фокуса") {
+        return Some(call("focus_session", json!({"action":"start","minutes":25})));
+    }
+    for p in ["включи фокус на ", "запусти фокус на ", "поставь фокус на ", "режим фокуса на ", "фокус на ", "фокус "] {
+        if let Some((secs, tail)) = s.strip_prefix(p).and_then(crate::reminders::parse_duration) {
+            if tail.is_empty() {
+                let mins = ((secs + 59) / 60).clamp(1, 240);
+                return Some(call("focus_session", json!({"action":"start","minutes":mins})));
+            }
+        }
+    }
     for p in ["поставь таймер на ", "поставь таймер ", "заведи таймер на ", "таймер на ", "таймер ", "засеки "] {
         if let Some((secs, tail)) = s.strip_prefix(p).and_then(crate::reminders::parse_duration) {
             if tail.is_empty() {
@@ -293,6 +309,11 @@ mod tests {
             ("Сколько прошло?", "stopwatch", json!({"action":"status"})),
             ("Сколько осталось?", "reminders_list", json!({})),
             ("Отмени таймер", "reminder_cancel", json!({})),
+            ("Фокус на 25 минут", "focus_session", json!({"action":"start","minutes":25})),
+            ("Джарвис, фокус на сорок пять минут.", "focus_session", json!({"action":"start","minutes":45})),
+            ("Стоп фокус", "focus_session", json!({"action":"cancel"})),
+            ("Пауза фокуса", "focus_session", json!({"action":"pause"})),
+            ("Продолжи фокус", "focus_session", json!({"action":"resume"})),
         ] {
             let Some(Fast::Call(call)) = command(text) else { panic!("not matched: {text}") };
             assert_eq!(call.name, tool);

@@ -135,6 +135,7 @@ impl Store {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(clips::SCHEMA)?;
+        conn.execute_batch(crate::hub::SCHEMA)?;
         Ok(Store { conn: Mutex::new(conn) })
     }
 
@@ -143,7 +144,13 @@ impl Store {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(clips::SCHEMA)?;
+        conn.execute_batch(crate::hub::SCHEMA)?;
         Ok(Store { conn: Mutex::new(conn) })
+    }
+
+    pub(crate) fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> AppResult<T>) -> AppResult<T> {
+        let conn = self.conn.lock();
+        f(&conn)
     }
 
     // ---------- settings ----------

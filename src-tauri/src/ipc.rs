@@ -79,6 +79,11 @@ pub async fn media_control(action: media::MediaAction) -> AppResult<media::Contr
     platform::blocking(move || media::control(action)).await
 }
 
+#[tauri::command]
+pub async fn media_seek(position_ms: i64) -> AppResult<()> {
+    platform::blocking(move || media::seek(position_ms)).await
+}
+
 // ---------- windows & apps ----------
 
 #[tauri::command]

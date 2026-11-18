@@ -44,6 +44,15 @@ pub fn agent_history(agent: State<'_, Arc<Agent>>) -> Vec<HistoryItem> {
     agent.history()
 }
 
+#[tauri::command]
+pub fn agent_set_full_control(app: AppHandle, state: State<'_, AppState>, enabled: bool) -> AppResult<bool> {
+    let mut settings = state.store.settings();
+    settings.agent.full_control = enabled;
+    state.store.save_settings(&settings)?;
+    let _ = app.emit("settings:changed", ());
+    Ok(enabled)
+}
+
 // ---------- settings ----------
 
 #[derive(Serialize)]

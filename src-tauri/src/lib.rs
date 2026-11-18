@@ -15,9 +15,11 @@ pub mod ai;
 pub mod clips;
 pub mod error;
 pub mod filekit;
+pub mod hub;
 mod ipc;
 mod ipc_clips;
 mod ipc_files;
+mod ipc_hub;
 pub mod jobs;
 mod ipc_mcp;
 pub mod mcp;
@@ -198,6 +200,9 @@ pub fn run() {
             app.manage(mcp.clone());
             let registry = Arc::new(tools::Registry::new(mcp));
             app.manage(agent::Agent::new(app.handle().clone(), registry));
+            let hub = hub::Hub::new(app.handle().clone())?;
+            hub.spawn();
+            app.manage(hub);
             app.manage(jobs::JobManager::new(app.handle().clone()));
             app.manage(voice::VoiceManager::new(app.handle().clone()));
             app.manage(Arc::new(filekit::FileJobs::default()));
@@ -273,6 +278,7 @@ pub fn run() {
             ipc::media_get,
             ipc::media_artwork,
             ipc::media_control,
+            ipc::media_seek,
             ipc::windows_list,
             ipc::window_focus,
             ipc::apps_search,
@@ -314,6 +320,7 @@ pub fn run() {
             ipc_agent::agent_confirm,
             ipc_agent::agent_new_conversation,
             ipc_agent::agent_history,
+            ipc_agent::agent_set_full_control,
             ipc_agent::settings_get,
             ipc_agent::settings_save,
             ipc_agent::secret_set,
@@ -331,7 +338,44 @@ pub fn run() {
             ipc_mcp::mcp_refresh,
             ipc_mcp::mcp_set_enabled,
             ipc_mcp::mcp_set_tool,
+            ipc_hub::hub_tasks_list,
+            ipc_hub::hub_task_add,
+            ipc_hub::hub_task_toggle,
+            ipc_hub::hub_task_remove,
+            ipc_hub::hub_focus_get,
+            ipc_hub::hub_focus_start,
+            ipc_hub::hub_focus_pause_toggle,
+            ipc_hub::hub_focus_complete,
+            ipc_hub::hub_focus_cancel,
+            ipc_hub::hub_shelf_list,
+            ipc_hub::hub_shelf_add_files,
+            ipc_hub::hub_shelf_add_text,
+            ipc_hub::hub_shelf_remove,
+            ipc_hub::hub_shelf_clear,
+            ipc_hub::hub_activity_get,
+            ipc_hub::hub_routines_list,
+            ipc_hub::hub_routine_save,
+            ipc_hub::hub_routine_remove,
+            ipc_hub::hub_routine_run,
         ])
         .run(tauri::generate_context!())
         .expect("error while running JARVIS");
+}
+
+#[cfg(all(test, windows))]
+mod test_comctl6_manifest {
+    // `tauri_build` embeds the Common Controls v6 manifest into `bins` only;
+    // `--lib` unit test executables also link `tao` (`TaskDialogIndirect`).
+    const DRECTVE: &[u8] = b" /MANIFESTDEPENDENCY:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\" ";
+    #[used]
+    #[link_section = ".drectve"]
+    static LINK_ARGS: [u8; DRECTVE.len()] = {
+        let mut out = [0u8; DRECTVE.len()];
+        let mut i = 0;
+        while i < DRECTVE.len() {
+            out[i] = DRECTVE[i];
+            i += 1;
+        }
+        out
+    };
 }
