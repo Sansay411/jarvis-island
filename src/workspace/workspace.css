@@ -227,13 +227,18 @@
 
 /* ---------- workspace body ---------- */
 
+.ws-plan-slot {
+  flex: none;
+  padding: 8px 16px 2px;
+}
+
 .ws-body {
   flex: 1;
   min-height: 0;
-  padding: 10px 16px 10px;
+  padding: 8px 16px 8px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 9px;
 }
 
 /* ---------- live mission plan card ---------- */
@@ -383,24 +388,24 @@
 .mission-plan-steps {
   list-style: none;
   margin: 0;
-  padding: 5px 10px 8px;
+  padding: 4px 10px 7px;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
-.mission-step {
+.ws-mission-step {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  padding: 4px 6px;
+  padding: 3px 6px;
   border-radius: var(--r-xs);
-  font-size: 12px;
+  font-size: 11.5px;
 }
-.mission-step.is-running {
+.ws-mission-step.is-running {
   background: rgba(255, 178, 63, 0.07);
 }
-.mission-step-badge {
+.ws-mission-step-badge {
   width: 16px;
   height: 16px;
   display: grid;
@@ -437,35 +442,35 @@
   display: grid;
   place-items: center;
 }
-.mission-step-title {
+.ws-mission-step-title {
   color: var(--text-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.mission-step.is-running .mission-step-title {
+.ws-mission-step.is-running .ws-mission-step-title {
   color: var(--text-1);
   font-weight: 560;
 }
-.mission-step.is-done .mission-step-title {
+.ws-mission-step.is-done .ws-mission-step-title {
   color: var(--text-2);
 }
-.mission-step.is-failed .mission-step-title {
+.ws-mission-step.is-failed .ws-mission-step-title {
   color: #ffb3a9;
 }
-.mission-step-state {
+.ws-mission-step-state {
   font-size: 10.5px;
   font-family: var(--font-mono);
   color: var(--text-3);
   white-space: nowrap;
 }
-.mission-step.is-running .mission-step-state {
+.ws-mission-step.is-running .ws-mission-step-state {
   color: var(--amber);
 }
-.mission-step.is-done .mission-step-state {
+.ws-mission-step.is-done .ws-mission-step-state {
   color: var(--ok);
 }
-.mission-step.is-failed .mission-step-state {
+.ws-mission-step.is-failed .ws-mission-step-state {
   color: var(--danger);
 }
 
@@ -581,10 +586,12 @@
 }
 .routine-card-sub {
   font-size: 11px;
+  line-height: 1.35;
   color: var(--text-3);
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .routines-quick-row {
@@ -622,30 +629,26 @@
 /* Compact Routines Strip above Composer */
 .routines-strip-wrap {
   flex: none;
-  padding: 0 14px 6px;
+  padding: 0 14px 5px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
 }
 .routines-strip {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.routines-strip::-webkit-scrollbar {
-  display: none;
+  gap: 4px;
 }
 .routine-chip {
   flex: none;
-  height: 23px;
-  padding: 0 9px;
+  height: 22px;
+  padding: 0 8px;
   border-radius: var(--r-pill);
   background: var(--graphite-2);
   box-shadow: inset 0 0 0 1px var(--line);
   color: var(--text-2);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 540;
   display: inline-flex;
   align-items: center;

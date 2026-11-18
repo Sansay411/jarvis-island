@@ -182,13 +182,32 @@ function IslandWorkspaceFrame() {
   );
 }
 
+function getInitialScene(): QaScene {
+  if (typeof window === "undefined") return "workspace-active";
+  const p = new URLSearchParams(window.location.search).get("scene");
+  if (p === "workspace-empty" || p === "settings-voice" || p === "settings-behaviour" || p === "workspace-active") {
+    return p;
+  }
+  return "workspace-active";
+}
+
+const QA_BENCH_SAMPLE = {
+  voice: "edge:ru-RU-DmitryNeural",
+  firstChunkMs: 235,
+  totalMs: 312,
+  samples: 38400,
+  cachedMs: 5,
+};
+
 function QaWorkspaceApp() {
-  const [scene, setScene] = useState<QaScene>("workspace-active");
+  const [scene, setScene] = useState<QaScene>(() => getInitialScene());
   const [withConfirm, setWithConfirm] = useState(false);
 
   useEffect(() => {
     void ensureWorkspaceFeeds();
-    seedActiveWorkspace(false);
+    const initial = getInitialScene();
+    if (initial === "workspace-empty") seedEmptyWorkspace();
+    else seedActiveWorkspace(false);
   }, []);
 
   const selectScene = (next: QaScene) => {
@@ -209,7 +228,7 @@ function QaWorkspaceApp() {
       {scene === "workspace-active" || scene === "workspace-empty" ? (
         <IslandWorkspaceFrame />
       ) : scene === "settings-voice" ? (
-        <SettingsApp initialSection="voice" />
+        <SettingsApp initialSection="voice" initialBenchResult={QA_BENCH_SAMPLE} />
       ) : (
         <SettingsApp initialSection="behaviour" />
       )}

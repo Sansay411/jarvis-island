@@ -856,7 +856,13 @@ function RoutinesSettingsManager({ notify }: { notify: (tone: Tone, text: string
 
 // ---------- the window ----------
 
-export default function SettingsApp({ initialSection = "persona" }: { initialSection?: Section } = {}) {
+export default function SettingsApp({
+  initialSection = "persona",
+  initialBenchResult = null,
+}: {
+  initialSection?: Section;
+  initialBenchResult?: TtsBenchResult | null;
+} = {}) {
   const [view, setView] = useState<SettingsView | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
   const [section, setSection] = useState<Section>(initialSection);
@@ -876,7 +882,7 @@ export default function SettingsApp({ initialSection = "persona" }: { initialSec
     "Доброе утро, сэр. Все системы Джарвиса работают штатно, задержка потокового синтеза минимальна.",
   );
   const [benchBusy, setBenchBusy] = useState(false);
-  const [benchResult, setBenchResult] = useState<TtsBenchResult | null>(null);
+  const [benchResult, setBenchResult] = useState<TtsBenchResult | null>(initialBenchResult);
   const ttsSpeaking = useWorkspaceTts((s) => s.speaking);
 
   const preview = useVoicePreview();

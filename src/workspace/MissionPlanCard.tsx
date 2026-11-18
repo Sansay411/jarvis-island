@@ -93,8 +93,8 @@ export function MissionPlanCard({ steps: propSteps }: { steps?: PlanStep[] }) {
       {!collapsed && (
         <ol className="mission-plan-steps">
           {steps.map((st, idx) => (
-            <li key={st.id || idx} className={`mission-step is-${st.status}`}>
-              <span className="mission-step-badge" aria-hidden="true">
+            <li key={st.id || idx} className={`ws-mission-step is-${st.status}`}>
+              <span className="ws-mission-step-badge" aria-hidden="true">
                 {st.status === "running" ? (
                   <span className="plan-ring-live is-sm" />
                 ) : st.status === "done" ? (
@@ -107,8 +107,8 @@ export function MissionPlanCard({ steps: propSteps }: { steps?: PlanStep[] }) {
                   <span className="plan-step-index">{idx + 1}</span>
                 )}
               </span>
-              <span className="mission-step-title">{st.title}</span>
-              <span className="mission-step-state">
+              <span className="ws-mission-step-title">{st.title}</span>
+              <span className="ws-mission-step-state">
                 {st.status === "running"
                   ? "Выполняется"
                   : st.status === "done"
