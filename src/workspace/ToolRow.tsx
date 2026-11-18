@@ -1,28 +1,41 @@
 import { useState } from "react";
 import { Icon, type IconName } from "../ui/Icon";
 import { useAgent, type ChatItem } from "../store/agent";
+import { WsIcon } from "./WorkspaceIcons";
 
 type ToolItem = Extract<ChatItem, { kind: "tool" }>;
 
 function iconFor(tool: string): IconName {
-  if (tool.startsWith("audio") || tool.startsWith("volume")) return "volume";
+  if (tool === "speak_aloud" || tool.startsWith("audio") || tool.startsWith("volume")) return "volume";
   if (tool.startsWith("brightness")) return "sun";
   if (tool.startsWith("media")) return "play";
-  if (tool.startsWith("window")) return "window";
-  if (tool.startsWith("app")) return "window";
+  if (tool === "window_layout" || tool.startsWith("window") || tool.startsWith("app")) return "window";
+  if (tool === "focus_session" || tool.startsWith("timer") || tool.startsWith("reminder")) return "timer";
+  if (tool === "selection_grab" || tool.startsWith("clip")) return "clipboard";
+  if (tool === "tasks_manage" || tool === "mission_plan") return "check";
   if (tool.startsWith("browser") || tool.startsWith("web") || tool === "open_url") return "globe";
-  if (tool.startsWith("shell") || tool.startsWith("dev") || tool.startsWith("process")) return "terminal";
+  if (tool === "system_diagnostics" || tool.startsWith("shell") || tool.startsWith("dev") || tool.startsWith("process")) {
+    return "terminal";
+  }
   if (tool.startsWith("screen") || tool.startsWith("ui")) return "eye";
   if (tool.startsWith("file") || tool.startsWith("fs")) return "file";
   return "bolt";
 }
 
-function StatusGlyph({ status }: { status: ToolItem["status"] }) {
+function StatusGlyph({ status, hasDetails, open }: { status: ToolItem["status"]; hasDetails: boolean; open: boolean }) {
   if (status === "running") return <span className="spinner" aria-label="Выполняется" />;
-  if (status === "ok") return <Icon name="check" size={15} style={{ color: "var(--ok)" }} />;
-  if (status === "failed") return <Icon name="alert" size={15} style={{ color: "var(--danger)" }} />;
-  if (status === "declined") return <Icon name="close" size={14} style={{ color: "var(--text-3)" }} />;
-  return <Icon name="eye" size={15} style={{ color: "var(--amber)" }} />;
+  return (
+    <span className="tool-status-group">
+      {status === "ok" && <Icon name="check" size={14} style={{ color: "var(--ok)" }} />}
+      {status === "failed" && <Icon name="alert" size={14} style={{ color: "var(--danger)" }} />}
+      {status === "declined" && <Icon name="close" size={13} style={{ color: "var(--text-3)" }} />}
+      {hasDetails && (
+        <span className={`tool-chevron${open ? " is-open" : ""}`}>
+          <WsIcon name="chevronRight" size={12} />
+        </span>
+      )}
+    </span>
+  );
 }
 
 export function ToolRow({ item }: { item: ToolItem }) {
@@ -30,33 +43,50 @@ export function ToolRow({ item }: { item: ToolItem }) {
   const confirm = useAgent((s) => s.confirm);
 
   if (item.status === "awaiting") {
+    const isHigh = item.risk === "high";
     return (
       <div className={`confirm-card risk-${item.risk ?? "moderate"}`} role="group" aria-label="Нужно подтверждение">
         <div className="confirm-head">
-          <Icon name={iconFor(item.tool)} size={16} />
-          <span>{item.title}</span>
+          <span className="confirm-head-left">
+            <Icon name={iconFor(item.tool)} size={15} />
+            <span className="confirm-title">{item.title}</span>
+          </span>
+          <span className={`confirm-risk-pill${isHigh ? " is-high" : ""}`}>
+            <WsIcon name="shield" size={11} />
+            <span>{isHigh ? "Высокий риск" : "Требует разрешения"}</span>
+          </span>
         </div>
         {item.details && <pre className="confirm-details">{item.details}</pre>}
         <div className="confirm-actions">
-          <button className="btn btn-quiet" onClick={() => void confirm(item.id, false)}>
+          <button type="button" className="btn btn-quiet" onClick={() => void confirm(item.id, false)}>
             Отклонить
           </button>
-          <button className="btn btn-solid" onClick={() => void confirm(item.id, true)} autoFocus>
-            Разрешить
+          <button type="button" className="btn btn-solid confirm-allow-btn" onClick={() => void confirm(item.id, true)} autoFocus>
+            <WsIcon name="check" size={13} />
+            <span>Разрешить</span>
           </button>
         </div>
       </div>
     );
   }
 
-  const hasDetails = item.args !== null || !!item.summary || !!item.error;
+  const hasDetails = (item.args !== null && item.args !== undefined) || !!item.summary || !!item.error;
   return (
-    <div className={`tool-row is-${item.status}`}>
-      <button className="tool-line" onClick={() => hasDetails && setOpen((o) => !o)} aria-expanded={open}>
-        <Icon name={iconFor(item.tool)} size={15} className="tool-icon" />
+    <div className={`tool-row is-${item.status}${open ? " is-open" : ""}`}>
+      <button
+        type="button"
+        className="tool-line"
+        onClick={() => hasDetails && setOpen((o) => !o)}
+        aria-expanded={open}
+      >
+        <Icon name={iconFor(item.tool)} size={14} className="tool-icon" />
         <span className="tool-title">{item.title}</span>
-        {item.summary && item.status !== "running" && <span className="tool-summary">{item.error ?? item.summary}</span>}
-        <StatusGlyph status={item.status} />
+        {item.status === "running" ? (
+          <span className="tool-summary is-live">Выполняется…</span>
+        ) : (
+          (item.error || item.summary) && <span className="tool-summary">{item.error ?? item.summary}</span>
+        )}
+        <StatusGlyph status={item.status} hasDetails={hasDetails} open={open} />
       </button>
       {item.status === "running" && item.progress && item.progress.length > 0 && (
         <pre className="tool-progress">{item.progress.join("\n")}</pre>
@@ -64,9 +94,9 @@ export function ToolRow({ item }: { item: ToolItem }) {
       {open && hasDetails && (
         <div className="tool-details">
           {item.args !== null && item.args !== undefined && (
-            <pre>{JSON.stringify(item.args, null, 2)}</pre>
+            <pre>{typeof item.args === "string" ? item.args : JSON.stringify(item.args, null, 2)}</pre>
           )}
-          {(item.error || item.summary) && <p>{item.error ?? item.summary}</p>}
+          {(item.error || item.summary) && <p className={item.error ? "tool-detail-error" : ""}>{item.error ?? item.summary}</p>}
         </div>
       )}
     </div>

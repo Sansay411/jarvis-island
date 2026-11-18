@@ -1,10 +1,21 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../ui/Icon";
-import { useAgent } from "../store/agent";
+import { useAgent, type ChatItem } from "../store/agent";
 import { useIsland } from "../store/island";
+import { usePrefs } from "../store/prefs";
+import {
+  ensureWorkspaceFeeds,
+  hasTauri,
+  stripMarkdownForSpeech,
+  useWorkspaceTts,
+  workspaceIpc,
+} from "../lib/workspace-ipc";
 import { Markdown } from "./Markdown";
 import { ToolRow } from "./ToolRow";
+import { MissionPlanCard } from "./MissionPlanCard";
+import { RoutinesBar } from "./RoutinesBar";
+import { LiveAudioBars, WsIcon } from "./WorkspaceIcons";
 import { JobsStrip } from "../island/views/JobsStrip";
 import { toggleVoice } from "../store/voice";
 import "./workspace.css";
@@ -22,7 +33,7 @@ function useSecondsLeft(until: number | null): number {
   return until ? Math.max(0, Math.ceil((until - Date.now()) / 1000)) : 0;
 }
 
-function Composer({visible}:{visible:boolean}) {
+function Composer({ visible }: { visible: boolean }) {
   const [text, setText] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
   const active = useAgent((s) => s.activeTurn);
@@ -32,18 +43,21 @@ function Composer({visible}:{visible:boolean}) {
   const setIsland = useIsland((s) => s.set);
 
   useEffect(() => {
-    if(!visible) return;
-    const focus=()=>ref.current?.focus();
-    window.addEventListener("jarvis:input-ready",focus);
-    const id=window.requestAnimationFrame(focus);
-    return ()=>{window.cancelAnimationFrame(id);window.removeEventListener("jarvis:input-ready",focus);};
+    if (!visible) return;
+    const focus = () => ref.current?.focus();
+    window.addEventListener("jarvis:input-ready", focus);
+    const id = window.requestAnimationFrame(focus);
+    return () => {
+      window.cancelAnimationFrame(id);
+      window.removeEventListener("jarvis:input-ready", focus);
+    };
   }, [visible]);
 
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     el.style.height = "0px";
-    el.style.height = `${Math.min(el.scrollHeight, 112)}px`;
+    el.style.height = `${Math.min(el.scrollHeight, 104)}px`;
   }, [text]);
 
   const submit = () => {
@@ -70,6 +84,7 @@ function Composer({visible}:{visible:boolean}) {
               <Icon name="file" size={13} />
               {a.name}
               <button
+                type="button"
                 aria-label={`Убрать ${a.name}`}
                 onClick={() => setIsland({ pendingAttachments: attachments.filter((x) => x.path !== a.path) })}
               >
@@ -84,24 +99,109 @@ function Composer({visible}:{visible:boolean}) {
           ref={ref}
           rows={1}
           value={text}
-          placeholder="Спросите или поручите что-нибудь"
+          placeholder="Спросите или поручите задачу Джарвису…"
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKey}
           spellCheck
         />
-        <button className="mic-btn" onClick={() => void toggleVoice()} aria-label="Голосовой режим">
+        <button type="button" className="mic-btn" onClick={() => void toggleVoice()} aria-label="Голосовой режим" title="Голосовой режим">
           <Icon name="mic" size={16} />
         </button>
         {active ? (
-          <button className="send-btn is-stop" onClick={() => void cancel()} aria-label="Остановить">
+          <button type="button" className="send-btn is-stop" onClick={() => void cancel()} aria-label="Остановить" title="Остановить выполнение">
             <Icon name="stop" size={14} />
           </button>
         ) : (
-          <button className="send-btn" onClick={submit} disabled={!text.trim()} aria-label="Отправить">
+          <button type="button" className="send-btn" onClick={submit} disabled={!text.trim()} aria-label="Отправить" title="Отправить (Enter)">
             <Icon name="send" size={16} />
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+function AssistantMessage({
+  item,
+  speakingId,
+  onSpeakStart,
+}: {
+  item: Extract<ChatItem, { kind: "assistant" }>;
+  speakingId: string | null;
+  onSpeakStart: (id: string, text: string) => void;
+}) {
+  const ttsSpeaking = useWorkspaceTts((s) => s.speaking);
+  const ttsText = useWorkspaceTts((s) => s.text);
+  const ttsLatency = useWorkspaceTts((s) => s.latencyMs);
+  const [copied, setCopied] = useState(false);
+
+  const cleaned = stripMarkdownForSpeech(item.text);
+  const prefixMatch =
+    ttsSpeaking &&
+    cleaned.length > 0 &&
+    ttsText.length > 0 &&
+    cleaned.slice(0, 28).toLowerCase() === ttsText.slice(0, 28).toLowerCase();
+  const isSpeaking = ttsSpeaking && (speakingId === item.id || prefixMatch);
+
+  const handleToggleSpeak = () => {
+    if (isSpeaking) {
+      void workspaceIpc.tts.stop();
+    } else {
+      onSpeakStart(item.id, item.text);
+    }
+  };
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(item.text);
+    } catch {
+      /* ignore in restricted frame */
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  };
+
+  return (
+    <div className={`msg-assistant${item.streaming ? " is-streaming" : ""}${isSpeaking ? " is-speaking" : ""}`}>
+      <Markdown text={item.text} />
+      {!item.streaming && item.text.trim().length > 0 && (
+        <div className="msg-actions">
+          <button
+            type="button"
+            className={`msg-action-btn${isSpeaking ? " is-active" : ""}`}
+            onClick={handleToggleSpeak}
+            aria-label={isSpeaking ? "Остановить озвучку" : "Озвучить сообщение"}
+          >
+            {isSpeaking ? (
+              <>
+                <LiveAudioBars active />
+                <span>Стоп</span>
+              </>
+            ) : (
+              <>
+                <WsIcon name="speaker" size={12} />
+                <span>Озвучить</span>
+              </>
+            )}
+          </button>
+
+          {isSpeaking && ttsLatency !== null && (
+            <span className="msg-tts-latency" title="Время до первого звука (Edge Neural HD)">
+              ⚡ {ttsLatency} мс
+            </span>
+          )}
+
+          <button
+            type="button"
+            className={`msg-action-btn${copied ? " is-copied" : ""}`}
+            onClick={() => void handleCopy()}
+            aria-label="Скопировать ответ"
+          >
+            <WsIcon name={copied ? "check" : "copy"} size={12} />
+            <span>{copied ? "Скопировано" : "Копировать"}</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -113,59 +213,151 @@ function EmptyState() {
       <div className="empty">
         <p className="empty-title">Подключите модель, чтобы начать</p>
         <p className="empty-text">{status.problem ?? "Укажите провайдера ИИ и API-ключ в настройках."}</p>
-        <button className="btn btn-solid" onClick={() => void invoke("settings_open")}>
+        <button
+          type="button"
+          className="btn btn-solid"
+          onClick={() => {
+            if (hasTauri()) void invoke("settings_open");
+          }}
+        >
           Открыть настройки
         </button>
       </div>
     );
   }
-  return (
-    <div className="empty">
-      <p className="empty-title">Чем помочь?</p>
-      <p className="empty-text">
-        Опишите результат — например, «сделай громкость 30% и открой проводник» или «что сейчас на экране?».
-      </p>
-    </div>
-  );
+  return <RoutinesBar variant="empty" />;
 }
 
-export const WorkspaceView=memo(function WorkspaceView({visible=true}:{visible?:boolean}) {
+export const WorkspaceView = memo(function WorkspaceView({ visible = true }: { visible?: boolean }) {
   const items = useAgent((s) => s.items);
   const phase = useAgent((s) => s.phase);
   const active = useAgent((s) => s.activeTurn);
   const status = useAgent((s) => s.status);
+  const planSteps = useAgent((s) => s.planSteps);
   const waitLeft = useSecondsLeft(useAgent((s) => s.waitUntil));
   const newConversation = useAgent((s) => s.newConversation);
   const set = useIsland((s) => s.set);
+
+  const fullControl = usePrefs((s) => s.fullControl);
+  const setFullControl = usePrefs((s) => s.setFullControl);
+  const autoSpeakReplies = usePrefs((s) => s.autoSpeakReplies);
+  const setAutoSpeakReplies = usePrefs((s) => s.setAutoSpeakReplies);
+
+  const ttsSpeaking = useWorkspaceTts((s) => s.speaking);
+  const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
+
   const body = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+
+  useEffect(() => {
+    void ensureWorkspaceFeeds();
+  }, []);
+
+  useEffect(() => {
+    if (!ttsSpeaking) setSpeakingMsgId(null);
+  }, [ttsSpeaking]);
 
   useLayoutEffect(() => {
     const el = body.current;
     if (visible && el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [items,visible]);
+  }, [items, planSteps, visible]);
+
+  const handleSpeakMessage = (id: string, text: string) => {
+    setSpeakingMsgId(id);
+    void workspaceIpc.tts.speak(text, { interrupt: true });
+  };
+
+  const statusText =
+    active && waitLeft > 0
+      ? `Лимит · ${waitLeft} с`
+      : active && phase
+        ? `${PHASE_LABEL[phase]}…`
+        : status?.configured && status.model
+          ? status.model
+          : "Джарвис";
 
   return (
     <div className="view view-workspace">
-      <div className="brow">
-        <span className="brow-name">
-          {active && waitLeft > 0
-            ? `Жду лимит провайдера · ${waitLeft} с`
-            : active && phase
-              ? `${PHASE_LABEL[phase]}…`
-              : status?.configured
-                ? status.model
-                : "Джарвис"}
-        </span>
-        <div className="brow-actions">
-          <button className="icon-btn" aria-label="Новый разговор" onClick={() => void newConversation()} disabled={!!active || items.length === 0}>
-            <Icon name="chat" size={16} />
+      <div className="brow ws-brow">
+        <div className="ws-brow-left">
+          <span className={`ws-status-pill${active ? " is-busy" : ""}`} title={statusText}>
+            <span className="ws-status-dot" />
+            <span className="brow-name">{statusText}</span>
+          </span>
+
+          <button
+            type="button"
+            role="switch"
+            aria-checked={fullControl}
+            className={`ws-autopilot-pill${fullControl ? " is-on" : ""}`}
+            onClick={() => void setFullControl(!fullControl)}
+            title="Полное управление: агент действует сам; необратимые действия всё равно требуют подтверждения"
+          >
+            <span className="ws-autopilot-dot" />
+            <span>Автопилот</span>
+            <WsIcon name="bolt" size={11} className="ws-autopilot-bolt" />
           </button>
-          <button className="icon-btn" aria-label="Настройки" onClick={() => void invoke("settings_open")}>
-            <Icon name="settings" size={16} />
+        </div>
+
+        {/* Center 72px clear zone reserved for Jarvis's Eyes on the Island brow */}
+        <div className="ws-brow-center" aria-hidden="true" />
+
+        <div className="ws-brow-right">
+          {ttsSpeaking && (
+            <button
+              type="button"
+              className="ws-stop-tts-pill"
+              onClick={() => void workspaceIpc.tts.stop()}
+              title="Остановить озвучку (tts_stop)"
+              aria-label="Стоп звук"
+            >
+              <LiveAudioBars active />
+              <span>Стоп звук</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            role="switch"
+            aria-checked={autoSpeakReplies}
+            className={`ws-autospeak-pill${autoSpeakReplies ? " is-on" : ""}${ttsSpeaking ? " is-compact" : ""}`}
+            onClick={() => void setAutoSpeakReplies(!autoSpeakReplies)}
+            title="Автоозвучка: автоматически озвучивать ответы Джарвиса в чате"
+            aria-label="Автоозвучка"
+          >
+            <WsIcon name={autoSpeakReplies ? "speaker" : "speakerOff"} size={13} />
+            {!ttsSpeaking && <span>Автоозвучка</span>}
           </button>
-          <button className="icon-btn" aria-label="Свернуть" onClick={() => set({ workspaceOpen: false, hovered: false })}>
-            <Icon name="collapse" size={16} />
+
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Новый разговор"
+            title="Новый разговор"
+            onClick={() => void newConversation()}
+            disabled={!!active || (items.length === 0 && planSteps.length === 0)}
+          >
+            <Icon name="chat" size={15} />
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Настройки"
+            title="Настройки Джарвиса"
+            onClick={() => {
+              if (hasTauri()) void invoke("settings_open");
+            }}
+          >
+            <Icon name="settings" size={15} />
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Свернуть"
+            title="Свернуть (Esc)"
+            onClick={() => set({ workspaceOpen: false, hovered: false })}
+          >
+            <Icon name="collapse" size={15} />
           </button>
         </div>
       </div>
@@ -178,6 +370,8 @@ export const WorkspaceView=memo(function WorkspaceView({visible=true}:{visible?:
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
         }}
       >
+        {planSteps.length > 0 && <MissionPlanCard steps={planSteps} />}
+
         {items.length === 0 ? (
           <EmptyState />
         ) : (
@@ -201,9 +395,12 @@ export const WorkspaceView=memo(function WorkspaceView({visible=true}:{visible?:
                 );
               case "assistant":
                 return (
-                  <div key={it.id} className={`msg-assistant${it.streaming ? " is-streaming" : ""}`}>
-                    <Markdown text={it.text} />
-                  </div>
+                  <AssistantMessage
+                    key={it.id}
+                    item={it}
+                    speakingId={speakingMsgId}
+                    onSpeakStart={handleSpeakMessage}
+                  />
                 );
               case "tool":
                 return <ToolRow key={it.id} item={it} />;
@@ -220,7 +417,8 @@ export const WorkspaceView=memo(function WorkspaceView({visible=true}:{visible?:
       </div>
 
       <JobsStrip />
-      <Composer visible={visible}/>
+      {items.length > 0 && <RoutinesBar variant="strip" />}
+      <Composer visible={visible} />
     </div>
   );
 });

@@ -4,9 +4,22 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { errorMessage } from "../lib/ipc";
-import type { AgentEvent, AgentPhase, AgentStatus, HistoryMessage, RiskLevel, SendResult } from "../lib/agent-types";
+import type {
+  AgentEvent,
+  AgentPhase,
+  AgentStatus,
+  HistoryMessage,
+  PlanStep,
+  PlanStepStatus,
+  RiskLevel,
+  SendResult,
+} from "../lib/agent-types";
+import { ensureWorkspaceFeeds, hasTauri, stripMarkdownForSpeech, workspaceIpc } from "../lib/workspace-ipc";
 import type { EyeMood } from "../island/Eyes";
+import { usePrefs } from "./prefs";
+import { useVoice } from "./voice";
 
+export type { PlanStep, PlanStepStatus };
 export type ToolStatus = "running" | "ok" | "failed" | "awaiting" | "declined";
 
 export type ChatItem =
@@ -29,7 +42,7 @@ export type ChatItem =
     }
   | { kind: "notice"; id: string; tone: "error" | "info"; text: string };
 
-interface AgentStore {
+export interface AgentStore {
   items: ChatItem[];
   activeTurn: string | null;
   phase: AgentPhase | null;
@@ -37,12 +50,16 @@ interface AgentStore {
   flash: "happy" | "error" | null;
   /** Epoch ms until which the provider asked us to wait (rate limit). */
   waitUntil: number | null;
+  /** Live multi-step mission plan published by the agent during a turn. */
+  planSteps: PlanStep[];
+  planTurnId: string | null;
   loadStatus: () => Promise<void>;
   loadHistory: () => Promise<void>;
   send: (text: string, attachments: string[]) => Promise<void>;
   cancel: () => Promise<void>;
   confirm: (callId: string, approved: boolean) => Promise<void>;
   newConversation: () => Promise<void>;
+  clearPlan: () => void;
 }
 
 let seq = 0;
@@ -52,6 +69,13 @@ let flashTimer: number | undefined;
  * `agent_send` reply arrives, and must not be marked active again by it. */
 const finishedTurns: string[] = [];
 
+function normalizeStepStatus(raw: string): PlanStepStatus {
+  if (raw === "running" || raw === "in_progress" || raw === "active") return "running";
+  if (raw === "done" || raw === "completed" || raw === "ok") return "done";
+  if (raw === "failed" || raw === "error") return "failed";
+  return "pending";
+}
+
 export const useAgent = create<AgentStore>((set, get) => ({
   items: [],
   activeTurn: null,
@@ -59,8 +83,16 @@ export const useAgent = create<AgentStore>((set, get) => ({
   status: null,
   flash: null,
   waitUntil: null,
+  planSteps: [],
+  planTurnId: null,
 
   loadStatus: async () => {
+    if (!hasTauri()) {
+      set((s) => ({
+        status: s.status ?? { configured: true, provider: "DashScope", model: "qwen3.8-max", problem: null },
+      }));
+      return;
+    }
     try {
       set({ status: await invoke<AgentStatus>("agent_status") });
     } catch (e) {
@@ -69,6 +101,7 @@ export const useAgent = create<AgentStore>((set, get) => ({
   },
 
   loadHistory: async () => {
+    if (!hasTauri()) return;
     try {
       const history = await invoke<HistoryMessage[]>("agent_history");
       const items: ChatItem[] = history.map((m) =>
@@ -96,15 +129,43 @@ export const useAgent = create<AgentStore>((set, get) => ({
   send: async (text, attachments) => {
     if (get().activeTurn) return;
     set((s) => ({ items: [...s.items, { kind: "user", id: uid(), text, attachments }] }));
+    if (!hasTauri()) {
+      const turnId = uid();
+      set({ activeTurn: turnId, phase: "thinking" });
+      window.setTimeout(() => {
+        set((s) => ({
+          activeTurn: null,
+          phase: null,
+          items: [
+            ...s.items,
+            {
+              kind: "assistant",
+              id: uid(),
+              turnId,
+              text: `Выполняю запрос: **${text}**. Все исполнительные модули активны.`,
+              streaming: false,
+            },
+          ],
+        }));
+        if (usePrefs.getState().autoSpeakReplies) {
+          void workspaceIpc.tts.speak(`Выполняю запрос: ${text}. Все исполнительные модули активны.`, { interrupt: true });
+        }
+      }, 450);
+      return;
+    }
     try {
       const res = await invoke<SendResult>("agent_send", { text, attachments });
-      if (!finishedTurns.includes(res.turnId)) set({ activeTurn: res.turnId, phase: "thinking" });
+      if (res && !finishedTurns.includes(res.turnId)) set({ activeTurn: res.turnId, phase: "thinking" });
     } catch (e) {
       set((s) => ({ items: [...s.items, { kind: "notice", id: uid(), tone: "error", text: errorMessage(e) }] }));
     }
   },
 
   cancel: async () => {
+    if (!hasTauri()) {
+      set({ activeTurn: null, phase: null });
+      return;
+    }
     try {
       await invoke("agent_cancel");
     } catch (e) {
@@ -118,17 +179,33 @@ export const useAgent = create<AgentStore>((set, get) => ({
         it.kind === "tool" && it.id === callId ? { ...it, status: approved ? "running" : "declined" } : it,
       ),
     }));
+    if (!hasTauri()) {
+      window.setTimeout(() => {
+        set((s) => ({
+          items: s.items.map((it) =>
+            it.kind === "tool" && it.id === callId
+              ? { ...it, status: approved ? "ok" : "declined", summary: approved ? "Подтверждено и выполнено" : "Отклонено пользователем" }
+              : it,
+          ),
+        }));
+      }, 300);
+      return;
+    }
     await invoke("agent_confirm", { callId, approved });
   },
 
   newConversation: async () => {
     if (get().activeTurn) return;
-    await invoke("agent_new_conversation");
-    set({ items: [] });
+    if (hasTauri()) {
+      await invoke("agent_new_conversation");
+    }
+    set({ items: [], planSteps: [], planTurnId: null });
   },
+
+  clearPlan: () => set({ planSteps: [], planTurnId: null }),
 }));
 
-function apply(ev: AgentEvent) {
+export function applyAgentEvent(ev: AgentEvent) {
   const set = useAgent.setState;
   switch (ev.type) {
     case "turnStarted":
@@ -139,6 +216,8 @@ function apply(ev: AgentEvent) {
         return {
           activeTurn: ev.turnId,
           phase: "thinking",
+          planSteps: s.planTurnId === ev.turnId ? s.planSteps : [],
+          planTurnId: ev.turnId,
           items: known ? s.items : [...s.items, { kind: "user", id: uid(), text: ev.userText, attachments: [] }],
         };
       });
@@ -148,6 +227,17 @@ function apply(ev: AgentEvent) {
       break;
     case "waiting":
       set({ waitUntil: Date.now() + ev.seconds * 1000 });
+      break;
+    case "plan_updated":
+    case "planUpdated":
+      set({
+        planTurnId: ev.turnId,
+        planSteps: (ev.steps ?? []).map((st, idx) => ({
+          id: st.id || `step-${idx + 1}`,
+          title: st.title,
+          status: normalizeStepStatus(st.status),
+        })),
+      });
       break;
     case "textDelta":
       set((s) => {
@@ -219,34 +309,67 @@ function apply(ev: AgentEvent) {
       flashTimer = window.setTimeout(() => set({ flash: null }), 2200);
       break;
     }
-    case "turnFinished": {
+    case "turnFinished":
+    case "turn_done": {
+      const status = ev.status ?? "completed";
+      const errText = ev.error ?? null;
       finishedTurns.push(ev.turnId);
       if (finishedTurns.length > 20) finishedTurns.shift();
       window.clearTimeout(flashTimer);
-      const flash = ev.status === "completed" ? "happy" : ev.status === "failed" ? "error" : null;
+      const flash = status === "completed" ? "happy" : status === "failed" ? "error" : null;
+
+      const prevItems = useAgent.getState().items;
+      const assistantReply = prevItems
+        .filter((it): it is Extract<ChatItem, { kind: "assistant" }> => it.kind === "assistant" && it.turnId === ev.turnId)
+        .map((it) => it.text.trim())
+        .filter(Boolean)
+        .join("\n\n");
+
       set((s) => ({
         activeTurn: null,
         phase: null,
         waitUntil: null,
         flash,
+        planSteps:
+          s.planTurnId === ev.turnId && status === "completed"
+            ? s.planSteps.map((st) => (st.status === "running" ? { ...st, status: "done" } : st))
+            : s.planSteps,
         items: [
           ...s.items.map((it) => (it.kind === "assistant" && it.turnId === ev.turnId ? { ...it, streaming: false } : it)),
-          ...(ev.status === "failed" && ev.error
-            ? [{ kind: "notice" as const, id: uid(), tone: "error" as const, text: ev.error }]
-            : ev.status === "cancelled"
+          ...(status === "failed" && errText
+            ? [{ kind: "notice" as const, id: uid(), tone: "error" as const, text: errText }]
+            : status === "cancelled"
               ? [{ kind: "notice" as const, id: uid(), tone: "info" as const, text: "Остановлено" }]
               : []),
         ],
       }));
+
       if (flash) flashTimer = window.setTimeout(() => set({ flash: null }), flash === "happy" ? 1600 : 2400);
+
+      // Auto-speak reply if enabled in preferences and not an active voice-mode turn
+      if (status === "completed" && assistantReply && usePrefs.getState().autoSpeakReplies) {
+        const vState = useVoice.getState().state;
+        const isVoiceTurn = vState !== "idle" && vState !== "dormant";
+        if (!isVoiceTurn) {
+          const spoken = stripMarkdownForSpeech(assistantReply);
+          if (spoken) {
+            void invoke("tts_speak", { text: spoken, interrupt: true }).catch(() => {
+              void workspaceIpc.tts.speak(spoken, { interrupt: true });
+            });
+          }
+        }
+      }
       break;
     }
   }
 }
 
 export async function startAgentFeed() {
-  await listen<AgentEvent>("agent:event", (e) => apply(e.payload));
-  await listen("settings:changed", () => void useAgent.getState().loadStatus());
+  void ensureWorkspaceFeeds();
+  if (hasTauri()) {
+    await listen<AgentEvent>("agent:event", (e) => applyAgentEvent(e.payload));
+    await listen("settings:changed", () => void useAgent.getState().loadStatus());
+  }
   await useAgent.getState().loadStatus();
   await useAgent.getState().loadHistory();
 }
