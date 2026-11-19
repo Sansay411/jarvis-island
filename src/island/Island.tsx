@@ -22,10 +22,12 @@ import { DropView } from "./views/DropView";
 import { VoiceView, useVoiceClock } from "./views/VoiceView";
 import { FilesView } from "./views/FilesView";
 import { ClipsView } from "./views/ClipsView";
-import { Artwork, EqualizerBars, SourceBadge } from "./views/MediaCard";
 import { useMissionActive } from "./views/AgentMissionBar";
 import { closeClips, toggleClips, useClips } from "../store/clips";
-import { closeFiles, showFiles, useFiles } from "../store/files";
+import { closeFiles, runFileAction, showFiles, useFiles } from "../store/files";
+import { dropGoesToSend, isOwnDrag } from "./dragGuard";
+import { WeatherView } from "./views/WeatherView";
+import { useWeather } from "../store/weather";
 import { NoticeView } from "./views/NoticeView";
 import { useAlerts, useNextTimer } from "../store/reminders";
 import { useStopwatch } from "../store/stopwatch";
@@ -61,18 +63,6 @@ function sampleFrames(label: string): () => void {
   };
   raf = requestAnimationFrame(step);
   return () => cancelAnimationFrame(raf);
-}
-
-function useLiveClockLabel(enabled: boolean): string {
-  const fmtNow = () => new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-  const [label, setLabel] = useState(fmtNow);
-  useEffect(() => {
-    if (!enabled) return;
-    setLabel(fmtNow());
-    const id = window.setInterval(() => setLabel(fmtNow()), 15_000);
-    return () => window.clearInterval(id);
-  }, [enabled]);
-  return label;
 }
 
 function useIslandController() {
@@ -130,16 +120,37 @@ function useIslandController() {
       }),
     );
 
-    const onFileDrag = (type: string, paths: string[]) => {
+    // Physical pixels inside the island → is the cursor over «В Telegram»?
+    const overSend = (x?: number | null, y?: number | null): boolean | null => {
+      if (x == null || y == null) return null;
+      const el = document.querySelector<HTMLElement>('[data-drop-target="telegram"]');
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      const cx = x / window.devicePixelRatio;
+      const cy = y / window.devicePixelRatio;
+      return cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom;
+    };
+
+    const onFileDrag = (type: string, paths: string[], x?: number | null, y?: number | null) => {
+      // Our own drag-out passing over the island is not a drop onto it.
+      if (isOwnDrag(paths)) {
+        if (useIsland.getState().dragOver) set({ dragOver: false, dropOnSend: false });
+        return;
+      }
       if (type === "enter" || type === "over") {
         if (!useIsland.getState().dragOver) emote("surprised");
-        set({ dragOver: true });
+        set({ dragOver: true, dropOnSend: overSend(x, y) ?? useIsland.getState().dropOnSend });
       } else if (type === "leave") {
-        set({ dragOver: false });
+        set({ dragOver: false, dropOnSend: false });
       } else if (type === "drop") {
-        set({ dragOver: false });
+        const toSend = dropGoesToSend(overSend(x, y), useIsland.getState().dropOnSend);
+        set({ dragOver: false, dropOnSend: false });
         const cur = useIsland.getState();
-        if (cur.workspaceOpen) {
+        if (toSend && paths.length > 0) {
+          // The file card follows the send and shows the verified result.
+          void showFiles(paths).then(() => runFileAction("telegram", paths));
+          emote("wink");
+        } else if (cur.workspaceOpen) {
           cur.addAttachments(paths.map((path) => ({ path, name: path.split(/[\\/]/).pop() ?? path })));
         } else if (cur.hovered && cur.peekDeck === "tray" && paths.length > 0) {
           void useHub.getState().shelfAddFiles(paths);
@@ -150,11 +161,11 @@ function useIslandController() {
       }
     };
 
-    unsubs.push(on("island:file-drop", ({ type, paths }) => onFileDrag(type, paths)));
+    unsubs.push(on("island:file-drop", ({ type, paths, x, y }) => onFileDrag(type, paths, x, y)));
     if (isTauri()) {
       unsubs.push(
         getCurrentWebview().onDragDropEvent(({ payload: p }) =>
-          onFileDrag(p.type, "paths" in p ? p.paths : []),
+          onFileDrag(p.type, "paths" in p ? p.paths : [], "position" in p ? p.position.x : null, "position" in p ? p.position.y : null),
         ),
       );
     }
@@ -262,54 +273,9 @@ function voiceMood(state: VoiceState, agentMood: EyeMood | null): EyeMood {
 function moodFor(mode: IslandMode, agentMood: EyeMood | null, hovered: boolean, ttsSpeaking: boolean): EyeMood {
   if (ttsSpeaking) return "speaking";
   if (agentMood) return agentMood;
-  if (mode === "drop" || mode === "files" || mode === "notice" || mode === "clips") return "attentive";
+  if (mode === "drop" || mode === "files" || mode === "notice" || mode === "clips" || mode === "weather") return "attentive";
   if (mode === "peek" || mode === "workspace" || hovered) return "attentive";
   return "idle";
-}
-
-/** Small SVG bezel micro-notch (Reference 1 flanking satellites at y = 0). */
-function SatellitePill({
-  side,
-  w,
-  h = 28,
-  onClick,
-  title,
-  children,
-}: {
-  side: "left" | "right";
-  w: number;
-  h?: number;
-  onClick?: () => void;
-  title?: string;
-  children: React.ReactNode;
-}) {
-  const s = 8;
-  const r = 11;
-  const path = notchPath(w, h, r, s);
-  return (
-    <motion.button
-      type="button"
-      className={`island-satellite is-${side}`}
-      style={{ width: w, height: h }}
-      initial={{ opacity: 0, y: -6 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -6 }}
-      transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-      onClick={onClick}
-      title={title}
-    >
-      <svg
-        className="satellite-shape"
-        width={w + s * 2}
-        height={h}
-        style={{ left: -s }}
-        aria-hidden="true"
-      >
-        <path d={path} fill="#060608" stroke="rgba(255,255,255,0.12)" strokeWidth={0.9} />
-      </svg>
-      <div className="satellite-body">{children}</div>
-    </motion.button>
-  );
 }
 
 export function Island() {
@@ -373,8 +339,19 @@ export function Island() {
   const clockRows = useClockRows();
   const voiceClock = useVoiceClock();
   const base = resolveMode(st);
+  const weatherCard = useWeather((s) => s.card !== null);
   const mode: IslandMode =
-    base === "drop" ? "drop" : filesOpen ? "files" : base === "voice" ? "voice" : alerting ? "notice" : base;
+    base === "drop"
+      ? "drop"
+      : filesOpen
+        ? "files"
+        : weatherCard && base !== "workspace"
+          ? "weather"
+          : base === "voice"
+            ? "voice"
+            : alerting
+              ? "notice"
+              : base;
 
   const [workspaceWarm, setWorkspaceWarm] = useState(false);
   useEffect(() => {
@@ -391,6 +368,7 @@ export function Island() {
   }, [mode]);
 
   const withMedia = hasActiveMedia(media);
+  const agentThinking = useAgent((s) => Boolean(s.activeTurn));
   const jobRows = Math.min(2, useRunningJobs().length);
   const confirmPending = useAgent((s) => s.items.some((it) => it.kind === "tool" && it.status === "awaiting"));
   const showFocusBanner = st.forceFocusBanner || (focus.active && !st.focusBannerDismissed);
@@ -401,6 +379,7 @@ export function Island() {
         hasMedia: withMedia,
         hasActivity: jobRows > 0 || !!timer || stopwatch || missionActive,
         hasFocus: focus.active,
+        thinking: agentThinking,
         ttsSpeaking,
         missionActive: mode === "peek" && missionActive,
         peekDeck: st.peekDeck,
@@ -430,13 +409,11 @@ export function Island() {
       clipsH,
       !!timer,
       stopwatch,
+      agentThinking,
     ],
   );
 
-  // Reference 1 flanking bezel satellites appear alongside the Activity (`Стрик`) deck.
-  const showSatellites = mode === "peek" && !showFocusBanner && st.peekDeck === "activity";
-  const clockLabel = useLiveClockLabel(showSatellites);
-  const interactiveSpanW = showSatellites ? dims.w + 168 : dims.w;
+  const interactiveSpanW = dims.w;
 
   const lip = mode === "compact" && st.topCovered;
   const workspaceDims = dimsFor("workspace", {
@@ -468,13 +445,9 @@ export function Island() {
 
   // State-derived ambient bottom glow (zero generic gradients; strictly real state).
   const ambientGlow = useMemo(() => {
+    // Only two sources of light: JARVIS itself (amber, while it talks or
+    // works) and the cover of what is playing. Decks get no coloured wash.
     if (lip || mode === "compact") return "none";
-    if (mode === "peek" && !showFocusBanner && st.peekDeck === "activity") {
-      return "radial-gradient(88% 58% at 50% 106%, rgba(34, 197, 94, 0.28) 0%, rgba(16, 185, 129, 0.09) 54%, transparent 100%)";
-    }
-    if (mode === "peek" && (showFocusBanner || st.peekDeck === "focus") && focus.active) {
-      return "radial-gradient(85% 52% at 50% 106%, rgba(10, 132, 255, 0.22) 0%, rgba(10, 132, 255, 0.06) 52%, transparent 100%)";
-    }
     if (ttsSpeaking || mode === "voice" || missionActive) {
       return "radial-gradient(82% 50% at 50% 106%, rgba(255, 178, 63, 0.2) 0%, rgba(255, 178, 63, 0.05) 52%, transparent 100%)";
     }
@@ -493,7 +466,10 @@ export function Island() {
   const zero = useMotionValue(0);
 
   return (
-    <div className={`stage${st.visible ? "" : " is-hidden"}`}>
+    <div
+      className={`stage${st.visible ? "" : " is-hidden"}${withMedia && media?.status === "playing" ? " is-music" : ""}`}
+      style={{ ["--art" as string]: artworkRgb ?? "236, 235, 230" }}
+    >
       <motion.div
         className="island"
         style={{ width: w, height: h }}
@@ -525,42 +501,6 @@ export function Island() {
           <motion.path d={d} fill="url(#sheen)" stroke="url(#rim)" strokeWidth={1} />
         </motion.svg>
 
-        {/* Flanking bezel micro-pills (Reference 1 `b54f2700.jpg`) */}
-        <AnimatePresence>
-          {showSatellites && withMedia && (
-            <SatellitePill
-              key="sat-left"
-              side="left"
-              w={68}
-              title={`${media.title} — переключить к плееру`}
-              onClick={() => st.setDeck("nook")}
-            >
-              <div className="sat-media">
-                <div className="sat-art-wrap">
-                  <Artwork size={18} radius={5} />
-                  <SourceBadge aumid={media.sourceApp} size={10} />
-                </div>
-                <EqualizerBars playing={media.status === "playing"} />
-              </div>
-            </SatellitePill>
-          )}
-          {showSatellites && (
-            <SatellitePill
-              key="sat-right"
-              side="right"
-              w={54}
-              title={focus.active ? "Открыть Фокус" : "Текущее время · Открыть Фокус"}
-              onClick={() => st.setDeck("focus")}
-            >
-              <span className="sat-clock">
-                {focus.active
-                  ? `${Math.floor(focus.remainingSec / 60)}:${String(focus.remainingSec % 60).padStart(2, "0")}`
-                  : clockLabel}
-              </span>
-            </SatellitePill>
-          )}
-        </AnimatePresence>
-
         <motion.div className="island-clip" style={{ borderBottomLeftRadius: r, borderBottomRightRadius: r }}>
           <div className="island-ambient" style={{ background: ambientGlow }} aria-hidden="true" />
 
@@ -580,6 +520,7 @@ export function Island() {
                 {mode === "voice" && <VoiceView />}
                 {mode === "files" && <FilesView />}
                 {mode === "notice" && <NoticeView />}
+                {mode === "weather" && <WeatherView />}
                 {mode === "clips" && <ClipsView />}
               </motion.div>
             )}

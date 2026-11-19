@@ -18,6 +18,8 @@ pub const AZURE_SPEECH_KEY: &str = "JARVIS/azure-speech-key";
 pub const AZURE_SPEECH_REGION: &str = "JARVIS/azure-speech-region";
 /// ElevenLabs API key (the user's own plan).
 pub const ELEVENLABS_KEY: &str = "JARVIS/elevenlabs-key";
+/// Yandex SpeechKit: API key of a service account (role ai.speechkit-tts.user).
+pub const YANDEX_SPEECH_KEY: &str = "JARVIS/yandex-speech-key";
 
 pub fn set(target: &str, secret: &str) -> AppResult<()> {
     let target_w = HSTRING::from(target);

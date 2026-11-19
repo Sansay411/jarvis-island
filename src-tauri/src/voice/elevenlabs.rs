@@ -39,6 +39,9 @@ pub fn configured() -> bool {
     key().is_some()
 }
 
+/// Until when ElevenLabs is not asked (out of credits, bad key, rate limit).
+static REFUSED_UNTIL: parking_lot::Mutex<Option<std::time::Instant>> = parking_lot::Mutex::new(None);
+
 fn client(timeout: Duration) -> AppResult<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(4))
@@ -115,6 +118,14 @@ impl ElevenVoice {
     /// returns false to stop (the phrase was hushed).
     pub fn stream(&self, text: &str, sink: &mut dyn FnMut(&[i16]) -> bool) -> AppResult<()> {
         static WARNED: OnceLock<()> = OnceLock::new();
+        // Out of credits (or a bad key): do not ask again for every phrase —
+        // each refused request cost ~1–2 s before the local voice spoke
+        // (5.8 s to the first sound, seen 2026-11-18).
+        if let Some(until) = *REFUSED_UNTIL.lock() {
+            if std::time::Instant::now() < until {
+                return Err(AppError::platform("ElevenLabs отказал недавно — говорю локальным голосом"));
+            }
+        }
         let body = serde_json::json!({
             "text": text,
             "model_id": MODEL,
@@ -133,6 +144,14 @@ impl ElevenVoice {
             let detail = res.text().unwrap_or_default();
             if WARNED.set(()).is_ok() {
                 tracing::warn!(status = status.as_u16(), %detail, "ElevenLabs refused");
+            }
+            let pause = match status.as_u16() {
+                401 => Some(Duration::from_secs(6 * 3600)),
+                429 => Some(Duration::from_secs(60)),
+                _ => None,
+            };
+            if let Some(p) = pause {
+                *REFUSED_UNTIL.lock() = Some(std::time::Instant::now() + p);
             }
             return Err(AppError::platform(match status.as_u16() {
                 401 if detail.contains("quota") => "Кредиты ElevenLabs закончились — говорю локальным голосом".to_string(),

@@ -64,6 +64,7 @@ pub struct SettingsView {
     pub has_voice_key: bool,
     pub has_azure_key: bool,
     pub has_elevenlabs_key: bool,
+    pub has_yandex_key: bool,
     pub log_path: Option<String>,
     pub data_path: Option<String>,
 }
@@ -78,6 +79,7 @@ pub fn settings_get(app: AppHandle, state: State<'_, AppState>) -> SettingsView 
         has_voice_key: secrets::exists(secrets::VOICE_API_KEY),
         has_azure_key: crate::voice::azure::configured(),
         has_elevenlabs_key: crate::voice::elevenlabs::configured(),
+        has_yandex_key: crate::voice::yandex::configured(),
         log_path: log_dir,
         data_path: app.path().app_local_data_dir().ok().map(|p| p.display().to_string()),
     }
@@ -88,10 +90,8 @@ pub fn settings_save(app: AppHandle, state: State<'_, AppState>, settings: Setti
     let old = state.store.settings();
     state.store.save_settings(&settings)?;
     if old.launch_at_startup != settings.launch_at_startup {
-        use tauri_plugin_autostart::ManagerExt;
-        let al = app.autolaunch();
-        let res = if settings.launch_at_startup { al.enable() } else { al.disable() };
-        res.map_err(|e| AppError::platform(format!("Автозапуск: {e}")))?;
+        crate::sync_autostart(&app, settings.launch_at_startup)
+            .map_err(|e| AppError::platform(format!("Автозапуск: {e}")))?;
     }
     if old.shortcuts.workspace != settings.shortcuts.workspace
         || old.shortcuts.voice != settings.shortcuts.voice
@@ -114,6 +114,7 @@ pub enum SecretKind {
     /// Azure Speech key; `base_url` carries its region.
     Azure,
     Elevenlabs,
+    Yandex,
 }
 
 fn target(kind: &SecretKind) -> &'static str {
@@ -122,6 +123,7 @@ fn target(kind: &SecretKind) -> &'static str {
         SecretKind::Voice => secrets::VOICE_API_KEY,
         SecretKind::Azure => secrets::AZURE_SPEECH_KEY,
         SecretKind::Elevenlabs => secrets::ELEVENLABS_KEY,
+        SecretKind::Yandex => secrets::YANDEX_SPEECH_KEY,
     }
 }
 
@@ -148,6 +150,9 @@ pub fn secret_set(app: AppHandle, state: State<'_, AppState>, kind: SecretKind, 
         state.store.kv_set(ai::KEY_ORIGIN, &ai::origin_of(&url))?;
     }
     secrets::set(target(&kind), v)?;
+    if matches!(kind, SecretKind::Yandex) {
+        crate::voice::yandex::forget_refusal();
+    }
     let _ = app.emit("settings:changed", ());
     Ok(())
 }

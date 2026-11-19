@@ -1,10 +1,79 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type PointerEvent, type WheelEvent } from "react";
 import { Icon } from "../../ui/Icon";
 import { errorMessage, ipc, isTauri } from "../../lib/ipc";
 import type { MediaAction, MediaState } from "../../lib/types";
-import { useSystem } from "../../store/system";
+import { getLastTrack, onLastTrack, useSystem } from "../../store/system";
 
-export type MediaSourceKind = "spotify" | "apple" | "yandex" | "telegram" | "youtube" | "browser" | "generic";
+export type MediaSourceKind =
+  | "spotify"
+  | "apple"
+  | "yandex"
+  | "telegram"
+  | "youtube"
+  | "soundcloud"
+  | "vk"
+  | "twitch"
+  | "browser"
+  | "generic";
+
+const SITE_KINDS: Record<string, MediaSourceKind> = {
+  youtube: "youtube",
+  yandex: "yandex",
+  spotify: "spotify",
+  soundcloud: "soundcloud",
+  vk: "vk",
+  twitch: "twitch",
+};
+
+/** What plays: the site when a browser told us (window title), else the app. */
+export function mediaSourceKind(aumid: string, site?: string): MediaSourceKind {
+  const bySite = site ? SITE_KINDS[site] : undefined;
+  return bySite ?? detectSourceKind(aumid);
+}
+
+/** Readable source name, the site first («YouTube», not «Chrome»). */
+export function mediaSourceName(aumid: string, site?: string): string {
+  const kind = mediaSourceKind(aumid, site);
+  if (kind === "soundcloud") return "SoundCloud";
+  if (kind === "vk") return "VK Музыка";
+  if (kind === "twitch") return "Twitch";
+  if (site && SITE_KINDS[site]) {
+    if (kind === "yandex") return "Яндекс Музыка";
+    if (kind === "spotify") return "Spotify";
+    if (kind === "youtube") return "YouTube";
+  }
+  return sourceLabel(aumid);
+}
+
+// The playing app's real icon, asked from Windows once per app id.
+const iconCache = new Map<string, string | null>();
+const iconWaiters = new Map<string, Promise<string | null>>();
+export function useAppIcon(aumid: string | undefined): string | null {
+  const id = aumid ?? "";
+  const [icon, setIcon] = useState<string | null>(() => iconCache.get(id) ?? null);
+  useEffect(() => {
+    if (!id) return setIcon(null);
+    if (iconCache.has(id)) return setIcon(iconCache.get(id) ?? null);
+    let alive = true;
+    let p = iconWaiters.get(id);
+    if (!p) {
+      p = ipc.media
+        .appIcon(id)
+        .catch(() => null)
+        .then((v) => {
+          iconCache.set(id, v);
+          iconWaiters.delete(id);
+          return v;
+        });
+      iconWaiters.set(id, p);
+    }
+    void p.then((v) => alive && setIcon(v));
+    return () => {
+      alive = false;
+    };
+  }, [id]);
+  return icon;
+}
 
 export function detectSourceKind(aumid: string): MediaSourceKind {
   const s = (aumid || "").toLowerCase();
@@ -47,10 +116,25 @@ export function sourceLabel(aumid: string): string {
   return tail.charAt(0).toUpperCase() + tail.slice(1);
 }
 
+/** Yandex Music's yellow burst, for when Windows has no icon to give. */
+const STARBURST =
+  "M8.00 0.80 L8.46 6.16 L10.35 3.59 L9.26 6.58 L13.57 4.10 L9.76 7.27 L12.53 7.20 L9.90 8.13 L14.09 9.98 L9.58 9.06 L11.34 11.98 L8.80 9.72 L9.22 14.89 L7.83 9.89 L6.36 12.51 L6.94 9.58 L3.39 12.15 L6.31 8.86 L2.72 9.12 L6.10 7.87 L1.42 5.61 L6.42 6.94 L4.79 4.43 L7.32 6.23Z";
+
 /** Hardware squircle app badge anchored on album art (NotchNook Refs 2, 3, 4). */
-export function SourceBadge({ aumid, size = 19 }: { aumid: string; size?: number }) {
-  const kind = detectSourceKind(aumid);
-  const label = sourceLabel(aumid);
+export function SourceBadge({ aumid, site, size = 19 }: { aumid: string; site?: string; size?: number }) {
+  const kind = mediaSourceKind(aumid, site);
+  const label = mediaSourceName(aumid, site);
+  const appIcon = useAppIcon(aumid);
+  // A known site wins (YouTube in Chrome shows YouTube, not Chrome); for an
+  // app the real icon Windows has for it; the drawn marks are the fallback.
+  const siteKnown = !!(site && SITE_KINDS[site]);
+  if (!siteKnown && appIcon) {
+    return (
+      <span className="source-badge is-app-icon" style={{ width: size, height: size }} title={label || "Медиаплеер"} aria-hidden="true">
+        <img src={appIcon} alt="" draggable={false} />
+      </span>
+    );
+  }
   return (
     <span className={`source-badge is-${kind}`} style={{ width: size, height: size }} title={label || "Медиаплеер"} aria-hidden="true">
       {kind === "spotify" && (
@@ -68,8 +152,27 @@ export function SourceBadge({ aumid, size = 19 }: { aumid: string; size?: number
         </svg>
       )}
       {kind === "yandex" && (
-        <svg viewBox="0 0 16 16" width={size * 0.68} height={size * 0.68} fill="none">
-          <path d="M8 2.4v11.2M3.2 5.2l9.6 5.6M12.8 5.2 3.2 10.8" stroke="#08080a" strokeWidth="1.55" strokeLinecap="round" />
+        <svg viewBox="0 0 16 16" width={size * 0.78} height={size * 0.78}>
+          <path d={STARBURST} fill="#ffd21f" />
+        </svg>
+      )}
+      {kind === "soundcloud" && (
+        <svg viewBox="0 0 16 16" width={size * 0.72} height={size * 0.72} fill="#fff">
+          <path d="M6.6 5.4c.6-.5 1.4-.8 2.3-.8 1.8 0 3.2 1.3 3.4 3 .2-.1.5-.1.7-.1 1 0 1.8.8 1.8 1.8s-.8 1.8-1.8 1.8H6.6V5.4Z" />
+          <rect x="5.1" y="6.4" width="0.9" height="4.7" rx=".45" />
+          <rect x="3.6" y="7.2" width="0.9" height="3.9" rx=".45" />
+          <rect x="2.1" y="8.2" width="0.9" height="2.9" rx=".45" />
+        </svg>
+      )}
+      {kind === "vk" && (
+        <svg viewBox="0 0 16 16" width={size * 0.7} height={size * 0.7} fill="#fff">
+          <path d="M8.5 11.6C4.6 11.6 2.4 8.9 2.3 4.5h2c.1 3.2 1.5 4.6 2.6 4.9V4.5h1.9v2.8c1.1-.1 2.3-1.4 2.7-2.8h1.9c-.3 1.7-1.6 3-2.5 3.5.9.4 2.4 1.6 2.9 3.6h-2.1c-.4-1.4-1.6-2.4-2.9-2.6v2.6h-.3Z" />
+        </svg>
+      )}
+      {kind === "twitch" && (
+        <svg viewBox="0 0 16 16" width={size * 0.66} height={size * 0.66} fill="#fff">
+          <path d="M4 2.5 3 5v8h2.6v1.5h1.5L8.6 13h2.2L13 10.8V2.5H4Zm8 7.8-1.5 1.5H8.2l-1.3 1.3v-1.3H5V3.5h7v6.8Z" />
+          <path d="M9.6 5.2h1v3h-1zM7 5.2h1v3H7z" />
         </svg>
       )}
       {kind === "telegram" && (
@@ -77,9 +180,15 @@ export function SourceBadge({ aumid, size = 19 }: { aumid: string; size?: number
           <path d="M12.9 3.6 2.8 7.5l3.3 1.2 1.3 3.5 2-1.9 2.5 1.8 1-8.5Z" fill="#fff" />
         </svg>
       )}
-      {(kind === "youtube" || kind === "browser") && (
-        <svg viewBox="0 0 16 16" width={size * 0.64} height={size * 0.64} fill="none">
-          <path d="M6 4.6v6.8L11.6 8 6 4.6Z" fill="#fff" />
+      {kind === "youtube" && (
+        <svg viewBox="0 0 16 16" width={size * 0.6} height={size * 0.6} fill="none">
+          <path d="M6.2 5v6l5-3-5-3Z" fill="#fff" />
+        </svg>
+      )}
+      {kind === "browser" && (
+        <svg viewBox="0 0 16 16" width={size * 0.66} height={size * 0.66} fill="none" stroke="#fff" strokeWidth="1.2">
+          <circle cx="8" cy="8" r="5.4" />
+          <path d="M2.6 8h10.8M8 2.6c1.6 1.5 2.3 3.3 2.3 5.4S9.6 11.9 8 13.4C6.4 11.9 5.7 10.1 5.7 8S6.4 4.1 8 2.6Z" />
         </svg>
       )}
       {kind === "generic" && (
@@ -117,26 +226,40 @@ export function livePosition(m: MediaState): number | null {
   return Math.min(m.durationMs, m.positionMs + Math.max(0, drift));
 }
 
-export function Artwork({ size, radius, showBadge = false }: { size: number; radius: number; showBadge?: boolean }) {
+export function Artwork({
+  size,
+  radius,
+  showBadge = false,
+  nudge = null,
+}: {
+  size: number;
+  radius: number;
+  showBadge?: boolean;
+  /** A short push sideways when the user skips a track. */
+  nudge?: "next" | "previous" | null;
+}) {
   const media = useSystem((s) => s.media);
   const art = useSystem((s) => s.artwork);
   const url = art && media && art.trackKey === media.trackKey ? art.dataUrl : null;
-  const dim = media?.status !== "playing";
+  const playing = media?.status === "playing";
+  const appIcon = useAppIcon(media?.sourceApp);
 
   return (
-    <div className="artwork-wrap" style={{ width: size, height: size }}>
-      <div
-        className="artwork"
-        style={{ width: size, height: size, borderRadius: radius, opacity: dim ? 0.68 : 1 }}
-        aria-hidden="true"
-      >
+    <div
+      className={`artwork-wrap${playing ? " is-playing" : " is-paused"}${nudge ? ` is-nudge-${nudge}` : ""}`}
+      style={{ width: size, height: size, ["--r" as string]: `${radius}px` }}
+    >
+      <div className="artwork" style={{ width: size, height: size, borderRadius: radius }} aria-hidden="true">
         {url ? (
-          <img src={url} alt="" draggable={false} />
+          <img key={media?.trackKey} className="art-swap" src={url} alt="" draggable={false} />
+        ) : appIcon && size >= 28 ? (
+          // No cover from the app: its own logo, centred, instead of a note.
+          <img className="artwork-app-icon" src={appIcon} alt="" draggable={false} style={{ width: "46%", height: "46%" }} />
         ) : (
           <Icon name="music" size={Math.max(11, Math.round(size * 0.36))} />
         )}
       </div>
-      {showBadge && media && <SourceBadge aumid={media.sourceApp} size={Math.max(16, Math.round(size * 0.34))} />}
+      {showBadge && media && <SourceBadge aumid={media.sourceApp} site={media.site} size={Math.max(16, Math.round(size * 0.34))} />}
     </div>
   );
 }
@@ -216,6 +339,8 @@ export function MediaCard({ media }: { media: MediaState }) {
   const [, tick] = useState(0);
   const [busy, setBusy] = useState<MediaAction | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [nudge, setNudge] = useState<"next" | "previous" | null>(null);
+  const wheelVolume = useWheelVolume();
 
   useEffect(() => {
     if (media.status !== "playing") return;
@@ -251,6 +376,10 @@ export function MediaCard({ media }: { media: MediaState }) {
       });
       return;
     }
+    if (action === "next" || action === "previous") {
+      setNudge(action);
+      window.setTimeout(() => setNudge(null), 420);
+    }
     setBusy(action);
     setError(null);
     try {
@@ -263,13 +392,15 @@ export function MediaCard({ media }: { media: MediaState }) {
     }
   };
 
-  const subtitle = error ?? ([media.artist, media.album || sourceLabel(media.sourceApp)].filter(Boolean).join(" · ") || sourceLabel(media.sourceApp));
+  const source = mediaSourceName(media.sourceApp, media.site);
+  const subtitle = error ?? ([media.artist, media.album || source].filter(Boolean).join(" · ") || source);
 
   return (
-    <div className="nook-media">
+    <div className={`nook-media is-live${playing ? " is-playing" : ""}`} onWheel={wheelVolume.onWheel}>
+      {wheelVolume.pill}
       <div className="nook-media-top">
-        <Artwork size={54} radius={13} showBadge />
-        <div className="nook-media-info">
+        <Artwork size={68} radius={14} showBadge nudge={nudge} />
+        <div className="nook-media-info" key={media.trackKey}>
           <div className="media-title-row">
             <div className="media-title" title={media.title}>
               {media.title || "Без названия"}
@@ -313,4 +444,83 @@ export function MediaCard({ media }: { media: MediaState }) {
       ) : null}
     </div>
   );
+}
+
+/** Nothing is playing: the player stays with the last track Windows showed
+ *  (dimmed, ready to go on). «Продолжить» asks that player to play again —
+ *  only the system player, never a site in the browser. */
+export function IdlePlayer() {
+  const last = useSyncExternalStore(onLastTrack, getLastTrack);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const go = async () => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const out = await ipc.media.control("play");
+      if (out.state.available) useSystem.setState({ media: out.state });
+      else setNote("Плеер закрыт — включите музыку в нём");
+    } catch (e) {
+      setNote(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // A slim row, never a big empty card: the last track if Windows showed one,
+  // otherwise just a quiet «музыка» toggle.
+  const sub = note ?? (last ? last.artist || sourceLabel(last.sourceApp) : null);
+  return (
+    <button
+      type="button"
+      className="idle-track"
+      disabled={busy}
+      onClick={() => void go()}
+      title={last ? "Продолжить" : "Включить музыку"}
+    >
+      <span className="idle-track-art" aria-hidden="true">
+        {last?.art ? <img src={last.art} alt="" draggable={false} /> : <Icon name="music" size={12} />}
+      </span>
+      <span className="idle-track-text">
+        <span className="idle-track-title">{last ? last.title || "Без названия" : "Музыка"}</span>
+        {sub && <span className="idle-track-sub">{sub}</span>}
+      </span>
+      <span className="idle-track-play" aria-hidden="true">
+        <Icon name="play" size={10} />
+      </span>
+    </button>
+  );
+}
+
+/** Wheel over the player = system volume, with a small pill that says how loud. */
+function useWheelVolume() {
+  const volume = useSystem((s) => s.audio?.volume ?? null);
+  const setVolume = useSystem((s) => s.setVolume);
+  const [shown, setShown] = useState(false);
+  const hide = useRef<number | undefined>(undefined);
+  const acc = useRef(0);
+  const onWheel = (e: WheelEvent<HTMLDivElement>) => {
+    if (volume === null) return;
+    acc.current += e.deltaY;
+    if (Math.abs(acc.current) < 40) return;
+    const step = acc.current < 0 ? 4 : -4;
+    acc.current = 0;
+    void setVolume(volume + step);
+    setShown(true);
+    window.clearTimeout(hide.current);
+    hide.current = window.setTimeout(() => setShown(false), 1100);
+  };
+  useEffect(() => () => window.clearTimeout(hide.current), []);
+  const v = volume ?? 0;
+  const pill = (
+    <div className={`media-volume-pill${shown ? " is-shown" : ""}`} aria-hidden={!shown}>
+      <Icon name={v === 0 ? "muted" : "volume"} size={12} />
+      <span className="media-volume-bar">
+        <span style={{ width: `${v}%` }} />
+      </span>
+      <span className="media-volume-num">{v}</span>
+    </div>
+  );
+  return { onWheel, pill };
 }

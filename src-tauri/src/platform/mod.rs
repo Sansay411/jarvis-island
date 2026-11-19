@@ -3,6 +3,7 @@
 //! [`blocking`] so COM is initialised on the worker thread and the async
 //! runtime is never stalled.
 
+pub mod appicon;
 pub mod apps;
 pub mod audio;
 pub mod brightness;
@@ -12,6 +13,7 @@ pub mod clipboard;
 pub mod clipwatch;
 pub mod com;
 pub mod display;
+pub mod dragout;
 pub mod drop_target;
 pub mod input;
 pub mod island;

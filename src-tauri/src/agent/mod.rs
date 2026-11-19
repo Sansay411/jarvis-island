@@ -549,7 +549,7 @@ impl Agent {
 
     async fn run_turn(self: Arc<Self>, turn: Turn, conversation_id: String, text: String, client: OpenAiCompatible) {
         let started = Instant::now();
-        self.emit(AgentEvent::TurnStarted { turn_id: turn.id.clone(), conversation_id: conversation_id.clone(), user_text: text.clone() });
+        self.emit(AgentEvent::TurnStarted { turn_id: turn.id.clone(), conversation_id: conversation_id.clone(), user_text: text.clone(), voice: turn.voice });
         let persist = turn.settings.privacy.store_history;
         let store = self.state().store.clone();
         if persist {
@@ -616,6 +616,10 @@ impl Agent {
     async fn turn_loop(&self, turn: &Turn, conversation_id: &str, client: &OpenAiCompatible, steps: &mut u32) -> AppResult<()> {
         let mut specs = self.registry.specs();
         if !client.supports_web() { specs.retain(|s| !matches!(s.name.as_str(), "web_search" | "web_fetch")); }
+        // A spoken turn is already said aloud by the voice pipeline; a second
+        // speaker (`speak_aloud` plays on its own output) made two voices talk
+        // at once (log 2026-11-18 16:03:55).
+        if turn.voice { specs.retain(|s| s.name != "speak_aloud"); }
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
         // Gathered once: the same text on every step keeps the cache warm.
         let turn_context = prompt::turn_context(&turn.settings, &self.state().history);

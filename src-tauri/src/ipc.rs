@@ -75,6 +75,11 @@ pub async fn media_artwork() -> AppResult<media::ArtworkEvent> {
 }
 
 #[tauri::command]
+pub async fn media_app_icon(aumid: String) -> AppResult<Option<String>> {
+    platform::blocking(move || Ok(platform::appicon::app_icon(&aumid))).await
+}
+
+#[tauri::command]
 pub async fn media_control(action: media::MediaAction) -> AppResult<media::ControlOutcome> {
     platform::blocking(move || media::control(action)).await
 }

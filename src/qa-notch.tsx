@@ -18,6 +18,40 @@ import { EMPTY_FOCUS, localDateIso, useHub } from "./store/hub";
 import { useTts } from "./store/tts";
 import { useVoice, outputLevel } from "./store/voice";
 import { useFiles } from "./store/files";
+import { useGithub } from "./store/github";
+import { useAgent } from "./store/agent";
+import { useWeather, type Weather } from "./store/weather";
+import { primeShelfThumbs } from "./island/shelfThumbs";
+
+const SAMPLE_WEATHER: Weather = {
+  place: { city: "Караганда", region: "Карагандинская область", country: "Казахстан", lat: 49.8, lon: 73.1, approximate: true },
+  temp: -1.3,
+  feels: -5.2,
+  kind: "clear",
+  text: "Ясно",
+  isDay: false,
+  wind: 2.2,
+  humidity: 81,
+  hours: [
+    { time: "19:00", temp: -2, kind: "clear", precip: 0 },
+    { time: "21:00", temp: -3, kind: "clear", precip: 0 },
+    { time: "23:00", temp: -4, kind: "partly", precip: 0 },
+    { time: "01:00", temp: -5, kind: "cloud", precip: 10 },
+    { time: "03:00", temp: -5, kind: "snow", precip: 40 },
+    { time: "05:00", temp: -6, kind: "snow", precip: 60 },
+  ],
+  today: { max: 3, min: -6, kind: "clear", text: "Ясно", precip: 0, wind: 4, sunrise: "08:01", sunset: "16:40" },
+  tomorrow: { max: 4, min: -5, kind: "cloud", text: "Пасмурно", precip: 20, wind: 7, sunrise: "08:03", sunset: "16:39" },
+  tomorrowHours: [
+    { time: "06:00", temp: -5, kind: "cloud", precip: 0 },
+    { time: "09:00", temp: -3, kind: "cloud", precip: 10 },
+    { time: "12:00", temp: 2, kind: "partly", precip: 10 },
+    { time: "15:00", temp: 4, kind: "cloud", precip: 20 },
+    { time: "18:00", temp: 0, kind: "cloud", precip: 10 },
+    { time: "21:00", temp: -2, kind: "cloud", precip: 0 },
+  ],
+};
+import type { GithubState } from "./lib/types";
 import type { ActivityDay, ActivityHeatmap, ShelfItem, TaskItem } from "./lib/types";
 
 type PresetId =
@@ -27,10 +61,18 @@ type PresetId =
   | "focus-banner"
   | "focus-deck"
   | "tray"
+  | "tray-empty"
   | "activity"
+  | "github-connect"
+  | "thinking"
+  | "weather"
+  | "weather-tomorrow"
+  | "empty-nook"
+  | "empty-focus"
   | "tts"
   | "voice"
   | "drop"
+  | "drop-send"
   | "files";
 
 function makeCoverArtDataUrl(hue: "ocean" | "crimson" | "gold"): string {
@@ -118,9 +160,63 @@ function buildSampleTasks(): TaskItem[] {
   ];
 }
 
+/** QA-only preview pictures for shelf tiles (canvas gradients). */
+function qaThumb(a: string, b: string, label: string): string {
+  const c = document.createElement("canvas");
+  c.width = 192;
+  c.height = 192;
+  const g = c.getContext("2d")!;
+  const grad = g.createLinearGradient(0, 0, 192, 192);
+  grad.addColorStop(0, a);
+  grad.addColorStop(1, b);
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 192, 192);
+  g.fillStyle = "rgba(255,255,255,0.85)";
+  g.font = "600 22px sans-serif";
+  g.fillText(label, 18, 44);
+  return c.toDataURL("image/png");
+}
+
 function buildSampleShelf(): ShelfItem[] {
   const nowIso = new Date().toISOString();
+  primeShelfThumbs({
+    "C:\\Users\\-pin\\Pictures\\Rocks.png": qaThumb("#6aa7d8", "#2c4a63", "Tahoe"),
+    "C:\\Users\\-pin\\Videos\\demo-island.mp4": qaThumb("#3b2a1c", "#0e0e10", "▶ 0:22"),
+  });
   return [
+    {
+      id: "qa-s0",
+      kind: "file",
+      label: "Rocks.png",
+      value: "C:\\Users\\-pin\\Pictures\\Rocks.png",
+      subtitle: "Pictures\\Rocks.png",
+      sizeBytes: 1_204_000,
+      exists: true,
+      pinned: false,
+      createdAt: nowIso,
+    },
+    {
+      id: "qa-s4",
+      kind: "file",
+      label: "demo-island.mp4",
+      value: "C:\\Users\\-pin\\Videos\\demo-island.mp4",
+      subtitle: "Videos\\demo-island.mp4",
+      sizeBytes: 9_400_000,
+      exists: true,
+      pinned: false,
+      createdAt: nowIso,
+    },
+    {
+      id: "qa-s5",
+      kind: "file",
+      label: "Отчёт_за_ноябрь_финальный.pdf",
+      value: "C:\\Users\\-pin\\Desktop\\Отчёт_за_ноябрь_финальный.pdf",
+      subtitle: "Desktop",
+      sizeBytes: 320_000,
+      exists: false,
+      pinned: false,
+      createdAt: nowIso,
+    },
     {
       id: "qa-s1",
       kind: "file",
@@ -155,6 +251,53 @@ function buildSampleShelf(): ShelfItem[] {
       createdAt: nowIso,
     },
   ];
+}
+
+function buildSampleGithub(): GithubState {
+  const today = new Date();
+  const days = [];
+  let total = 0;
+  for (let i = 370; i >= 0; i--) {
+    const dt = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
+    const seed = (i * 37 + 13) % 19;
+    const active = i < 6 || (seed > 6 && dt.getDay() !== 0 && dt.getDay() !== 6);
+    const count = active ? (i < 6 ? 3 + (i % 4) : seed % 9) : 0;
+    total += count;
+    days.push({ date: localDateIso(dt), count, level: count === 0 ? 0 : count <= 2 ? 1 : count <= 4 ? 2 : count <= 6 ? 3 : 4 });
+  }
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const ctx = c.getContext("2d");
+  if (ctx) {
+    const g = ctx.createLinearGradient(0, 0, 64, 64);
+    g.addColorStop(0, "#3a3f4a");
+    g.addColorStop(1, "#14161b");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 64, 64);
+    ctx.fillStyle = "#c9ccd3";
+    ctx.beginPath();
+    ctx.arc(32, 25, 11, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(32, 60, 21, 17, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  return {
+    login: "danila-dev",
+    activity: {
+      login: "danila-dev",
+      name: "Данила",
+      avatar: c.toDataURL("image/png"),
+      profileUrl: "https://github.com/danila-dev",
+      total,
+      currentStreak: 6,
+      longestStreak: 14,
+      days,
+      source: "gh",
+      fetchedAt: new Date().toISOString(),
+    },
+    error: null,
+  };
 }
 
 function buildSampleHeatmap(): ActivityHeatmap {
@@ -205,10 +348,18 @@ const PRESETS: Array<{ id: PresetId; label: string }> = [
   { id: "focus-banner", label: "4. Hover: Фокус-баннер (Needt)" },
   { id: "focus-deck", label: "5. Deck: Фокус и задачи (Needt)" },
   { id: "tray", label: "6. Deck: Полка (Tray)" },
-  { id: "activity", label: "7. Deck: Стрик (Reigne)" },
+  { id: "tray-empty", label: "6b. Полка пустая" },
+  { id: "activity", label: "7. Deck: Стрик (GitHub)" },
+  { id: "github-connect", label: "7b. Стрик: подключить GitHub" },
+  { id: "thinking", label: "2b. Думает (компакт)" },
+  { id: "weather", label: "12. Погода (карточка)" },
+  { id: "weather-tomorrow", label: "12б. Погода на завтра" },
+  { id: "empty-nook", label: "3b. Обзор: без музыки и задач" },
+  { id: "empty-focus", label: "5b. Фокус: без задач" },
   { id: "tts", label: "8. Озвучка TTS (Живые глаза)" },
   { id: "voice", label: "9. Голосовой диалог" },
   { id: "drop", label: "10. Сброс файлов (Drop)" },
+  { id: "drop-send", label: "10b. Сброс над «В Telegram»" },
   { id: "files", label: "11. Действия с файлом (+ На полку)" },
 ];
 
@@ -262,7 +413,7 @@ function QaHarness() {
     // Seed baseline Hub data for realistic inspection.
     useHub.setState({
       tasks: buildSampleTasks(),
-      shelf: buildSampleShelf(),
+      shelf: id === "tray-empty" ? [] : buildSampleShelf(),
       activity: buildSampleHeatmap(),
       missionSteps: [],
       fullControl: id === "focus-deck" || id === "activity",
@@ -281,7 +432,50 @@ function QaHarness() {
       minutesToday: 75,
     };
 
+    useAgent.setState(
+      id === "thinking"
+        ? {
+            activeTurn: "qa-turn",
+            phase: "acting",
+            items: [{ kind: "tool", id: "qa-tool", turnId: "qa-turn", tool: "web_search", title: "Ищу погоду на завтра", status: "running", args: {} }],
+          }
+        : { activeTurn: null, phase: null, items: [] },
+    );
+    useWeather.setState({ card: id === "weather" ? SAMPLE_WEATHER : id === "weather-tomorrow" ? { ...SAMPLE_WEATHER, focus: "tomorrow" } : null, here: SAMPLE_WEATHER, loadedAt: Date.now() });
+    useGithub.setState({ state: id === "github-connect" ? { login: null, activity: null, error: null } : buildSampleGithub(), loading: false, formError: null });
+
     switch (id) {
+      case "weather":
+      case "weather-tomorrow":
+        useSystem.setState({ media: null, artwork: null });
+        useHub.setState({ focus: EMPTY_FOCUS });
+        useIsland.setState({ hovered: false, dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: false });
+        break;
+
+      case "thinking":
+        useSystem.setState({ media: null, artwork: null });
+        useHub.setState({ focus: EMPTY_FOCUS });
+        useIsland.setState({ hovered: false, dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: false });
+        break;
+
+      case "github-connect":
+        useSystem.setState({ media: null, artwork: null });
+        useHub.setState({ focus: EMPTY_FOCUS });
+        useIsland.setState({ hovered: true, peekDeck: "activity", dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: true });
+        break;
+
+      case "empty-nook":
+        useSystem.setState({ media: null, artwork: null });
+        useHub.setState({ focus: EMPTY_FOCUS, tasks: [] });
+        useIsland.setState({ hovered: true, peekDeck: "nook", dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: true });
+        break;
+
+      case "empty-focus":
+        useSystem.setState({ media: null, artwork: null });
+        useHub.setState({ focus: EMPTY_FOCUS, tasks: [] });
+        useIsland.setState({ hovered: true, peekDeck: "focus", dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: true });
+        break;
+
       case "compact":
         useSystem.setState({ media: null, artwork: null });
         useHub.setState({ focus: EMPTY_FOCUS });
@@ -356,6 +550,7 @@ function QaHarness() {
         break;
 
       case "tray":
+      case "tray-empty":
         seedMedia(srcIndex, true);
         useHub.setState({ focus: EMPTY_FOCUS });
         useIsland.setState({
@@ -429,9 +624,11 @@ function QaHarness() {
         break;
 
       case "drop":
+      case "drop-send":
         useIsland.setState({
           hovered: true,
           dragOver: true,
+          dropOnSend: id === "drop-send",
           voiceOpen: false,
           workspaceOpen: false,
           clipsOpen: false,

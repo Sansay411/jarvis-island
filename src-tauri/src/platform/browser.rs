@@ -64,7 +64,18 @@ fn uia() -> AppResult<IUIAutomation> {
 /// Browser windows in Z-order (most recently used first), optionally
 /// filtered by browser name/process.
 pub fn browser_windows(which: Option<&str>) -> Vec<WindowInfo> {
-    let want = which.map(|w| w.to_lowercase());
+    // The model names browsers either way: «yandex» for «Яндекс Браузер»
+    // found nothing on 2026-11-18.
+    let want = which.map(|w| {
+        let w = w.to_lowercase();
+        match w.as_str() {
+            "yandex" | "яндекс" | "yandex browser" | "яндекс.браузер" => "browser.exe".to_string(),
+            "хром" | "google chrome" => "chrome".to_string(),
+            "эдж" | "microsoft edge" => "edge".to_string(),
+            "файрфокс" | "mozilla firefox" => "firefox".to_string(),
+            _ => w,
+        }
+    });
     winmgr::list_windows()
         .into_iter()
         .filter(|w| {
@@ -190,16 +201,60 @@ pub fn switch_tab(hwnd: i64, query: Option<&str>, index: Option<usize>) -> AppRe
     state(hwnd)
 }
 
-pub fn close_tab(hwnd: i64, query: Option<&str>, index: Option<usize>) -> AppResult<(String, BrowserState)> {
+/// The tab's own close button: named «Закрыть»/«Close» where the browser
+/// names it (Yandex puts a sound or group button in the tab too), else the
+/// last button, as Chrome and Edge lay it out.
+fn close_button(u: &IUIAutomation, tab: &IUIAutomationElement) -> AppResult<IUIAutomationElement> {
+    let buttons = find_all(u, tab, UIA_ButtonControlTypeId.0)?;
+    let named = buttons.iter().find(|b| {
+        let n = unsafe { b.CurrentName() }.map(|s| s.to_string().to_lowercase()).unwrap_or_default();
+        n.contains("закрыть") || n.contains("close")
+    });
+    named.cloned().or_else(|| buttons.last().cloned()).ok_or_else(|| AppError::unsupported("У вкладки нет кнопки закрытия"))
+}
+
+fn press(e: &IUIAutomationElement) -> AppResult<()> {
+    unsafe {
+        if let Ok(p) = e.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId) {
+            if p.Invoke().is_ok() {
+                return Ok(());
+            }
+        }
+        e.GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(UIA_LegacyIAccessiblePatternId)?.DoDefaultAction()?;
+    }
+    Ok(())
+}
+
+/// How many tabs with this exact title the window has.
+fn count_titled(hwnd: i64, name: &str) -> Option<usize> {
+    state(hwnd).ok().map(|s| s.tabs.iter().filter(|t| t.title == name).count())
+}
+
+/// The closed tab's title, whether it is verified gone, and the window now.
+pub fn close_tab(hwnd: i64, query: Option<&str>, index: Option<usize>) -> AppResult<(String, bool, BrowserState)> {
+    // A minimised Chromium window hides its tab strip from UI Automation.
+    if winmgr::describe(winmgr::to_hwnd(hwnd)).is_some_and(|w| w.state == "minimized") {
+        let _ = winmgr::focus(hwnd);
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
     let u = uia()?;
     let (tab, name) = find_tab(&u, hwnd, query, index)?;
-    unsafe {
-        let buttons = find_all(&u, &tab, UIA_ButtonControlTypeId.0)?;
-        let close = buttons.into_iter().last().ok_or_else(|| AppError::unsupported("У вкладки нет кнопки закрытия"))?;
-        close.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)?.Invoke()?;
-    }
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    Ok((name, state(hwnd)?))
+    let before = count_titled(hwnd, &name).unwrap_or(1);
+    press(&close_button(&u, &tab)?)?;
+    // Chromium animates the tab away: the strip still lists it for a moment.
+    // Reading it once after 300 ms reported a closed tab as open (2026-11-18),
+    // and the model then pressed Ctrl+W blindly.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    let closed = loop {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        if count_titled(hwnd, &name).is_some_and(|n| n < before) {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+    };
+    Ok((name, closed, state(hwnd)?))
 }
 
 /// Visible text of the active page (Document element's Text pattern).
@@ -220,5 +275,27 @@ pub fn page_text(hwnd: i64, max_chars: usize) -> AppResult<String> {
             }
         }
         Err(AppError::unsupported("Браузер не отдал текст страницы через UI Automation"))
+    }
+}
+
+#[cfg(test)]
+mod live {
+    /// `cargo test --lib live_browser_tabs -- --ignored --nocapture`: every
+    /// browser window with its tabs (titles as UI Automation reports them).
+    #[test]
+    #[ignore]
+    fn live_browser_tabs() {
+        crate::platform::com::ensure_mta();
+        for w in super::browser_windows(None) {
+            println!("window {} {} '{}' state={}", w.hwnd, w.process, w.title, w.state);
+            match super::state(w.hwnd) {
+                Ok(s) => {
+                    for t in s.tabs {
+                        println!("  tab {} sel={} '{}'", t.index, t.selected, t.title);
+                    }
+                }
+                Err(e) => println!("  error {e}"),
+            }
+        }
     }
 }

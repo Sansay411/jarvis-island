@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ActivityHeatmap,
+  GithubState,
   AppErrorPayload,
   ArtworkEvent,
   AudioState,
@@ -68,6 +69,9 @@ export const ipc = {
   media: {
     get: () => invoke<MediaState>("media_get"),
     artwork: () => invoke<ArtworkEvent>("media_artwork"),
+    /** The playing app's own icon as Windows draws it (PNG data URL). */
+    appIcon: (aumid: string) =>
+      isTauri() ? invoke<string | null>("media_app_icon", { aumid }) : Promise.resolve<string | null>(null),
     control: (action: MediaAction) => invoke<MediaControlOutcome>("media_control", { action }),
     seek: (positionMs: number) =>
       isTauri() ? invoke<void>("media_seek", { positionMs: Math.max(0, Math.round(positionMs)) }) : noopAsync(),
@@ -83,6 +87,9 @@ export const ipc = {
     stop: () => invoke<void>("tts_stop"),
     status: () => invoke<TtsStatePayload>("tts_status"),
     benchmark: (voice?: string | null) => invoke<TtsBenchResult>("tts_benchmark", { voice: voice ?? null }),
+  },
+  weather: {
+    get: (place?: string) => invoke<import("../store/weather").Weather>("weather_get", { place: place ?? null }),
   },
   hub: {
     tasksList: () => invoke<TaskItem[]>("hub_tasks_list"),
@@ -115,8 +122,12 @@ export const ipc = {
     shelfAddText: (text: string) => invoke<ShelfItem>("hub_shelf_add_text", { text }),
     shelfRemove: (id: string) => invoke<void>("hub_shelf_remove", { id }),
     shelfClear: () => invoke<void>("hub_shelf_clear"),
+    shelfThumbnail: (path: string) => invoke<string | null>("hub_shelf_thumbnail", { path }),
+    shelfDragOut: (paths: string[]) => invoke<boolean>("hub_shelf_drag_out", { paths }),
 
     activityGet: () => invoke<ActivityHeatmap>("hub_activity_get"),
+    githubGet: (force = false) => invoke<GithubState>("hub_github_get", { force }),
+    githubSetLogin: (login: string) => invoke<GithubState>("hub_github_set_login", { login }),
 
     routinesList: () => invoke<RoutineItem[]>("hub_routines_list"),
     routineSave: (input: RoutineSaveInput) =>
@@ -138,7 +149,7 @@ export const ipc = {
 type EventMap = {
   "island:pointer": PointerEvent;
   "island:presence": PresenceEvent;
-  "island:file-drop": { type: "enter" | "over" | "leave" | "drop"; paths: string[] };
+  "island:file-drop": { type: "enter" | "over" | "leave" | "drop"; paths: string[]; x?: number | null; y?: number | null };
   "island:context": { topCovered: boolean };
   "island:blur": null;
   "island:command": IslandCommand;

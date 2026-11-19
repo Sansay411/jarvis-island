@@ -36,6 +36,9 @@ pub struct FileDropEvent {
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub paths: Vec<String>,
+    /// Cursor inside the island in physical pixels (enter/over/drop).
+    pub x: Option<i32>,
+    pub y: Option<i32>,
 }
 
 #[implement(IDropTarget)]
@@ -44,13 +47,24 @@ struct DropTarget {
     label: &'static str,
     /// The data under the cursor holds files.
     valid: Cell<bool>,
+    /// Last reported cursor x, to keep `over` events sparse.
+    last_x: Cell<i32>,
 }
 
 impl DropTarget {
-    fn emit(&self, kind: &'static str, paths: Vec<String>) {
+    fn emit(&self, kind: &'static str, paths: Vec<String>, pt: Option<&POINTL>) {
         tracing::debug!(kind, files = paths.len(), "island file drop");
-        let _ = self.app.emit_to(self.label, EVT_FILE_DROP, FileDropEvent { kind, paths });
+        let (x, y) = pt.and_then(local_point).map_or((None, None), |(x, y)| (Some(x), Some(y)));
+        let _ = self.app.emit_to(self.label, EVT_FILE_DROP, FileDropEvent { kind, paths, x, y });
     }
+}
+
+/// Screen point → point inside the catcher (it covers the island exactly).
+fn local_point(pt: &POINTL) -> Option<(i32, i32)> {
+    let hwnd = CATCHER.with(|c| c.get())?;
+    let mut r = RECT::default();
+    unsafe { GetWindowRect(HWND(hwnd as _), &mut r) }.ok()?;
+    Some((pt.x - r.left, pt.y - r.top))
 }
 
 fn file_paths(data: Option<&IDataObject>) -> Option<Vec<String>> {
@@ -82,26 +96,34 @@ impl IDropTarget_Impl for DropTarget_Impl {
         &self,
         data: windows::core::Ref<'_, IDataObject>,
         _keys: MODIFIERKEYS_FLAGS,
-        _pt: &POINTL,
+        pt: &POINTL,
         effect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
         let paths = file_paths(data.as_ref());
         self.valid.set(paths.is_some());
         unsafe { *effect = if paths.is_some() { DROPEFFECT_COPY } else { DROPEFFECT_NONE } };
         if let Some(paths) = paths {
-            self.emit("enter", paths);
+            self.emit("enter", paths, Some(pt));
         }
         Ok(())
     }
 
-    fn DragOver(&self, _keys: MODIFIERKEYS_FLAGS, _pt: &POINTL, effect: *mut DROPEFFECT) -> windows::core::Result<()> {
+    fn DragOver(&self, _keys: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> windows::core::Result<()> {
         unsafe { *effect = if self.valid.get() { DROPEFFECT_COPY } else { DROPEFFECT_NONE } };
+        // Only a move of a few pixels is news (DragOver fires ~every 50 ms).
+        if self.valid.get() {
+            let last = self.last_x.get();
+            if (pt.x - last).abs() >= 4 {
+                self.last_x.set(pt.x);
+                self.emit("over", vec![], Some(pt));
+            }
+        }
         Ok(())
     }
 
     fn DragLeave(&self) -> windows::core::Result<()> {
         if self.valid.replace(false) {
-            self.emit("leave", vec![]);
+            self.emit("leave", vec![], None);
         }
         Ok(())
     }
@@ -110,14 +132,14 @@ impl IDropTarget_Impl for DropTarget_Impl {
         &self,
         data: windows::core::Ref<'_, IDataObject>,
         _keys: MODIFIERKEYS_FLAGS,
-        _pt: &POINTL,
+        pt: &POINTL,
         effect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
         self.valid.set(false);
         match file_paths(data.as_ref()) {
             Some(paths) => {
                 unsafe { *effect = DROPEFFECT_COPY };
-                self.emit("drop", paths);
+                self.emit("drop", paths, Some(pt));
             }
             None => unsafe { *effect = DROPEFFECT_NONE },
         }
@@ -160,7 +182,7 @@ fn catcher(app: &AppHandle, label: &'static str) -> Option<HWND> {
         .ok()?;
         // Alpha 1 of 255: invisible, yet Windows still hit-tests it.
         let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 1, LWA_ALPHA);
-        let target: IDropTarget = DropTarget { app: app.clone(), label, valid: Cell::new(false) }.into();
+        let target: IDropTarget = DropTarget { app: app.clone(), label, valid: Cell::new(false), last_x: Cell::new(i32::MIN / 2) }.into();
         if let Err(e) = RegisterDragDrop(hwnd, &target) {
             tracing::warn!("drop catcher registration failed: {e}");
         }

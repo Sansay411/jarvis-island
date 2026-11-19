@@ -16,6 +16,7 @@ mod reminders;
 pub mod screen;
 mod shell;
 mod system;
+mod weather;
 mod web;
 
 pub use files::image_data_url;
@@ -159,6 +160,7 @@ impl Registry {
             .chain(dev::tools())
             .chain(browser::tools())
             .chain(web::tools())
+            .chain(weather::tools())
             .chain(file_actions::tools())
             .chain(reminders::tools())
             .chain(clipboard_history::tools())

@@ -192,6 +192,64 @@ export async function startSystemFeeds() {
   }
 }
 
+/** The last track that played, kept across restarts: the island's player
+ *  shows it (dimmed, «Продолжить») when nothing is playing. */
+export interface LastTrack {
+  title: string;
+  artist: string;
+  sourceApp: string;
+  art: string | null;
+}
+
+const LAST_KEY = "jarvis.lastTrack";
+
+function readLast(): LastTrack | null {
+  try {
+    const v = localStorage.getItem(LAST_KEY);
+    const t = v ? (JSON.parse(v) as LastTrack) : null;
+    // The built-in radio of one test build (removed 2026-11-18) left itself
+    // here as «Радио JARVIS»; it is not the user's player.
+    if (t && isOwnSession(t.artist, t.sourceApp)) {
+      localStorage.removeItem(LAST_KEY);
+      return null;
+    }
+    return t;
+  } catch {
+    return null;
+  }
+}
+
+function isOwnSession(artist: string, sourceApp: string): boolean {
+  return artist.startsWith("Радио JARVIS") || /jarvis/i.test(sourceApp);
+}
+
+let lastTrack: LastTrack | null = readLast();
+const lastListeners = new Set<() => void>();
+
+export function getLastTrack(): LastTrack | null {
+  return lastTrack;
+}
+
+export function onLastTrack(f: () => void): () => void {
+  lastListeners.add(f);
+  return () => lastListeners.delete(f);
+}
+
+useSystem.subscribe((state) => {
+  const m = state.media;
+  if (!m || !m.available || !(m.title || m.artist) || isOwnSession(m.artist, m.sourceApp)) return;
+  const art = state.artwork && state.artwork.trackKey === m.trackKey ? state.artwork.dataUrl : null;
+  const next: LastTrack = { title: m.title, artist: m.artist, sourceApp: m.sourceApp, art: art ?? (lastTrack?.title === m.title ? lastTrack.art : null) };
+  if (lastTrack && lastTrack.title === next.title && lastTrack.artist === next.artist && lastTrack.art === next.art) return;
+  lastTrack = next;
+  try {
+    localStorage.setItem(LAST_KEY, JSON.stringify(next));
+  } catch {
+    /* storage unavailable: remembered for this session only */
+  }
+  lastListeners.forEach((f) => f());
+});
+
 export function hasActiveMedia(m: MediaState | null): m is MediaState {
   return !!m && m.available && (m.status === "playing" || m.status === "paused") && !!(m.title || m.artist);
 }

@@ -175,7 +175,10 @@ impl Reminders {
         if due <= Utc::now() - chrono::Duration::seconds(5) {
             return Err(AppError::invalid("Это время уже прошло"));
         }
-        let kind = if kind == "timer" { "timer" } else { "reminder" };
+        let kind = match kind {
+            "timer" | "action" => kind,
+            _ => "reminder",
+        };
         let id = self.store().add_reminder(kind, text.trim(), &due.to_rfc3339())?;
         self.changed();
         self.list().into_iter().find(|r| r.id == id).ok_or_else(|| AppError::internal("Напоминание не сохранилось"))
@@ -219,6 +222,10 @@ impl Reminders {
             _ => return,
         }
         tracing::info!(id = r.id, kind = %r.kind, "reminder fired");
+        if r.kind == "action" {
+            self.run_action(r.clone());
+            return;
+        }
         let _ = self.app.emit(EVT_FIRED, Fired { id: r.id, kind: r.kind.clone(), text: r.text.clone() });
         let line = match (r.kind.as_str(), r.text.is_empty()) {
             ("timer", true) => "Время вышло.".to_string(),
@@ -226,6 +233,45 @@ impl Reminders {
             _ => format!("Напоминаю: {}", r.text),
         };
         self.app.state::<Arc<crate::voice::VoiceManager>>().say(&line);
+    }
+
+    /// A deferred request («через полчаса закрой ТикТок»): run it as an agent
+    /// turn now — same tools, risk checks and confirmations as if just asked —
+    /// and say the outcome. Waits (up to two minutes) for a running turn.
+    fn run_action(&self, r: Reminder) {
+        let app = self.app.clone();
+        let id = r.id;
+        tauri::async_runtime::spawn(async move {
+            let agent = app.state::<Arc<crate::agent::Agent>>().inner().clone();
+            // Missed while the PC slept or JARVIS was closed: «через полчаса
+            // закрой ТикТок» must not close a tab the next morning.
+            let late = DateTime::parse_from_rfc3339(&r.due_at).is_ok_and(|d| Utc::now() - d.with_timezone(&Utc) > chrono::Duration::minutes(10));
+            if late {
+                tracing::info!(id, "deferred action skipped: missed its time");
+                agent.post_report(format!("Пропустил отложенное поручение «{}»: в назначенное время компьютер или я были выключены.", r.text), false);
+                let _ = app.state::<Arc<Reminders>>().done(id);
+                return;
+            }
+            let started = std::time::Instant::now();
+            while agent.is_busy() && started.elapsed() < Duration::from_secs(120) {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            let set = DateTime::parse_from_rfc3339(&r.created_at).map(|d| d.with_timezone(&Local).format("%H:%M").to_string()).unwrap_or_default();
+            let task = format!(
+                "[Отложенное поручение: в {set} пользователь попросил сделать это сейчас. Выполни без вопросов и ответь одной короткой фразой о результате.] {}",
+                r.text
+            );
+            let line = match agent.delegate(task).await {
+                Ok(answer) => crate::voice::phrases::speakable(&answer),
+                Err(e) => format!("Не вышло выполнить «{}»: {}", r.text, crate::voice::phrases::speakable(&e.to_string())),
+            };
+            tracing::info!(id, "deferred action done");
+            if !line.trim().is_empty() {
+                app.state::<Arc<crate::voice::VoiceManager>>().say(&line);
+            }
+            let me = app.state::<Arc<Reminders>>();
+            let _ = me.done(id);
+        });
     }
 
     /// The scheduler: fire what is due, sleep until the next one (at most a

@@ -11,7 +11,7 @@ export interface PlanStep {
 }
 
 export type AgentEvent =
-  | { type: "turnStarted"; turnId: string; conversationId: string; userText: string }
+  | { type: "turnStarted"; turnId: string; conversationId: string; userText: string; voice?: boolean }
   | { type: "phase"; turnId: string; phase: AgentPhase }
   | { type: "textDelta"; turnId: string; text: string }
   | { type: "toolStarted"; turnId: string; callId: string; tool: string; title: string; args: unknown }

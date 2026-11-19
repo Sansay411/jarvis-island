@@ -216,3 +216,16 @@ pub fn set_app_volume(process: &str, percent: u8) -> AppResult<Vec<AppAudioSessi
         })
         .collect())
 }
+
+#[cfg(test)]
+mod live {
+    /// `cargo test --lib live_audio_apps -- --ignored --nocapture`: apps with an audio session now.
+    #[test]
+    #[ignore]
+    fn live_audio_apps() {
+        crate::platform::com::ensure_mta();
+        for s in super::list_app_sessions().unwrap() {
+            println!("audio: {s:?}");
+        }
+    }
+}

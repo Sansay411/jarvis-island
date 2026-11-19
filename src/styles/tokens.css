@@ -30,19 +30,31 @@
   --amber-lo: #e2861c;
   --amber-glow: rgba(255, 178, 63, 0.5);
 
-  /* Hardware functional accents (Focus / Calendar / Streak) */
-  --cobalt: #0a84ff;
-  --cobalt-hi: #339dff;
-  --cobalt-glow: rgba(10, 132, 255, 0.35);
-  --emerald: #22c55e;
-  --emerald-hi: #39d353;
+  /* The island is monochrome: bone for the user's own primary actions and
+     selections, amber for JARVIS and for what is live right now. No blue,
+     no rainbow task colours (removed 2026-11-18 as noise). */
+  --bone: #ecebe6;
+  --bone-hi: #ffffff;
+  --on-bone: #0a0a0c;
+  --cobalt: var(--bone);
+  --cobalt-hi: var(--bone-hi);
+  --cobalt-glow: transparent;
+  --emerald: var(--amber);
+  --emerald-hi: var(--amber);
 
-  /* Task ring palette */
-  --ring-blue: #4c8dff;
-  --ring-amber: #ffb23f;
-  --ring-coral: #ff6b5a;
-  --ring-emerald: #34d399;
-  --ring-violet: #a78bfa;
+  /* Task rings: one quiet ring for every task */
+  --ring-blue: #5d5d66;
+  --ring-amber: #5d5d66;
+  --ring-coral: #5d5d66;
+  --ring-emerald: #5d5d66;
+  --ring-violet: #5d5d66;
+
+  /* Contribution calendar: graphite to amber */
+  --heat-0: #17161a;
+  --heat-1: #3b2a14;
+  --heat-2: #7a4f15;
+  --heat-3: #c47a1a;
+  --heat-4: #ffb23f;
 
   /* Outcomes */
   --ok: #7cd992;

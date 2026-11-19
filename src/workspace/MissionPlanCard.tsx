@@ -65,7 +65,7 @@ export function MissionPlanCard({ steps: propSteps }: { steps?: PlanStep[] }) {
               <WsIcon name="plan" size={14} />
             )}
           </span>
-          <span className="mission-plan-title">План миссии</span>
+          <span className="mission-plan-title">План</span>
           <span className="mission-plan-sep">·</span>
           <span className="mission-plan-meta">{statusText}</span>
           <span className={`mission-plan-chevron${collapsed ? " is-collapsed" : ""}`}>
@@ -109,13 +109,7 @@ export function MissionPlanCard({ steps: propSteps }: { steps?: PlanStep[] }) {
               </span>
               <span className="ws-mission-step-title">{st.title}</span>
               <span className="ws-mission-step-state">
-                {st.status === "running"
-                  ? "Выполняется"
-                  : st.status === "done"
-                    ? "Готово"
-                    : st.status === "failed"
-                      ? "Ошибка"
-                      : `Шаг ${idx + 1}`}
+                {st.status === "failed" ? "Ошибка" : ""}
               </span>
             </li>
           ))}

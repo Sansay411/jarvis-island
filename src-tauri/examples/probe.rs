@@ -128,7 +128,7 @@ recent={:?}",
         }
         "switch" => serde_json::to_string(&jarvis_lib::platform::browser::switch_tab(jarvis_lib::platform::browser::browser_windows(Some(&args[1]))[0].hwnd, Some(&args[2]), None).map(|s| s.tabs.into_iter().filter(|t| t.selected).collect::<Vec<_>>())).unwrap(),
         "page" => jarvis_lib::platform::browser::page_text(jarvis_lib::platform::browser::browser_windows(Some(&args[1]))[0].hwnd, 400).unwrap_or_else(|e| e.to_string()),
-        "closetab" => format!("{:?}", jarvis_lib::platform::browser::close_tab(jarvis_lib::platform::browser::browser_windows(Some(&args[1]))[0].hwnd, Some(&args[2]), None).map(|(n, s)| (n, s.tabs.len()))),
+        "closetab" => format!("{:?}", jarvis_lib::platform::browser::close_tab(jarvis_lib::platform::browser::browser_windows(Some(&args[1]))[0].hwnd, Some(&args[2]), None).map(|(n, c, s)| (n, c, s.tabs.len()))),
         "audio-test" => {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {

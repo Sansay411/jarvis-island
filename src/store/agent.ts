@@ -205,10 +205,14 @@ export const useAgent = create<AgentStore>((set, get) => ({
   clearPlan: () => set({ planSteps: [], planTurnId: null }),
 }));
 
+/** Turns the voice pipeline speaks itself (never read aloud a second time). */
+const voiceTurns = new Set<string>();
+
 export function applyAgentEvent(ev: AgentEvent) {
   const set = useAgent.setState;
   switch (ev.type) {
     case "turnStarted":
+      if (ev.voice) voiceTurns.add(ev.turnId);
       set((s) => {
         // Requests started outside the composer (CLI, voice) still appear in the chat.
         const last = [...s.items].reverse().find((it) => it.kind === "user");
@@ -348,8 +352,10 @@ export function applyAgentEvent(ev: AgentEvent) {
 
       // Auto-speak reply if enabled in preferences and not an active voice-mode turn
       if (status === "completed" && assistantReply && usePrefs.getState().autoSpeakReplies) {
+        // A spoken turn is already said by the voice pipeline; reading it
+        // again here was a second voice over the first.
         const vState = useVoice.getState().state;
-        const isVoiceTurn = vState !== "idle" && vState !== "dormant";
+        const isVoiceTurn = voiceTurns.has(ev.turnId) || (vState !== "idle" && vState !== "dormant");
         if (!isVoiceTurn) {
           const spoken = stripMarkdownForSpeech(assistantReply);
           if (spoken) {

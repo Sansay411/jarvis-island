@@ -1,23 +1,19 @@
-// Multi-deck Command Notch (`PeekView`):
-// Synthesizes NotchNook (`Обзор` & `Полка`), Needt (`Фокус` hover banner +
-// expanded 2-column Bento), and Reigne (`Стрик` emerald heatmap + pagination dots)
-// while keeping JARVIS's centered amber `Eyes.tsx` in a strictly protected 72px
-// center clear-zone.
+// The opened island: four decks (Обзор, Фокус, Полка, Стрик) under a brow
+// whose centre column belongs to JARVIS's eyes. The tabs are the only deck
+// switcher (plus Alt+1..4 and a horizontal swipe).
 
-import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useRef, type WheelEvent } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { DECK_SPRING, deckFadeVariants, deckVariants } from "../motion";
+import { useEffect, useRef, useState, type WheelEvent } from "react";
 import { Icon, type IconName } from "../../ui/Icon";
 import { ipc, isTauri } from "../../lib/ipc";
 import { hasActiveMedia, useSystem } from "../../store/system";
 import { useIsland } from "../../store/island";
-import { usePrefs } from "../../store/prefs";
 import { useHub } from "../../store/hub";
 import { useTts } from "../../store/tts";
 import { toggleVoice, useVoice } from "../../store/voice";
-import { openClips, useClips } from "../../store/clips";
 import type { PeekDeck } from "../geometry";
-import { Artwork, EqualizerBars, MediaCard } from "./MediaCard";
-import { QuickControls } from "./QuickControls";
+import { Artwork, EqualizerBars, IdlePlayer, MediaCard } from "./MediaCard";
 import { JobsStrip } from "./JobsStrip";
 import { ClocksStrip } from "./ClocksStrip";
 import { WeekCalendar } from "./WeekCalendar";
@@ -25,6 +21,8 @@ import { FocusDeck, FocusHoverBanner } from "./FocusDeck";
 import { TrayDeck } from "./TrayDeck";
 import { ActivityDeck } from "./ActivityDeck";
 import { AgentMissionBar } from "./AgentMissionBar";
+import { deg, useWeather } from "../../store/weather";
+import { WeatherGlyph } from "../../ui/WeatherGlyph";
 
 const DECKS: Array<{ id: PeekDeck; label: string; icon: IconName }> = [
   { id: "nook", label: "Обзор", icon: "nook" },
@@ -41,12 +39,11 @@ export function PeekView() {
   const forceFocusBanner = useIsland((s) => s.forceFocusBanner);
   const setIsland = useIsland((s) => s.set);
   const setDeck = useIsland((s) => s.setDeck);
-  const shortcut = usePrefs((p) => p.workspaceShortcut);
+  const deckDir = useIsland((s) => s.deckDir);
+  const reduced = useReducedMotion();
 
   const focus = useHub((s) => s.focus);
   const shelfCount = useHub((s) => s.shelf.length);
-  const fullControl = useHub((s) => s.fullControl);
-  const toggleFullControl = useHub((s) => s.toggleFullControl);
 
   const ttsSpeaking = useTts((s) => s.speaking);
   const stopTts = useTts((s) => s.stop);
@@ -79,8 +76,43 @@ export function PeekView() {
     if (nextIdx !== curIdx) setDeck(DECKS[nextIdx]!.id);
   };
 
+  // The cover lights the whole opened island from the left — behind the tabs
+  // too — and fades out before the calendar. Only on `Обзор` with music.
+  const art = useSystem((s) =>
+    media && s.artwork && s.artwork.trackKey === media.trackKey ? s.artwork.dataUrl : null,
+  );
+  const ambient = withMedia && art && !showFocusBanner && peekDeck === "nook";
+
   return (
     <div className="view view-peek" onWheel={onWheel}>
+      <AnimatePresence>
+        {ambient && (
+          <motion.div
+            key="ambient"
+            className={`peek-ambient${media?.status === "playing" ? " is-playing" : ""}`}
+            aria-hidden="true"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <AnimatePresence initial={false}>
+              <motion.img
+                key={media?.trackKey}
+                src={art}
+                alt=""
+                draggable={false}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.9 }}
+              />
+            </AnimatePresence>
+            <span className="peek-ambient-pool" />
+            <span className="peek-ambient-veil" />
+          </motion.div>
+        )}
+      </AnimatePresence>
       {/* Top Brow: 3-column grid reserving an untouchable 72px center slot for Eyes.tsx */}
       <div className="brow brow-split">
         <div className="brow-left" role="tablist" aria-label="Разделы острова">
@@ -143,35 +175,6 @@ export function PeekView() {
 
           <button
             type="button"
-            className={`icon-btn icon-btn-sm autopilot-btn${fullControl ? " is-armed" : ""}`}
-            aria-pressed={fullControl}
-            aria-label="Полное управление (Автопилот)"
-            title={
-              fullControl
-                ? "Автопилот включён: Джарвис действует самостоятельно"
-                : "Включить Полное управление (Автопилот)"
-            }
-            onClick={() => void toggleFullControl()}
-          >
-            <Icon name="bolt" size={14} />
-          </button>
-          <button
-            type="button"
-            className="icon-btn icon-btn-sm"
-            aria-label="История буфера обмена"
-            title="Буфер обмена"
-            onClick={() => {
-              if (isTauri()) openClips(false);
-              else {
-                useClips.setState({ loaded: true, error: null });
-                setIsland({ clipsOpen: true, clipsKeyboard: false, workspaceOpen: false });
-              }
-            }}
-          >
-            <Icon name="clipboard" size={14} />
-          </button>
-          <button
-            type="button"
             className="icon-btn icon-btn-sm"
             aria-label="Голосовой режим"
             title="Голосовой режим"
@@ -212,7 +215,7 @@ export function PeekView() {
 
       {/* Main Deck Stage */}
       <div className="peek-stage">
-        <AnimatePresence mode="wait" initial={false}>
+        <AnimatePresence mode="popLayout" initial={false} custom={deckDir}>
           {showFocusBanner ? (
             <motion.div
               key="focus-banner"
@@ -227,54 +230,28 @@ export function PeekView() {
           ) : (
             <motion.div
               key={peekDeck}
+              data-deck={peekDeck}
               className="peek-deck-pane"
-              initial={{ opacity: 0, y: 3 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -3 }}
-              transition={{ duration: 0.14, ease: [0.22, 1, 0.36, 1] }}
+              custom={deckDir}
+              variants={reduced ? deckFadeVariants : deckVariants}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              transition={reduced ? { duration: 0.14 } : DECK_SPRING}
             >
               {peekDeck === "nook" && (
                 <div className="nook-split">
-                  <div className="nook-left">
+                  <div className={`nook-left${withMedia ? "" : " is-now"}`}>
                     {withMedia ? (
                       <>
                         <MediaCard media={media} />
-                        <div className="nook-sliders-compact">
-                          <QuickControls />
-                        </div>
+                        <NowLine compact />
                       </>
                     ) : (
-                      <div className="nook-idle-left">
-                        <button
-                          type="button"
-                          className="ask-pill"
-                          onClick={() => setIsland({ workspaceOpen: true })}
-                        >
-                          <span>Спросить Джарвиса…</span>
-                          {shortcut && <kbd>{shortcut.replaceAll("+", " ")}</kbd>}
-                        </button>
-
-                        <div className="nook-quick-pills">
-                          <button
-                            type="button"
-                            className="nook-chip-btn"
-                            onClick={() => setDeck("focus")}
-                          >
-                            <Icon name="target" size={13} />
-                            <span>Фокус 25м</span>
-                          </button>
-                          <button
-                            type="button"
-                            className="nook-chip-btn"
-                            onClick={() => setDeck("tray")}
-                          >
-                            <Icon name="tray" size={13} />
-                            <span>Полка{shelfCount > 0 ? ` (${shelfCount})` : ""}</span>
-                          </button>
-                        </div>
-
-                        <QuickControls />
-                      </div>
+                      <>
+                        <NowLine />
+                        <IdlePlayer />
+                      </>
                     )}
                   </div>
 
@@ -294,24 +271,65 @@ export function PeekView() {
         </AnimatePresence>
       </div>
 
-      {/* Reference 1 minimal bottom pagination dots */}
-      <div className="peek-dots" role="tablist" aria-label="Переключение панелей">
-        {DECKS.map((d) => {
-          const active = showFocusBanner ? d.id === "focus" : peekDeck === d.id;
-          return (
-            <button
-              key={d.id}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              aria-label={d.label}
-              title={d.label}
-              className={`peek-dot${active ? " is-active" : ""}`}
-              onClick={() => setDeck(d.id)}
-            />
-          );
-        })}
+    </div>
+  );
+}
+
+/** Time, date and the weather where the user is. Without music it is the
+ *  column's face (big light clock, date, weather line); with music it shrinks
+ *  to one quiet mono line under the player. The weather opens the full card. */
+function NowLine({ compact = false }: { compact?: boolean }) {
+  const here = useWeather((s) => s.here);
+  const loadHere = useWeather((s) => s.loadHere);
+  const show = useWeather((s) => s.show);
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    void loadHere();
+  }, [loadHere]);
+  useEffect(() => {
+    // Tick on the minute, not every second.
+    let t = window.setTimeout(function tick() {
+      setNow(new Date());
+      t = window.setTimeout(tick, 60_000 - (Date.now() % 60_000) + 50);
+    }, 60_000 - (Date.now() % 60_000) + 50);
+    return () => window.clearTimeout(t);
+  }, []);
+  const time = now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  if (compact) {
+    const short = now.toLocaleDateString("ru-RU", { weekday: "short", day: "numeric", month: "short" });
+    return (
+      <div className="now-strip">
+        <span className="now-strip-time">{time}</span>
+        <span className="now-strip-dot" aria-hidden="true" />
+        <span className="now-strip-date">{short.replace(/\.$/, "")}</span>
+        {here && (
+          <button type="button" className="now-strip-wx" onClick={() => show(here)} title="Погода подробнее">
+            <WeatherGlyph kind={here.kind} night={!here.isDay} size={12} />
+            <span>{deg(here.temp)}</span>
+          </button>
+        )}
       </div>
+    );
+  }
+  const weekday = now.toLocaleDateString("ru-RU", { weekday: "long" });
+  const day = now.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+  return (
+    <div className="now-face">
+      <div className="now-face-date">
+        <span className="now-face-weekday">{weekday}</span>
+        <span>{day}</span>
+      </div>
+      <div className="now-face-time">{time}</div>
+      {here && (
+        <button type="button" className="now-face-wx" onClick={() => show(here)} title="Погода подробнее">
+          <WeatherGlyph kind={here.kind} night={!here.isDay} size={15} />
+          <span className="now-face-temp">{deg(here.temp)}</span>
+          <span className="now-face-text">{here.text.toLowerCase()}</span>
+          <span className="now-face-range">
+            {deg(here.today.max)} / {deg(here.today.min)}
+          </span>
+        </button>
+      )}
     </div>
   );
 }

@@ -7,7 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 
 export interface Reminder {
   id: number;
-  kind: "timer" | "reminder";
+  kind: "timer" | "reminder" | "action";
   text: string;
   dueAt: string;
   createdAt: string;

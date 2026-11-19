@@ -951,3 +951,29 @@ mod tests {
         CLOCK_SKEW_SECS.store(0, Ordering::Relaxed);
     }
 }
+
+#[cfg(test)]
+mod live {
+    /// Real network: `JARVIS_TTS_SAMPLE_DIR=<dir> cargo test --lib live_edge_sample -- --ignored --nocapture`
+    /// writes one WAV per voice and prints the time to the first sound.
+    #[test]
+    #[ignore]
+    fn live_edge_sample() {
+        let dir = std::path::PathBuf::from(std::env::var("JARVIS_TTS_SAMPLE_DIR").expect("JARVIS_TTS_SAMPLE_DIR"));
+        let text = "Привет! Музыку включил, громкость тридцать процентов. Что-нибудь ещё?";
+        for voice in ["ru-RU-DmitryNeural", "ru-RU-SvetlanaNeural"] {
+            let v = super::EdgeVoice::new(voice, 1.0).expect("voice");
+            let t = std::time::Instant::now();
+            let mut first = None;
+            let mut pcm = Vec::new();
+            v.stream(text, &mut |c| {
+                first.get_or_insert(t.elapsed().as_millis());
+                pcm.extend_from_slice(c);
+                true
+            })
+            .expect("stream");
+            println!("{voice}: first sound {:?} ms, total {} ms, {:.1} s audio", first, t.elapsed().as_millis(), pcm.len() as f32 / 24_000.0);
+            std::fs::write(dir.join(format!("{voice}.wav")), super::super::tts::wav_bytes(&pcm, 24_000)).unwrap();
+        }
+    }
+}

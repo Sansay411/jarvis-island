@@ -48,6 +48,10 @@ pub struct MediaState {
     pub can_previous: bool,
     /// Stable key for the current track; changes when artwork must reload.
     pub track_key: String,
+    /// For a browser source: the site that plays, read from the browser's
+    /// window title (`youtube`, `yandex`, `spotify`, `soundcloud`, `vk`,
+    /// `twitch`), or empty when unknown.
+    pub site: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -78,8 +82,15 @@ pub fn manager() -> AppResult<SessionManager> {
     Ok(SessionManager::RequestAsync()?.join()?)
 }
 
+/// The session to show and control: one that is playing, else the one
+/// Windows calls current, else any. Windows leaves «current» empty for some
+/// browsers even while a session exists, and the player then never showed.
 fn current_session(mgr: &SessionManager) -> Option<Session> {
-    mgr.GetCurrentSession().ok()
+    let all: Vec<Session> = mgr.GetSessions().map(|v| v.into_iter().collect()).unwrap_or_default();
+    let playing = all.iter().find(|s| {
+        s.GetPlaybackInfo().and_then(|i| i.PlaybackStatus()).is_ok_and(|st| st == PlaybackStatus::Playing)
+    });
+    playing.cloned().or_else(|| mgr.GetCurrentSession().ok()).or_else(|| all.into_iter().next())
 }
 
 fn status_str(s: PlaybackStatus) -> &'static str {
@@ -110,8 +121,10 @@ fn session_state(session: &Session) -> AppResult<(MediaState, Option<IRandomAcce
     let sampled = timeline.LastUpdatedTime().map(|d| winrt_to_unix_ms(d.UniversalTime)).ok();
     let has_timeline = end > start;
 
+    let site = browser_site(&source_app, &title);
     let state = MediaState {
         available: true,
+        site,
         track_key: format!("{source_app}\u{1f}{title}\u{1f}{artist}\u{1f}{album}"),
         source_app,
         title,
@@ -130,6 +143,56 @@ fn session_state(session: &Session) -> AppResult<(MediaState, Option<IRandomAcce
     Ok((state, props.Thumbnail().ok()))
 }
 
+fn is_browser(aumid: &str) -> bool {
+    let a = aumid.to_lowercase();
+    ["chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "browser"].iter().any(|b| a.contains(b))
+}
+
+static SITE_CACHE: Mutex<(String, String)> = Mutex::new((String::new(), String::new()));
+
+fn site_of(window_title: &str) -> Option<&'static str> {
+    let t = window_title.to_lowercase();
+    let has = |k: &str| t.contains(k);
+    Some(if has("youtube") {
+        "youtube"
+    } else if has("\u{44f}\u{43d}\u{434}\u{435}\u{43a}\u{441} \u{43c}\u{443}\u{437}\u{44b}\u{43a}") || has("yandex music") || has("music.yandex") {
+        "yandex"
+    } else if has("spotify") {
+        "spotify"
+    } else if has("soundcloud") {
+        "soundcloud"
+    } else if has("vk.com") || has("vk \u{43c}\u{443}\u{437}\u{44b}\u{43a}") || has("\u{432}\u{43a}\u{43e}\u{43d}\u{442}\u{430}\u{43a}\u{442}\u{435}") {
+        "vk"
+    } else if has("twitch") {
+        "twitch"
+    } else {
+        return None;
+    })
+}
+
+/// Which site a browser plays from: the browser window whose title holds the
+/// track title usually ends with the site's name (" - YouTube").
+fn browser_site(aumid: &str, title: &str) -> String {
+    if !is_browser(aumid) || title.trim().is_empty() {
+        return String::new();
+    }
+    {
+        let c = SITE_CACHE.lock();
+        if c.0 == title {
+            return c.1.clone();
+        }
+    }
+    let needle = title.to_lowercase();
+    let site = crate::platform::winmgr::list_windows()
+        .into_iter()
+        .filter(|w| w.title.to_lowercase().contains(&needle))
+        .find_map(|w| site_of(&w.title))
+        .unwrap_or("")
+        .to_string();
+    *SITE_CACHE.lock() = (title.to_string(), site.clone());
+    site
+}
+
 pub fn snapshot() -> AppResult<MediaState> {
     let mgr = manager()?;
     match current_session(&mgr) {
@@ -141,14 +204,26 @@ pub fn snapshot() -> AppResult<MediaState> {
 /// Read, downscale (≤160 px) and encode the thumbnail as a JPEG data URL.
 fn read_artwork(r: &IRandomAccessStreamReference) -> Option<String> {
     let stream = r.OpenReadAsync().ok()?.join().ok()?;
-    let size = stream.Size().ok()? as u32;
-    if size == 0 || size > 8 * 1024 * 1024 {
+    let reader = DataReader::CreateDataReader(&stream).ok()?;
+    // Some apps report Size() = 0 for a stream that does hold an image:
+    // read in chunks until it runs dry instead of trusting the size.
+    let _ = reader.SetInputStreamOptions(windows::Storage::Streams::InputStreamOptions::Partial);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        let n = reader.LoadAsync(64 * 1024).ok()?.join().ok()?;
+        if n == 0 {
+            break;
+        }
+        let start = buf.len();
+        buf.resize(start + n as usize, 0);
+        reader.ReadBytes(&mut buf[start..]).ok()?;
+        if buf.len() > 8 * 1024 * 1024 {
+            return None;
+        }
+    }
+    if buf.is_empty() {
         return None;
     }
-    let reader = DataReader::CreateDataReader(&stream).ok()?;
-    reader.LoadAsync(size).ok()?.join().ok()?;
-    let mut buf = vec![0u8; size as usize];
-    reader.ReadBytes(&mut buf).ok()?;
     let img = image::load_from_memory(&buf).ok()?;
     let thumb = img.thumbnail(160, 160).to_rgb8();
     let mut out = Cursor::new(Vec::new());
@@ -299,11 +374,46 @@ impl MediaWatcher {
                     let _ = tx_mgr.send(Signal::SessionChanged);
                     Ok(())
                 }));
+                // A session appearing or going away (a browser tab starting
+                // music) may not change «current»: rebind on that too.
+                let tx_list = tx.clone();
+                let _list_token = mgr.SessionsChanged(&TypedEventHandler::new(move |_, _| {
+                    let _ = tx_list.send(Signal::SessionChanged);
+                    Ok(())
+                }));
                 watcher.rebind(&mgr, &tx);
                 let mut last_state: Option<MediaState> = None;
                 let mut last_art_key = String::new();
+                // Apps often publish the title first and the cover a moment
+                // later (browsers, Yandex Music), sometimes still showing the
+                // previous track's cover in between. So for a few seconds
+                // after a track change every properties event re-reads the
+                // cover, and a missing one is retried on the 1.5 s tick.
+                let mut last_art: Option<String> = None;
+                let mut art_since = Instant::now();
+                let mut art_retries: u8 = 0;
                 loop {
-                    let Ok(first) = rx.recv() else { break };
+                    // Windows does not always say when another app starts
+                    // playing (both sessions already existed): every 1.5 s
+                    // check that the bound session is still the one to show.
+                    let first = match rx.recv_timeout(Duration::from_millis(1500)) {
+                        Ok(sig) => sig,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            let best = current_session(&mgr).and_then(|s| s.SourceAppUserModelId().ok()).map(|h| h.to_string());
+                            let bound = watcher.bound.lock().as_ref().and_then(|b| b.session.SourceAppUserModelId().ok()).map(|h| h.to_string());
+                            if best == bound {
+                                if last_art.is_none() && !last_art_key.is_empty() && art_retries < 5 {
+                                    art_retries += 1;
+                                    Signal::Properties
+                                } else {
+                                    continue;
+                                }
+                            } else {
+                                Signal::SessionChanged
+                            }
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
                     // Debounce bursts (apps fire several events per change).
                     let mut session_changed = matches!(first, Signal::SessionChanged);
                     let mut props_changed = matches!(first, Signal::Properties);
@@ -331,10 +441,21 @@ impl MediaWatcher {
                     }
                     // Artwork is only re-read when the track identity changes;
                     // timeline/playback ticks never touch it.
-                    let _ = props_changed;
-                    if state.track_key != last_art_key {
+                    let new_track = state.track_key != last_art_key;
+                    if new_track {
+                        art_since = Instant::now();
+                        art_retries = 0;
+                    }
+                    let settling = props_changed && art_since.elapsed() < Duration::from_secs(8);
+                    if new_track || settling {
                         let data_url = thumb.as_ref().and_then(read_artwork);
-                        let _ = app.emit(EVT_ARTWORK, ArtworkEvent { track_key: state.track_key.clone(), data_url });
+                        if new_track || data_url != last_art {
+                            let _ = app.emit(
+                                EVT_ARTWORK,
+                                ArtworkEvent { track_key: state.track_key.clone(), data_url: data_url.clone() },
+                            );
+                        }
+                        last_art = data_url;
                         last_art_key = state.track_key.clone();
                     }
                     last_state = Some(state);
@@ -376,6 +497,24 @@ impl MediaWatcher {
                 let _ = tx.send(Signal::Properties);
             }
             Err(e) => tracing::warn!("subscribing to media session failed: {e}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod live {
+    /// `cargo test --lib live_media_sessions -- --ignored --nocapture`: every
+    /// media session Windows knows, and which one is «current».
+    #[test]
+    #[ignore]
+    fn live_media_sessions() {
+        crate::platform::com::ensure_mta();
+        let mgr = super::manager().unwrap();
+        let cur = mgr.GetCurrentSession().ok().and_then(|s| s.SourceAppUserModelId().ok()).map(|h| h.to_string());
+        println!("current: {cur:?}");
+        for s in mgr.GetSessions().unwrap() {
+            let (st, _) = super::session_state(&s).unwrap();
+            println!("session: app={} status={} title={:?} artist={:?}", st.source_app, st.status, st.title, st.artist);
         }
     }
 }

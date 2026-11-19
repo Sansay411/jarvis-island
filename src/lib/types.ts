@@ -65,6 +65,8 @@ export interface MediaState {
   canNext: boolean;
   canPrevious: boolean;
   trackKey: string;
+  /** Browser source only: the site that plays (`youtube`, `yandex`, …), or "". */
+  site?: string;
 }
 
 export interface ArtworkEvent {
@@ -186,6 +188,34 @@ export interface ActivityHeatmap {
   currentStreak: number;
   longestStreak: number;
   days: ActivityDay[];
+}
+
+/** One day of the user's GitHub contribution calendar. */
+export interface GithubDay {
+  date: string;
+  count: number;
+  level: number;
+}
+
+export interface GithubActivity {
+  login: string;
+  name: string;
+  /** data: URL of the avatar, or null. */
+  avatar: string | null;
+  profileUrl: string;
+  total: number;
+  currentStreak: number;
+  longestStreak: number;
+  days: GithubDay[];
+  /** "gh" — GraphQL through the signed-in GitHub CLI (private included); "public" — the public profile. */
+  source: "gh" | "public" | string;
+  fetchedAt: string;
+}
+
+export interface GithubState {
+  login: string | null;
+  activity: GithubActivity | null;
+  error: string | null;
 }
 
 export interface RoutineItem {

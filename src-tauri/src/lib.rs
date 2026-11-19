@@ -15,6 +15,8 @@ pub mod ai;
 pub mod clips;
 pub mod error;
 pub mod filekit;
+pub mod geo;
+pub mod github;
 pub mod hub;
 mod ipc;
 mod ipc_clips;
@@ -165,8 +167,39 @@ fn handle_cli(app: &tauri::AppHandle, argv: &[String]) -> bool {
     false
 }
 
+/// Makes the Windows Run entry match the setting and point at *this* exe.
+/// The entry used to be written only when the toggle flipped, so it kept the
+/// path of whichever build flipped it (once `target\debug\jarvis.exe`, which
+/// boots into a dead dev URL). Debug builds never touch it.
+pub(crate) fn sync_autostart(app: &tauri::AppHandle, on: bool) -> Result<(), String> {
+    if cfg!(debug_assertions) {
+        tracing::info!("autostart left alone in a debug build (wanted {on})");
+        return Ok(());
+    }
+    use tauri_plugin_autostart::ManagerExt;
+    let al = app.autolaunch();
+    let res = if on {
+        al.enable()
+    } else if al.is_enabled().unwrap_or(true) {
+        al.disable()
+    } else {
+        Ok(())
+    };
+    res.map_err(|e| e.to_string())
+}
+
 pub fn run() {
     init_logging();
+    // `--probe-mic NAME`: a helper process started by the running app to
+    // check the microphone outside its own audio stack (voice::heal_audio).
+    // Exits before the single-instance plugin, so it never reaches the app.
+    let argv: Vec<String> = std::env::args().collect();
+    if let Some(pos) = argv.iter().position(|a| a == "--probe-mic") {
+        let name = argv.get(pos + 1).cloned().unwrap_or_default();
+        let res = voice::audio::probe_input(&name);
+        tracing::info!("microphone probe: {res:?}");
+        std::process::exit(if res.is_ok() { 0 } else { 1 });
+    }
     tracing::info!("JARVIS {} starting", env!("CARGO_PKG_VERSION"));
 
     tauri::Builder::default()
@@ -239,6 +272,18 @@ pub fn run() {
                 let _ = platform::blocking(move || platform::in_background(|| apps.ensure_fresh(Duration::from_secs(600)))).await;
             });
 
+            // Know the city early: the first «какая погода» and every turn's
+            // context then need no wait for the network.
+            tauri::async_runtime::spawn(async {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                if let Err(e) = platform::blocking(crate::geo::here).await {
+                    tracing::info!("location not known yet: {e}");
+                }
+            });
+
+            if let Err(e) = sync_autostart(app.handle(), settings.launch_at_startup) {
+                tracing::warn!("autostart not synced: {e}");
+            }
             setup_tray(app)?;
             // First launch with CLI arguments: act once the island UI is listening.
             let argv: Vec<String> = std::env::args().collect();
@@ -278,6 +323,7 @@ pub fn run() {
             ipc::brightness_set,
             ipc::media_get,
             ipc::media_artwork,
+            ipc::media_app_icon,
             ipc::media_control,
             ipc::media_seek,
             ipc::windows_list,
@@ -353,7 +399,12 @@ pub fn run() {
             ipc_hub::hub_shelf_add_text,
             ipc_hub::hub_shelf_remove,
             ipc_hub::hub_shelf_clear,
+            ipc_hub::hub_shelf_thumbnail,
+            ipc_hub::hub_shelf_drag_out,
             ipc_hub::hub_activity_get,
+            ipc_hub::hub_github_get,
+            ipc_hub::hub_github_set_login,
+            ipc_hub::weather_get,
             ipc_hub::hub_routines_list,
             ipc_hub::hub_routine_save,
             ipc_hub::hub_routine_remove,

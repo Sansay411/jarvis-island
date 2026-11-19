@@ -362,6 +362,15 @@ pub fn voices() -> AppResult<Vec<TtsVoice>> {
             language: lang.to_string(),
         });
     }
+    if super::yandex::configured() {
+        for (id, name) in super::yandex::VOICES {
+            out.push(TtsVoice {
+                id: format!("{}{id}", super::yandex::PREFIX),
+                name: format!("{name} (Яндекс)"),
+                language: "ru-RU".into(),
+            });
+        }
+    }
     if super::elevenlabs::configured() {
         for (id, name) in super::elevenlabs::voices() {
             out.push(TtsVoice {
@@ -417,6 +426,9 @@ pub fn voices() -> AppResult<Vec<TtsVoice>> {
 /// Default voice when user hasn't picked one: ElevenLabs or Azure if explicitly
 /// configured with keys, otherwise free built-in `edge:ru-RU-DmitryNeural`!
 pub fn default_voice() -> String {
+    if super::yandex::configured() {
+        return format!("{}{}", super::yandex::PREFIX, super::yandex::DEFAULT_VOICE);
+    }
     if super::elevenlabs::configured() {
         return format!("{}{}", super::elevenlabs::PREFIX, super::elevenlabs::DEFAULT_VOICE);
     }
@@ -438,6 +450,8 @@ pub enum Speaker {
     Sapi(super::sapi::SapiVoice),
     /// ElevenLabs, streamed; local fallback when network fails.
     Eleven(super::elevenlabs::ElevenVoice, std::sync::OnceLock<Option<Box<Speaker>>>, f64),
+    /// Yandex SpeechKit, streamed; local fallback when network fails.
+    Yandex(super::yandex::YandexVoice, std::sync::OnceLock<Option<Box<Speaker>>>, f64),
 }
 
 /// Best purely offline local voice (Supertonic → Piper → Windows OneCore).
@@ -465,6 +479,13 @@ impl Speaker {
         if let Some(id) = voice.strip_prefix(super::edge::PREFIX) {
             return Ok(Speaker::Edge(
                 super::edge::EdgeVoice::new(id, rate)?,
+                std::sync::OnceLock::new(),
+                rate,
+            ));
+        }
+        if let Some(id) = voice.strip_prefix(super::yandex::PREFIX) {
+            return Ok(Speaker::Yandex(
+                super::yandex::YandexVoice::new(id, rate)?,
                 std::sync::OnceLock::new(),
                 rate,
             ));
@@ -503,12 +524,13 @@ impl Speaker {
             Speaker::Azure(a, ..) => format!("{} (Microsoft)", a.voice),
             Speaker::Sapi(s) => format!("{} (SAPI)", s.name),
             Speaker::Eleven(e, ..) => format!("{} (ElevenLabs)", e.name),
+            Speaker::Yandex(y, ..) => format!("{} (Яндекс)", y.name),
         }
     }
 
     /// Synthesise `text` to PCM16 mono at `out_rate` (`SPEAKER_RATE` for playback).
     pub fn synthesize(&self, text: &str, out_rate: u32) -> AppResult<Vec<i16>> {
-        if matches!(self, Speaker::Edge(..) | Speaker::Eleven(..)) {
+        if matches!(self, Speaker::Edge(..) | Speaker::Eleven(..) | Speaker::Yandex(..)) {
             let mut all = Vec::new();
             self.synthesize_stream(text, &mut |pcm| {
                 all.extend_from_slice(pcm);
@@ -543,7 +565,7 @@ impl Speaker {
                     };
                 }
             },
-            Speaker::Edge(..) | Speaker::Eleven(..) => unreachable!("handled above"),
+            Speaker::Edge(..) | Speaker::Eleven(..) | Speaker::Yandex(..) => unreachable!("handled above"),
         };
         let mono = trim_leading_silence(&mono, rate);
         let mut out = Vec::with_capacity(mono.len() * out_rate as usize / rate as usize + 8);
@@ -581,6 +603,30 @@ impl Speaker {
                 let normalized = super::ru_speech::normalize(text);
                 let mut started = false;
                 let res = e.stream(&normalized, &mut |pcm| {
+                    started = true;
+                    sink(pcm)
+                });
+                match res {
+                    Err(err) if !started => {
+                        // The free Edge endpoint reset the connection in a live
+                        // test (2026-11-18), so the local voice — always there —
+                        // speaks instead; ElevenLabs is not asked again for a while.
+                        tracing::warn!("{err}; local voice speaks instead");
+                        match fallback.get_or_init(|| Speaker::new(&local_voice(), *speed).ok().map(Box::new)) {
+                            Some(s) => {
+                                sink(&s.synthesize(text, 24_000)?);
+                                Ok(())
+                            }
+                            None => Err(err),
+                        }
+                    }
+                    other => other,
+                }
+            }
+            Speaker::Yandex(y, fallback, speed) => {
+                let normalized = super::ru_speech::normalize(text);
+                let mut started = false;
+                let res = y.stream(&normalized, &mut |pcm| {
                     started = true;
                     sink(pcm)
                 });

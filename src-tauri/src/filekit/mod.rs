@@ -296,6 +296,16 @@ pub fn actions_for_many(files: &[FileInfo], ffmpeg: bool) -> Vec<FileAction> {
     a
 }
 
+/// Preview for a shelf tile: the same thumbnail the file card shows
+/// (image, video frame, first PDF page); `None` for missing files or types
+/// without a picture.
+pub(crate) fn shelf_thumbnail(path: &Path) -> Option<String> {
+    if !path.is_file() {
+        return None;
+    }
+    info_of(path, media::available()).thumbnail
+}
+
 fn info_of(path: &Path, ffmpeg: bool) -> FileInfo {
     let meta = std::fs::metadata(path).ok();
     let kind = detect(path);
@@ -793,6 +803,21 @@ mod tests {
         let p = dir.join(name);
         std::fs::write(&p, bytes).unwrap();
         p
+    }
+
+    #[test]
+    fn shelf_thumbnail_for_png_is_data_url() {
+        let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([200, 120, 40, 255]));
+        let mut png = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let p = temp("shelf-thumb.png", &png);
+        let url = shelf_thumbnail(&p).expect("thumbnail");
+        assert!(url.starts_with("data:image/"), "{url}");
+    }
+
+    #[test]
+    fn missing_file_has_no_thumbnail() {
+        assert!(shelf_thumbnail(Path::new("C:/definitely/not/here.png")).is_none());
     }
 
     #[test]

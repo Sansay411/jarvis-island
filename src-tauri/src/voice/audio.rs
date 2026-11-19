@@ -155,6 +155,10 @@ pub struct AudioIo {
     /// Output goes to headphones: JARVIS cannot hear itself, so no echo
     /// gating — the user may interrupt at normal loudness.
     pub headphones: bool,
+    /// Held: the speaker plays silence and keeps the queue, so a reply can
+    /// stop the instant the user starts talking and go on if it was only
+    /// the room (barge-in).
+    paused: Arc<AtomicBool>,
 }
 
 /// Headphones and headsets by the endpoint name Windows shows.
@@ -195,6 +199,35 @@ fn find_device(host: &cpal::Host, name: &str, input: bool) -> Option<cpal::Devic
         .or_else(|| if input { host.default_input_device() } else { host.default_output_device() })
 }
 
+/// Open the microphone and capture for a moment, nothing else. Run in a
+/// fresh process (`jarvis.exe --probe-mic NAME`) it tells a microphone that
+/// is really broken from an audio stack wedged inside the running app: after
+/// one IAudioClient::Initialize hangs, every later attempt in the same
+/// process fails («Параметр задан неверно», 2026-11-18) while a new process
+/// opens the device at once.
+pub fn probe_input(name: &str) -> Result<String, String> {
+    let host = cpal::default_host();
+    let dev = find_device(&host, name, true).ok_or("Микрофон не найден")?;
+    let cfg = dev.default_input_config().map_err(|e| e.to_string())?;
+    let heard = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let h = heard.clone();
+    let err = |e| tracing::warn!("probe stream error: {e}");
+    let stream = match cfg.sample_format() {
+        SampleFormat::F32 => dev.build_input_stream::<f32, _, _>(cfg.config(), move |d, _| { h.fetch_add(d.len(), Ordering::Relaxed); }, err, None),
+        SampleFormat::I16 => dev.build_input_stream::<i16, _, _>(cfg.config(), move |d, _| { h.fetch_add(d.len(), Ordering::Relaxed); }, err, None),
+        SampleFormat::U16 => dev.build_input_stream::<u16, _, _>(cfg.config(), move |d, _| { h.fetch_add(d.len(), Ordering::Relaxed); }, err, None),
+        other => return Err(format!("формат {other:?}")),
+    }
+    .map_err(|e| e.to_string())?;
+    stream.play().map_err(|e| e.to_string())?;
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    drop(stream);
+    match heard.load(Ordering::Relaxed) {
+        0 => Err("микрофон открылся, но не прислал звук".into()),
+        n => Ok(format!("{}: {n} samples", dev_name(&dev))),
+    }
+}
+
 impl AudioIo {
     pub fn start(input_name: &str, output_name: &str) -> AppResult<(Arc<AudioIo>, MicStream)> {
         let opening = OPENING.acquire(input_name, output_name).ok_or_else(|| AppError::Timeout(
@@ -206,6 +239,7 @@ impl AudioIo {
         let playback = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(SPEAKER_RATE as usize * 4)));
         let levels = Arc::new(Levels::default());
         let speaking = Arc::new(AtomicBool::new(false));
+        let paused = Arc::new(AtomicBool::new(false));
 
         // Debug builds only: JARVIS_VOICE_INPUT_WAV=a.wav;b.wav replaces the
         // microphone with 16 kHz WAV files played in real time (end-to-end
@@ -227,7 +261,7 @@ impl AudioIo {
         // (a wedged USB microphone blocks IAudioClient::Initialize).
         let stage = Arc::new(Mutex::new(String::from("Список аудиоустройств")));
         let stage_t = stage.clone();
-        let (pb, lv, sp) = (playback.clone(), levels.clone(), speaking.clone());
+        let (pb, lv, sp, pz) = (playback.clone(), levels.clone(), speaking.clone(), paused.clone());
         let (in_name, out_name) = (input_name.to_string(), output_name.to_string());
         std::thread::Builder::new()
             .name("voice-audio".into())
@@ -237,6 +271,11 @@ impl AudioIo {
                     let _ = ready_tx.send(Ok((SPEAKER_RATE, "тестовые WAV-файлы".into(), "без устройства (тест)".into())));
                     let frames = SPEAKER_RATE as usize / 50; // 20 ms
                     while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = cmd_rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                        if pz.load(Ordering::Acquire) {
+                            Levels::set(&lv.output, 0.0);
+                            sp.store(false, Ordering::Relaxed);
+                            continue;
+                        }
                         let mut q = pb.lock();
                         let n = frames.min(q.len());
                         let sq: f32 = q.drain(..n).map(|s| s * s).sum();
@@ -315,8 +354,18 @@ impl AudioIo {
                     let out_conf: StreamConfig = out_cfg.config();
                     let out_ch = out_conf.channels as usize;
                     let out_rate = out_conf.sample_rate;
-                    let (pb_out, lv_out, sp_out) = (pb.clone(), lv.clone(), sp.clone());
+                    let (pb_out, lv_out, sp_out, pz_out) = (pb.clone(), lv.clone(), sp.clone(), pz.clone());
                     let fill = move |buf: &mut dyn FnMut(usize, f32), frames: usize| {
+                        if pz_out.load(Ordering::Acquire) {
+                            // Held: silence, nothing consumed; the echo gate is
+                            // open so the user's words reach the recogniser whole.
+                            for i in 0..frames * out_ch {
+                                buf(i, 0.0);
+                            }
+                            Levels::set(&lv_out.output, 0.0);
+                            sp_out.store(false, Ordering::Relaxed);
+                            return;
+                        }
                         let mut q = pb_out.lock();
                         let mut sq = 0.0f32;
                         for f in 0..frames {
@@ -398,6 +447,7 @@ impl AudioIo {
                 headphones: is_headphones(&output_device),
                 input_device,
                 output_device,
+                paused,
             }),
             MicStream { rx: mic_rx,stale_chunks:0 },
         ))
@@ -458,6 +508,16 @@ impl AudioIo {
     /// Barge-in: drop everything not yet played.
     pub fn clear_playback(&self) {
         self.playback.lock().clear();
+        self.paused.store(false, Ordering::Release);
+    }
+
+    /// Hold or release the speaker without dropping what is queued.
+    pub fn set_paused(&self, on: bool) {
+        self.paused.store(on, Ordering::Release);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Acquire)
     }
 
     pub fn is_playing(&self) -> bool {
@@ -723,6 +783,35 @@ mod tests {
         let mut out2 = Vec::new();
         up.process(&vec![0.1f32; 2400], &mut out2);
         assert!((out2.len() as i64 - 4800).abs() <= 2, "{}", out2.len());
+    }
+
+    /// Live check (outside the sandbox): open every microphone with its
+    /// default format and with each supported one, report what Windows says.
+    #[test]
+    #[ignore]
+    fn live_open_mic() {
+        let host = cpal::default_host();
+        let def = host.default_input_device().map(|d| dev_name(&d));
+        println!("default input: {def:?}");
+        println!("probe: {:?}", probe_input(""));
+        for dev in host.input_devices().unwrap() {
+            let name = dev_name(&dev);
+            match dev.default_input_config() {
+                Ok(cfg) => {
+                    let r = match cfg.sample_format() {
+                        SampleFormat::I16 => dev.build_input_stream::<i16, _, _>(cfg.config(), |_d: &[i16], _| {}, |e| println!("  stream error: {e}"), None),
+                        _ => dev.build_input_stream::<f32, _, _>(cfg.config(), |_d: &[f32], _| {}, |e| println!("  stream error: {e}"), None),
+                    };
+                    println!("{name}: default {cfg:?} -> {}", r.as_ref().map(|_| "OK".to_string()).unwrap_or_else(|e| e.to_string()));
+                }
+                Err(e) => println!("{name}: default config error {e}"),
+            }
+            if let Ok(all) = dev.supported_input_configs() {
+                for c in all {
+                    println!("  supports {c:?}");
+                }
+            }
+        }
     }
 
     #[test]

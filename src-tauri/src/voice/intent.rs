@@ -47,6 +47,12 @@ pub enum Intent {
 pub struct Context {
     /// A voice turn runs or JARVIS is speaking.
     pub busy: bool,
+    /// JARVIS is reading out a reply right now (paused by this very phrase
+    /// or still queued). Over a spoken answer the user is in a conversation:
+    /// a phrase built like an interruption («Нет, давай короче», «Подожди,
+    /// открой проводник», «А какая погода завтра?») steers it without the name.
+    /// Silent work keeps the strict rule — the room must not steer a task.
+    pub speaking: bool,
     /// The agent is working on a request (not only speaking).
     pub turn_active: bool,
     /// The phrase began right after the previous one closed.
@@ -130,10 +136,97 @@ pub fn classify(text: &str, ctx: &Context) -> Intent {
     // and no echo — talk over an answer in headphones.
     let thought = ctx.continues && (!ctx.turn_active || ctx.turn_age < MERGE_WINDOW);
     if thought || (ctx.headphones && !ctx.turn_active) {
-        Intent::Request(text.to_string())
-    } else {
-        Intent::Ignore
+        return Intent::Request(text.to_string());
     }
+    // Talking over a spoken answer: an interruption has a recognisable
+    // shape. Anything else is the room, and the paused reply goes on.
+    if ctx.speaking {
+        return match steering(text) {
+            Some(Steer::Hold) => Intent::Call,
+            Some(Steer::Words) => Intent::Replace(text.to_string()),
+            None => Intent::Ignore,
+        };
+    }
+    Intent::Ignore
+}
+
+/// «Подожди», «погоди» alone: stop talking and listen.
+const HOLD_WORDS: &[&str] = &["подожди", "подождите", "погоди", "погодите", "постой", "постойте", "секунду", "секундочку", "минутку", "wait"];
+
+/// One word that already says how to answer instead.
+const DIRECTIVES: &[&str] = &[
+    "короче", "покороче", "кратко", "подробнее", "поподробнее", "проще", "попроще", "медленнее", "помедленнее",
+    "быстрее", "побыстрее", "громче", "погромче", "потише", "повтори", "заново", "сначала",
+];
+
+/// Openers of a correction or a new request; need words after them.
+const STEER_STARTS: &[&str] = &["нет", "не", "давай", "давайте", "лучше", "вместо", "наоборот", "иначе"];
+
+/// «А …», «и …», «теперь …» open a new request only before a command or a question.
+const SOFT_STARTS: &[&str] = &["а", "и", "теперь", "тогда", "ещё", "еще", "так", "слушай", "слушайте", "смотри"];
+
+/// Imperatives a request opens with.
+const VERBS: &[&str] = &[
+    "открой", "открывай", "закрой", "закрывай", "включи", "включай", "выключи", "выключай", "отключи", "запусти", "запускай",
+    "сделай", "покажи", "показывай", "найди", "поищи", "ищи", "скажи", "расскажи", "объясни", "перескажи", "назови",
+    "напиши", "прочитай", "прочти", "переведи", "посчитай", "проверь", "переключи", "поставь", "установи", "сверни",
+    "разверни", "создай", "сохрани", "удали", "убери", "добавь", "верни", "отправь", "нажми", "перейди", "зайди",
+    "выбери", "скопируй", "вставь", "помоги", "поменяй", "смени", "измени", "исправь", "переделай", "уменьши", "увеличи",
+    "напомни", "запиши", "ответь", "продолжи", "остановись", "пауза",
+];
+
+/// Question words; a question needs a few more words to be the user's.
+const QUESTIONS: &[&str] = &["что", "как", "где", "когда", "почему", "зачем", "сколько", "какой", "какая", "какое", "какие", "какую", "кто", "куда", "откуда"];
+
+/// Casual words before the real opener («Ну, давай…», «Ой, нет…»).
+const FILLER_LEADS: &[&str] = &["ну", "ой", "эй", "блин", "ладно", "окей", "ок", "слушай", "так"];
+
+enum Steer {
+    /// «Подожди.» — stop and listen.
+    Hold,
+    /// A correction or a new request.
+    Words,
+}
+
+/// Lower-case words; a hyphen keeps «где-то» one word (not the question «где»).
+fn plain_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '-').trim_matches('-').to_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// Built like an interruption of a spoken answer (any kind).
+pub fn interrupts_reply(text: &str) -> bool {
+    steering(text).is_some()
+}
+
+/// Is this phrase, said over JARVIS's answer, an interruption?
+fn steering(text: &str) -> Option<Steer> {
+    let all = plain_words(text);
+    let lead = all.iter().take_while(|w| FILLER_LEADS.contains(&w.as_str())).count();
+    let w = &all[lead..];
+    let first = w.first()?.as_str();
+    let rest = w.len() - 1;
+    let verb_near = |from: usize| w.iter().skip(from).take(2).any(|x| VERBS.contains(&x.as_str()));
+    let question_near = |from: usize| w.iter().skip(from).take(2).any(|x| QUESTIONS.contains(&x.as_str()));
+    if HOLD_WORDS.contains(&first) {
+        return Some(if rest == 0 { Steer::Hold } else { Steer::Words });
+    }
+    if DIRECTIVES.contains(&first) || (VERBS.contains(&first) && rest >= 1) {
+        // «Продолжай» alone is no interruption: the paused answer just goes on.
+        return Some(Steer::Words);
+    }
+    if STEER_STARTS.contains(&first) && rest >= 1 && (rest >= 2 || verb_near(1)) {
+        return Some(Steer::Words);
+    }
+    if SOFT_STARTS.contains(&first) && (verb_near(1) || (question_near(1) && rest >= 2)) {
+        return Some(Steer::Words);
+    }
+    if QUESTIONS.contains(&first) && rest >= 2 && verb_near(1) {
+        return Some(Steer::Words);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -141,15 +234,15 @@ mod tests {
     use super::*;
 
     fn idle() -> Context {
-        Context { busy: false, turn_active: false, continues: false, turn_age: Duration::ZERO, headphones: false }
+        Context { busy: false, speaking: false, turn_active: false, continues: false, turn_age: Duration::ZERO, headphones: false }
     }
     /// The agent is working on a task, silently.
     fn working() -> Context {
-        Context { busy: true, turn_active: true, continues: false, turn_age: Duration::from_secs(40), headphones: false }
+        Context { busy: true, speaking: false, turn_active: true, continues: false, turn_age: Duration::from_secs(40), headphones: false }
     }
     /// JARVIS is reading out its answer.
     fn speaking() -> Context {
-        Context { busy: true, turn_active: false, continues: false, turn_age: Duration::ZERO, headphones: false }
+        Context { busy: true, speaking: true, turn_active: false, continues: false, turn_age: Duration::ZERO, headphones: false }
     }
     fn req(t: &str) -> Intent {
         Intent::Request(t.to_string())
@@ -241,12 +334,47 @@ mod tests {
         "И мы сегодня знаем об этом только потому, что для детей", "Я начинаю", "Великолепно.", "Что на тебя?",
     ];
 
+    /// Room phrases built exactly like a request. Over a spoken answer they
+    /// now interrupt it — the price of being able to cut JARVIS off without
+    /// its name (asked for 2026-11-18). Silent work stays untouchable.
+    const ROOM_LIKE_A_REQUEST: &[&str] = &["Давай сразу этот.", "Включи ласты."];
+
     #[test]
     fn a_real_afternoon_of_room_talk_never_steers_a_busy_jarvis() {
         for t in ROOM {
-            for (what, ctx) in [("working", working()), ("speaking", speaking())] {
-                assert_eq!(classify(t, &ctx), Intent::Ignore, "{what}: {t}");
+            assert_eq!(classify(t, &working()), Intent::Ignore, "working: {t}");
+            if !ROOM_LIKE_A_REQUEST.contains(t) {
+                assert_eq!(classify(t, &speaking()), Intent::Ignore, "speaking: {t}");
             }
+        }
+    }
+
+    #[test]
+    fn the_user_can_cut_into_a_spoken_answer_without_the_name() {
+        for t in [
+            "Нет, давай короче.",
+            "Нет, не то, открой проводник.",
+            "Подожди, открой лучше Загрузки.",
+            "Погоди, не в эту папку.",
+            "Короче.",
+            "Скажи проще.",
+            "Ну давай лучше погоду на завтра.",
+            "А какая погода завтра?",
+            "А открой ютуб.",
+            "Лучше включи музыку.",
+            "Повтори последнее.",
+            "Открой браузер.",
+        ] {
+            assert_eq!(classify(t, &speaking()), rep(t), "{t}");
+        }
+        // «Подожди» alone: stop talking, listen.
+        assert_eq!(classify("Подожди.", &speaking()), Intent::Call);
+        assert_eq!(classify("Секунду!", &speaking()), Intent::Call);
+        // «Продолжай»: no interruption, the paused answer goes on.
+        assert_eq!(classify("Продолжай.", &speaking()), Intent::Ignore);
+        // The same words over silent work are still the room.
+        for t in ["Нет, давай короче.", "Открой браузер.", "А какая погода завтра?", "Подожди."] {
+            assert_eq!(classify(t, &working()), Intent::Ignore, "working: {t}");
         }
     }
 

@@ -44,14 +44,20 @@ const paths = {
   ),
   mic: (
     <>
-      <rect x="7.2" y="2.8" width="5.6" height="9.4" rx="2.8" />
-      <path d="M4.6 9.6a5.4 5.4 0 0 0 10.8 0M10 15v2.2" />
+      <rect x="7.25" y="3" width="5.5" height="9" rx="2.75" />
+      <path d="M4.75 9.5a5.25 5.25 0 0 0 10.5 0M10 14.75V17" />
     </>
   ),
   send: <path d="M10 15.5v-11M5.5 9 10 4.5 14.5 9" />,
+  plane: (
+    <>
+      <path d="M16.6 3.4 3.6 8.6a.5.5 0 0 0 0 .9l4.9 2 2 4.9a.5.5 0 0 0 .9 0l5.2-13a.3.3 0 0 0 0 0Z" />
+      <path d="m8.5 11.5 3.3-3.3" />
+    </>
+  ),
   stop: <rect x="5.5" y="5.5" width="9" height="9" rx="2" fill="currentColor" stroke="none" />,
   attach: <path d="m15.6 9.6-5.3 5.3a3.7 3.7 0 0 1-5.2-5.2l5.6-5.6a2.4 2.4 0 0 1 3.4 3.4l-5.5 5.5a1.1 1.1 0 0 1-1.6-1.6l5-5" />,
-  chat: <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h7A2.5 2.5 0 0 1 16 5.5v5a2.5 2.5 0 0 1-2.5 2.5H9l-3.6 3v-3A2.5 2.5 0 0 1 4 10.5Z" />,
+  chat: <path d="M10 3.5c3.9 0 6.5 2.6 6.5 5.8S13.9 15 10 15c-.9 0-1.7-.1-2.5-.4L4 16l.9-2.8c-.9-1-1.4-2.3-1.4-3.9C3.5 6.1 6.1 3.5 10 3.5Z" />,
   collapse: <path d="m5.5 12.5 4.5-4.5 4.5 4.5" />,
   close: <path d="m5.5 5.5 9 9M14.5 5.5l-9 9" />,
   check: <path d="m4.8 10.4 3.4 3.3 7-7.4" />,
@@ -75,8 +81,9 @@ const paths = {
   ),
   settings: (
     <>
-      <circle cx="10" cy="10" r="2.3" />
-      <path d="M10 3.4l.9 1.3 1.5-.2.5 1.5 1.4.7-.4 1.5 1 1.2-1 1.2.4 1.5-1.4.7-.5 1.5-1.5-.2-.9 1.3-.9-1.3-1.5.2-.5-1.5-1.4-.7.4-1.5-1-1.2 1-1.2-.4-1.5 1.4-.7.5-1.5 1.5.2Z" />
+      <path d="M3.5 6.5H10M14 6.5h2.5M3.5 13.5H6M10 13.5h6.5" />
+      <circle cx="12" cy="6.5" r="2" />
+      <circle cx="8" cy="13.5" r="2" />
     </>
   ),
   window: (
@@ -195,7 +202,7 @@ export function Icon({ name, size = 18, style, className }: { name: IconName; si
       viewBox="0 0 20 20"
       fill="none"
       stroke="currentColor"
-      strokeWidth={1.6}
+      strokeWidth={1.5}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"

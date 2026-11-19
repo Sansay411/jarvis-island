@@ -94,6 +94,28 @@ pub fn hub_shelf_remove(hub: State<'_, Arc<Hub>>, id: String) -> AppResult<()> {
     hub.shelf_remove(&id)
 }
 
+/// Thumbnail for a shelf tile (data URL), loaded lazily by the tile.
+#[tauri::command]
+pub async fn hub_shelf_thumbnail(path: String) -> AppResult<Option<String>> {
+    platform::blocking(move || Ok(crate::filekit::shelf_thumbnail(std::path::Path::new(&path)))).await
+}
+
+/// Drags shelf files out of the island (native shell drag on the UI thread).
+/// Resolves when the drop happened or was cancelled; `true` = accepted.
+#[tauri::command]
+pub async fn hub_shelf_drag_out(window: tauri::WebviewWindow, paths: Vec<String>) -> AppResult<bool> {
+    platform::dragout::validate_drag_paths(&paths)?;
+    let hwnd = window.hwnd().map_err(|e| crate::error::AppError::platform(e.to_string()))?.0 as isize;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    window
+        .run_on_main_thread(move || {
+            let hwnd = windows::Win32::Foundation::HWND(hwnd as _);
+            let _ = tx.send(platform::dragout::drag_files_out(hwnd, &paths));
+        })
+        .map_err(|e| crate::error::AppError::platform(e.to_string()))?;
+    rx.await.map_err(|_| crate::error::AppError::internal("Перетаскивание не завершилось"))?
+}
+
 #[tauri::command]
 pub fn hub_shelf_clear(hub: State<'_, Arc<Hub>>) -> AppResult<()> {
     hub.shelf_clear()
@@ -105,6 +127,27 @@ pub fn hub_shelf_clear(hub: State<'_, Arc<Hub>>) -> AppResult<()> {
 pub async fn hub_activity_get(hub: State<'_, Arc<Hub>>) -> AppResult<ActivityHeatmap> {
     let h = hub.inner().clone();
     platform::blocking(move || h.activity_get()).await
+}
+
+// ---------- GitHub contribution calendar («Стрик») ----------
+
+#[tauri::command]
+pub async fn hub_github_get(state: State<'_, AppState>, force: Option<bool>) -> AppResult<crate::github::GithubState> {
+    let store = state.store.clone();
+    platform::blocking(move || crate::github::state(&store, force.unwrap_or(false))).await
+}
+
+#[tauri::command]
+pub async fn hub_github_set_login(state: State<'_, AppState>, login: String) -> AppResult<crate::github::GithubState> {
+    let store = state.store.clone();
+    platform::blocking(move || crate::github::set_login(&store, &login)).await
+}
+
+// ---------- weather (island card and overview) ----------
+
+#[tauri::command]
+pub async fn weather_get(place: Option<String>) -> AppResult<crate::geo::Weather> {
+    platform::blocking(move || crate::geo::weather(place.as_deref())).await
 }
 
 // ---------- routines ----------

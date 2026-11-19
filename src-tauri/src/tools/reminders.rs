@@ -13,7 +13,11 @@ use crate::error::{AppError, AppResult};
 use crate::reminders::{local_hm, parse_local, spoken_duration, Reminders};
 
 async fn reminder_create(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
-    let kind = if str_arg(&args, "kind") == "timer" { "timer" } else { "reminder" };
+    let kind = match str_arg(&args, "kind") {
+        "timer" => "timer",
+        "action" => "action",
+        _ => "reminder",
+    };
     let text = str_arg(&args, "text").trim().to_string();
     let due = if let Some(secs) = args.get("in_seconds").and_then(Value::as_u64).filter(|s| *s > 0) {
         Utc::now() + chrono::Duration::seconds(secs.min(366 * 24 * 3600) as i64)
@@ -22,16 +26,18 @@ async fn reminder_create(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
     } else {
         return Err(AppError::invalid("Нужно in_seconds или at_local"));
     };
-    if kind == "reminder" && text.is_empty() {
-        return Err(AppError::invalid("О чём напомнить?"));
+    if kind != "timer" && text.is_empty() {
+        return Err(AppError::invalid(if kind == "action" { "Что сделать?" } else { "О чём напомнить?" }));
     }
     let r = ctx.app.state::<Arc<Reminders>>().create(kind, &text, due)?;
     let left = (due - Utc::now()).num_seconds().max(1) as u64;
     let summary = match kind {
         "timer" => format!("Таймер на {} — до {}", spoken_duration(left.div_ceil(5) * 5), local_hm(&due)),
+        "action" => format!("В {} сделаю: {}", local_hm(&due), text),
         _ => format!("Напомню в {}: {}", local_hm(&due), text),
     };
-    Ok(ToolOutput::ok(summary, json!({ "id": r.id, "dueAt": r.due_at })))
+    let note = (kind == "action").then_some("Runs by itself at dueAt. Do not do it now or in any later turn before then.");
+    Ok(ToolOutput::ok(summary, json!({ "id": r.id, "dueAt": r.due_at, "note": note })))
 }
 
 async fn reminders_list(ctx: ToolCtx, _args: Value) -> AppResult<ToolOutput> {
@@ -98,11 +104,14 @@ pub fn tools() -> Vec<Tool> {
             name: "reminder_create",
             description: "Set a timer or a reminder that fires on this PC (island alert, spoken if voice is on); survives restarts. \
                 kind=timer for countdowns («таймер на 10 минут», text optional), kind=reminder with text for «напомни …». \
+                kind=action when the user wants something DONE later («через полчаса закрой ТикТок», «в 23:00 выключи звук»): \
+                text is the instruction in the user's words, and at that time you will carry it out yourself with your tools. \
+                Never do the action now when it was asked for later. \
                 Give either in_seconds (relative) or at_local in the user's local time «YYYY-MM-DD HH:MM» or «HH:MM». \
                 Ask the user when the time is ambiguous («после обеда»).",
             schema: object(
                 json!({
-                    "kind": { "type": "string", "enum": ["timer", "reminder"] },
+                    "kind": { "type": "string", "enum": ["timer", "reminder", "action"] },
                     "text": { "type": "string" },
                     "in_seconds": { "type": "integer", "minimum": 1 },
                     "at_local": { "type": "string" }
@@ -110,7 +119,7 @@ pub fn tools() -> Vec<Tool> {
                 &["kind"],
             ),
             risk: low,
-            title: |a| if str_arg(a, "kind") == "timer" { "Таймер".into() } else { "Напоминание".into() },
+            title: |a| match str_arg(a, "kind") { "timer" => "Таймер".into(), "action" => "Отложенное действие".into(), _ => "Напоминание".into() },
             timeout: Duration::from_secs(5),
             parallel_safe: false,
             handler: handler(reminder_create),

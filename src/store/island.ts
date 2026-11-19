@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { ipc } from "../lib/ipc";
 import type { IslandMode, PeekDeck } from "../island/geometry";
+import { deckDirection } from "../island/motion";
 
 export interface DroppedFile {
   path: string;
@@ -13,6 +14,8 @@ export interface DroppedFile {
 interface IslandStore {
   hovered: boolean;
   dragOver: boolean;
+  /** A file drag is over the «В Telegram» zone of the drop view. */
+  dropOnSend: boolean;
   workspaceOpen: boolean;
   voiceOpen: boolean;
   /** The clipboard history panel. */
@@ -23,6 +26,8 @@ interface IslandStore {
   topCovered: boolean;
   /** Active deck inside PeekView (`Обзор` · `Фокус` · `Полка` · `Стрик`). */
   peekDeck: PeekDeck;
+  /** Side the last deck change came from (+1 right, -1 left) for the slide. */
+  deckDir: 1 | -1 | 0;
   /** When Focus is running, hovering first shows the Needt Hover Banner; clicking expands into the full deck. */
   focusBannerDismissed: boolean;
   /** Optional QA override to force showing the Needt Hover Focus Banner. */
@@ -38,6 +43,7 @@ interface IslandStore {
 export const useIsland = create<IslandStore>((set) => ({
   hovered: false,
   dragOver: false,
+  dropOnSend: false,
   workspaceOpen: false,
   voiceOpen: false,
   clipsOpen: false,
@@ -45,12 +51,18 @@ export const useIsland = create<IslandStore>((set) => ({
   visible: true,
   topCovered: false,
   peekDeck: "nook",
+  deckDir: 0,
   focusBannerDismissed: false,
   forceFocusBanner: false,
   inputFocused: false,
   pendingAttachments: [],
   set: (patch) => set(patch),
-  setDeck: (peekDeck) => set({ peekDeck, focusBannerDismissed: true, forceFocusBanner: false }),
+  setDeck: (peekDeck) =>
+    set((s) =>
+      s.peekDeck === peekDeck
+        ? { focusBannerDismissed: true, forceFocusBanner: false }
+        : { peekDeck, deckDir: deckDirection(s.peekDeck, peekDeck), focusBannerDismissed: true, forceFocusBanner: false },
+    ),
   addAttachments: (files) =>
     set((s) => {
       const known = new Set(s.pendingAttachments.map((f) => f.path));

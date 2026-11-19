@@ -1,17 +1,13 @@
-// NotchNook-inspired 7-day horizontal week calendar strip & real daily agenda
-// (References 2, 3, 4: bold month label, clickable day pills with electric
-// cobalt `#0A84FF` active day, task ring checkboxes, and inline quick-add).
+// The week on the overview deck: a 7-day strip and the selected day's tasks
+// and reminders. Read-and-tick only — tasks are added in «Фокус» or by asking.
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState } from "react";
 import { Icon } from "../../ui/Icon";
-import { islandInputHandlers } from "../../store/island";
 import { localDateIso, useHub } from "../../store/hub";
 import { localTime, reminderDone, useReminders } from "../../store/reminders";
-import type { TaskColor } from "../../lib/types";
 
-const MONTHS_SHORT = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"];
+const MONTHS_SHORT = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
 const WEEKDAYS_SHORT = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"];
-const COLORS: TaskColor[] = ["blue", "amber", "coral", "emerald", "violet"];
 
 function startOfIsoWeek(base: Date, weekOffset: number): Date {
   const d = new Date(base.getFullYear(), base.getMonth(), base.getDate());
@@ -25,14 +21,10 @@ export function WeekCalendar() {
   const todayIso = localDateIso();
   const [selectedIso, setSelectedIso] = useState<string>(todayIso);
   const [weekOffset, setWeekOffset] = useState<number>(0);
-  const [draft, setDraft] = useState("");
-  const [colorIdx, setColorIdx] = useState(0);
 
   const tasks = useHub((s) => s.tasks);
-  const taskAdd = useHub((s) => s.taskAdd);
   const taskToggle = useHub((s) => s.taskToggle);
   const reminders = useReminders((s) => s.list);
-  const inputProps = islandInputHandlers();
 
   const weekDays = useMemo(() => {
     const mon = startOfIsoWeek(new Date(), weekOffset);
@@ -73,15 +65,6 @@ export function WeekCalendar() {
       (r) => !r.done && r.kind === "reminder" && localDateIso(new Date(r.dueAt)) === selectedIso,
     );
   }, [reminders, selectedIso]);
-
-  const onSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!draft.trim()) return;
-    const chosenColor = COLORS[colorIdx % COLORS.length]!;
-    await taskAdd(draft, { scheduledDate: selectedIso, color: chosenColor });
-    setDraft("");
-    setColorIdx((c) => (c + 1) % COLORS.length);
-  };
 
   return (
     <div className="week-cal">
@@ -181,17 +164,6 @@ export function WeekCalendar() {
         )}
       </div>
 
-      <form className="week-quick-add" onSubmit={(e) => void onSubmit(e)}>
-        <Icon name="plus" size={12} />
-        <input
-          type="text"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="Добавить задачу или 15:00…"
-          aria-label="Новая задача"
-          {...inputProps}
-        />
-      </form>
     </div>
   );
 }

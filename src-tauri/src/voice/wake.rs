@@ -21,6 +21,14 @@ pub(super) const LEADS: &[&str] = &[
     "эй", "окей", "ок", "хей", "слушай", "привет", "здравствуй", "здравствуйте", "алло", "ну", "а", "так", "о", "йо", "хай",
 ];
 
+/// Hello words: a call with one of them is greeted back, not answered «Слушаю».
+const GREETINGS: &[&str] = &["привет", "приветик", "здравствуй", "здравствуйте", "хай", "салют", "здорово", "hello", "hi"];
+
+/// The phrase says hello.
+pub fn greets(text: &str) -> bool {
+    words(text).iter().any(|w| GREETINGS.contains(&w.as_str()))
+}
+
 /// Phrases longer than this are a monologue, not a call.
 const MAX_WORDS: usize = 24;
 /// A name at the end counts only in short phrases.
@@ -154,6 +162,14 @@ mod tests {
 
     fn yes(t: &str) -> bool {
         addressed(t).is_some()
+    }
+
+    #[test]
+    fn hello_is_a_greeting_not_a_bare_call() {
+        assert!(greets("Привет, Джарвис."));
+        assert!(greets("Джарвис, здравствуй!"));
+        assert!(!greets("Эй, Джарвис"));
+        assert!(!greets("Джарвис, открой браузер."));
     }
 
     #[test]

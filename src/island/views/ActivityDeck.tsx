@@ -1,196 +1,232 @@
-// Reigne-inspired 52-week emerald activity & streak heatmap (Reference 1: `b54f2700.jpg`).
-// Aggregates real daily Git commits, Focus minutes, completed Tasks, and Agent
-// actions from `hub_activity_get` — zero synthetic numbers in production.
+// «Стрик»: the user's real GitHub contribution calendar — their avatar, name
+// and the same cells their profile shows, in JARVIS's warm amber instead of
+// GitHub green. Data: `hub_github_get` (GraphQL through the signed-in GitHub
+// CLI, or the public profile). Nothing here is made up.
 
-import { useEffect, useMemo, useState } from "react";
-import { localDateIso, useHub } from "../../store/hub";
-import type { ActivityDay } from "../../lib/types";
+import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
+import { useReducedMotion } from "motion/react";
+import { countUpValue, waveDelay } from "../motion";
+import { localDateIso } from "../../store/hub";
+import { useGithub } from "../../store/github";
+import type { GithubActivity, GithubDay } from "../../lib/types";
 
-const MONTHS = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"];
-const MONTHS_GEN = ["янв.", "февр.", "марта", "апр.", "мая", "июня", "июля", "авг.", "сент.", "окт.", "нояб.", "дек."];
+const WEEKS = 52;
+const MONTHS = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+const MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
 
-function pluralActions(n: number): string {
+function plural(n: number, one: string, few: string, many: string): string {
   const d = n % 10;
   const h = n % 100;
-  if (d === 1 && h !== 11) return `${n} действие за год`;
-  if (d >= 2 && d <= 4 && (h < 12 || h > 14)) return `${n} действия за год`;
-  return `${n} действий за год`;
+  if (d === 1 && h !== 11) return one;
+  if (d >= 2 && d <= 4 && (h < 12 || h > 14)) return few;
+  return many;
 }
 
-function formatDayDetail(d: ActivityDay): string {
-  const parts = d.date.split("-").map(Number);
-  const mIdx = (parts[1] ?? 1) - 1;
-  const dayNum = parts[2] ?? 1;
-  const dateLabel = `${dayNum} ${MONTHS_GEN[mIdx] ?? ""}`;
-  if (d.count === 0) return `${dateLabel} · Нет активности`;
-  const breakdown: string[] = [];
-  if (d.gitCommits > 0) breakdown.push(`${d.gitCommits} комм.`);
-  if (d.focusMinutes > 0) breakdown.push(`${d.focusMinutes} мин фокуса`);
-  if (d.tasksDone > 0) breakdown.push(`${d.tasksDone} зад.`);
-  if (d.agentActions > 0) breakdown.push(`${d.agentActions} шаг. агента`);
-  return `${dateLabel} · ${d.count}: ${breakdown.join(" · ") || "активность"}`;
+const fmt = (n: number) => n.toLocaleString("ru-RU");
+
+function dayDetail(d: GithubDay): string {
+  const [, m, day] = d.date.split("-").map(Number);
+  const when = `${day} ${MONTHS_GEN[(m ?? 1) - 1] ?? ""}`;
+  if (d.count === 0) return `${when}: без вкладов`;
+  return `${when}: ${fmt(d.count)} ${plural(d.count, "вклад", "вклада", "вкладов")}`;
 }
 
-interface GridCell {
+/** Counts from 0 up to `target` once (rAF only while it runs). */
+export function useCountUp(target: number, ms = 700): number {
+  const reduced = useReducedMotion();
+  const [v, setV] = useState(() => (reduced ? target : 0));
+  useEffect(() => {
+    if (reduced || target === 0) {
+      setV(target);
+      return;
+    }
+    const t0 = performance.now();
+    let raf = requestAnimationFrame(function step(now) {
+      const t = Math.min(1, (now - t0) / ms);
+      setV(countUpValue(target, t));
+      if (t < 1) raf = requestAnimationFrame(step);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [target, ms, reduced]);
+  return v;
+}
+
+interface Cell {
   iso: string;
   future: boolean;
-  isToday: boolean;
-  data: ActivityDay;
+  today: boolean;
+  day: GithubDay;
 }
 
-export function ActivityDeck() {
-  const activity = useHub((s) => s.activity);
-  const refreshActivity = useHub((s) => s.refreshActivity);
-  const [hovered, setHovered] = useState<ActivityDay | null>(null);
-
-  useEffect(() => {
-    void refreshActivity();
-  }, [refreshActivity]);
-
-  const { weeks, monthTicks } = useMemo(() => {
-    const byDate = new Map<string, ActivityDay>();
-    for (const d of activity?.days ?? []) {
-      byDate.set(d.date, d);
-    }
-
+/** 52 Monday-first weeks ending with the current one, plus month labels. */
+function useGrid(activity: GithubActivity | null | undefined) {
+  return useMemo(() => {
+    const byDate = new Map((activity?.days ?? []).map((d) => [d.date, d]));
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayIso = localDateIso(today);
-
-    // Align the 52nd (rightmost) column to the current Monday..Sunday week.
-    const jsDay = today.getDay();
-    const diffToMon = jsDay === 0 ? -6 : 1 - jsDay;
-    const currentMon = new Date(today.getFullYear(), today.getMonth(), today.getDate() + diffToMon);
-    const startMon = new Date(currentMon.getFullYear(), currentMon.getMonth(), currentMon.getDate() - 51 * 7);
-
-    const cols: GridCell[][] = [];
-    const rawTransitions: Array<{ col: number; label: string }> = [];
+    const back = (today.getDay() + 6) % 7;
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - back - (WEEKS - 1) * 7);
+    const weeks: Cell[][] = [];
+    const months: Array<{ col: number; label: string }> = [];
     let lastMonth = -1;
-
-    for (let w = 0; w < 52; w++) {
-      const col: GridCell[] = [];
+    for (let w = 0; w < WEEKS; w++) {
+      const col: Cell[] = [];
       for (let r = 0; r < 7; r++) {
-        const dt = new Date(startMon.getFullYear(), startMon.getMonth(), startMon.getDate() + w * 7 + r);
+        const dt = new Date(start.getFullYear(), start.getMonth(), start.getDate() + w * 7 + r);
         const iso = localDateIso(dt);
-        const future = dt.getTime() > today.getTime();
-        if (r === 0) {
-          const m = dt.getMonth();
-          if (m !== lastMonth) {
-            lastMonth = m;
-            rawTransitions.push({ col: w, label: MONTHS[m] ?? "" });
-          }
+        if (r === 0 && dt.getMonth() !== lastMonth) {
+          lastMonth = dt.getMonth();
+          // A month that starts in the last two columns has no room for its name.
+          if (w > 0 || dt.getDate() <= 7) months.push({ col: w, label: MONTHS[lastMonth] ?? "" });
         }
-        const found = byDate.get(iso);
-        col.push({
-          iso,
-          future,
-          isToday: iso === todayIso,
-          data: found ?? {
-            date: iso,
-            count: 0,
-            level: 0,
-            focusMinutes: 0,
-            tasksDone: 0,
-            agentActions: 0,
-            gitCommits: 0,
-          },
-        });
+        col.push({ iso, future: dt > today, today: iso === todayIso, day: byDate.get(iso) ?? { date: iso, count: 0, level: 0 } });
       }
-      cols.push(col);
+      weeks.push(col);
     }
-
-    // Drop a trailing 1–2 week partial month stub at column 0 so all 12 full months
-    // (`Дек .. Ноя`) appear cleanly without colliding at the left edge (Ref 1).
-    const candidates =
-      rawTransitions.length >= 2 && rawTransitions[0]!.col === 0 && rawTransitions[1]!.col <= 3
-        ? rawTransitions.slice(1)
-        : rawTransitions;
-
-    const ticks: Array<{ col: number; label: string }> = [];
-    let lastTickPx = -999;
-    for (const c of candidates) {
-      const px = c.col * 10;
-      if (px - lastTickPx >= 26) {
-        ticks.push(c);
-        lastTickPx = px;
-      }
-    }
-
-    return { weeks: cols, monthTicks: ticks };
+    const spaced = months.filter((m, i) => i === 0 || m.col - months[i - 1]!.col >= 3);
+    return { weeks, months: spaced };
   }, [activity]);
+}
 
-  const userName = activity?.userName?.trim() || "Пользователь";
-  const initial = userName.charAt(0).toUpperCase() || "J";
-  const totalYear = activity?.totalYear ?? 0;
-  const currentStreak = activity?.currentStreak ?? 0;
-  const longestStreak = activity?.longestStreak ?? 0;
+export function ActivityDeck() {
+  const st = useGithub((s) => s.state);
+  const loading = useGithub((s) => s.loading);
+  const load = useGithub((s) => s.load);
+  const [hovered, setHovered] = useState<GithubDay | null>(null);
+
+  useEffect(() => {
+    void load(false);
+  }, [load]);
+
+  const activity = st?.activity ?? null;
+  const { weeks, months } = useGrid(activity);
+  const total = useCountUp(activity?.total ?? 0);
+  const streak = useCountUp(activity?.currentStreak ?? 0);
+  const longest = useCountUp(activity?.longestStreak ?? 0);
+  const hasAny = (activity?.total ?? 0) > 0;
+  const lastPast = weeks.length - 1;
+
+  if (!activity) {
+    return st === null && loading ? (
+      <div className="streak-deck streak-empty">
+        <span className="streak-muted">Загружаю календарь GitHub…</span>
+      </div>
+    ) : (
+      <ConnectGithub />
+    );
+  }
 
   return (
-    <div className="activity-deck">
-      <div className="activity-head">
-        <div className="activity-user">
-          <span className="activity-avatar" aria-hidden="true">
-            {initial}
-          </span>
-          <span className="activity-username">{userName}</span>
-        </div>
-        <span className="activity-total">{pluralActions(totalYear)}</span>
-      </div>
+    <div className={`streak-deck${hasAny ? " is-wave" : ""}`} style={{ "--flash-delay": `${waveDelay(lastPast, weeks.length) + 0.2}s` } as CSSProperties}>
+      <header className="streak-head">
+        <span className="streak-who" title={activity.profileUrl}>
+          {activity.avatar ? (
+            <img className="streak-avatar" src={activity.avatar} alt="" />
+          ) : (
+            <span className="streak-avatar is-letter">{activity.name.charAt(0).toUpperCase()}</span>
+          )}
+          <span className="streak-name">{activity.name}</span>
+          {activity.name.toLowerCase() !== activity.login.toLowerCase() && <span className="streak-login">@{activity.login}</span>}
+        </span>
+        <span
+          className="streak-total"
+          title={activity.source === "gh" ? "Включая приватные репозитории" : "Только публичные вклады: войдите в GitHub CLI (gh auth login), чтобы учитывать приватные"}
+        >
+          <strong>{fmt(total)}</strong> {plural(activity.total, "вклад", "вклада", "вкладов")} за год
+        </span>
+      </header>
 
-      <div className="activity-matrix-wrap" onMouseLeave={() => setHovered(null)}>
-        <div className="activity-months" aria-hidden="true">
-          {monthTicks.map((t) => (
-            <span key={`${t.col}-${t.label}`} className="activity-month" style={{ left: `${t.col * 10}px` }}>
-              {t.label}
+      <div className="streak-matrix" onMouseLeave={() => setHovered(null)}>
+        <div className="streak-months" aria-hidden="true">
+          {months.map((m) => (
+            <span key={`${m.col}-${m.label}`} style={{ left: `${m.col * 10}px` }}>
+              {m.label}
             </span>
           ))}
         </div>
-
-        <div className="activity-grid" role="img" aria-label={`График активности: ${pluralActions(totalYear)}`}>
-          {weeks.map((col, wIdx) => (
-            <div key={wIdx} className="activity-col">
-              {col.map((cell) => {
-                const lvl = Math.min(4, Math.max(0, cell.data.level));
-                return (
-                  <span
-                    key={cell.iso}
-                    className={`activity-cell lvl-${cell.future ? "future" : lvl}${cell.isToday ? " is-today" : ""}`}
-                    onMouseEnter={() => {
-                      if (!cell.future) setHovered(cell.data);
-                    }}
-                  />
-                );
-              })}
+        <div className="streak-grid" role="img" aria-label={`Календарь вкладов GitHub: ${fmt(activity.total)} за год`}>
+          {weeks.map((col, w) => (
+            <div key={w} className="streak-col" style={{ "--wave-delay": `${waveDelay(w, weeks.length)}s` } as CSSProperties}>
+              {col.map((c) => (
+                <span
+                  key={c.iso}
+                  className={`streak-cell ${c.future ? "is-future" : `l${Math.min(4, Math.max(0, c.day.level))}`}${c.today ? " is-today" : ""}`}
+                  onMouseEnter={() => !c.future && setHovered(c.day)}
+                />
+              ))}
             </div>
           ))}
         </div>
       </div>
 
-      <div className="activity-foot">
+      <footer className="streak-foot">
         {hovered ? (
-          <span className="activity-hover-detail">{formatDayDetail(hovered)}</span>
+          <span className="streak-detail">{dayDetail(hovered)}</span>
         ) : (
-          <div className="activity-streaks">
+          <span className="streak-stats">
             <span>
-              Текущая серия <strong>{currentStreak} дн.</strong>
+              Серия <strong>{streak}</strong> {plural(activity.currentStreak, "день", "дня", "дней")}
             </span>
-            <span className="activity-sep">·</span>
             <span>
-              Рекорд <strong>{longestStreak} дн.</strong>
+              Рекорд <strong>{longest}</strong> {plural(activity.longestStreak, "день", "дня", "дней")}
             </span>
-          </div>
+          </span>
         )}
-
-        <div className="activity-legend" aria-hidden="true">
-          <span>Меньше</span>
-          <i className="activity-cell lvl-0" />
-          <i className="activity-cell lvl-1" />
-          <i className="activity-cell lvl-2" />
-          <i className="activity-cell lvl-3" />
-          <i className="activity-cell lvl-4" />
-          <span>Больше</span>
-        </div>
-      </div>
+        <span className="streak-legend" aria-hidden="true">
+          {st?.error ? (
+            <button type="button" className="streak-retry" title={st.error} onClick={() => void load(true)}>
+              Повторить
+            </button>
+          ) : (
+            <>
+              меньше
+              <i className="streak-cell l0" />
+              <i className="streak-cell l1" />
+              <i className="streak-cell l2" />
+              <i className="streak-cell l3" />
+              <i className="streak-cell l4" />
+              больше
+            </>
+          )}
+        </span>
+      </footer>
     </div>
+  );
+}
+
+function ConnectGithub() {
+  const st = useGithub((s) => s.state);
+  const loading = useGithub((s) => s.loading);
+  const formError = useGithub((s) => s.formError);
+  const connect = useGithub((s) => s.connect);
+  const [login, setLogin] = useState(st?.login ?? "");
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (login.trim()) void connect(login);
+  };
+
+  return (
+    <form className="streak-deck streak-empty" onSubmit={submit}>
+      <p className="streak-pitch">Ваш календарь вкладов с GitHub: серия дней, рекорд, коммиты за год.</p>
+      <div className="streak-connect">
+        <span className="streak-at">github.com/</span>
+        <input
+          value={login}
+          onChange={(e) => setLogin(e.target.value)}
+          placeholder="логин"
+          spellCheck={false}
+          autoComplete="off"
+          aria-label="Логин GitHub"
+        />
+        <button type="submit" className="streak-connect-btn" disabled={loading || !login.trim()}>
+          {loading ? "Подключаю…" : "Подключить"}
+        </button>
+      </div>
+      <span className={`streak-muted${formError || st?.error ? " is-error" : ""}`}>
+        {formError || st?.error || "Если вы вошли в GitHub CLI, приватные вклады тоже посчитаются."}
+      </span>
+    </form>
   );
 }

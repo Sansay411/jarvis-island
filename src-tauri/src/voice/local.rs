@@ -8,6 +8,7 @@
 //! «стоп»/«хватит» cancel — live use showed that cancelling on every remark
 //! («спасибо») killed long tasks.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -86,45 +87,23 @@ fn acknowledgement(vy: bool) -> String {
     if vy { "Слушаю вас." } else { "Слушаю." }.into()
 }
 
+/// The answer to a call by name: a greeting is greeted back (instantly, no
+/// model) — «Привет, Джарвис» answered with «Слушаю.» five times in a row
+/// on 2026-11-18 while the user kept saying hello.
+fn answer_call(text: &str, vy: bool) -> String {
+    if super::wake::greets(text) {
+        if vy { "Здравствуйте! Чем могу помочь?" } else { "Привет! Чем помочь?" }.into()
+    } else {
+        acknowledgement(vy)
+    }
+}
+
 /// Said at once when the answer is slow to start, so the pause after a
 /// request is never dead air. Cached at session start: they cost nothing.
 const FILLERS: &[&str] = &["Одну секунду.", "Ага.", "Сейчас.", "Минутку."];
 
 /// How long a turn may stay silent before a filler is said.
-const FILLER_AFTER: Duration = Duration::from_millis(700);
-
-/// A long task is narrated: what JARVIS is doing, said while it does it,
-/// so a ten-second job is not ten seconds of silence. Not before this much
-/// of the turn has passed (quick answers stay quiet)…
-const PROGRESS_AFTER: Duration = Duration::from_millis(1500);
-/// …and not more often than this.
-const PROGRESS_EVERY: Duration = Duration::from_secs(3);
-
-/// What to say when a tool starts; `None` for quick or silent ones. Fixed
-/// lines are cached after the first time, so they cost nothing.
-fn progress_line(tool: &str, args: &serde_json::Value) -> Option<String> {
-    let arg = |k: &str| args.get(k).and_then(serde_json::Value::as_str).unwrap_or("").trim().to_string();
-    Some(match tool {
-        "app_launch" => match arg("query") {
-            q if !q.is_empty() && q.chars().count() <= 30 => format!("Запускаю {q}."),
-            _ => "Запускаю приложение.".into(),
-        },
-        "open_target" => "Открываю.".into(),
-        "web_search" => "Ищу в интернете.".into(),
-        "web_fetch" | "browser_read_page" => "Читаю страницу.".into(),
-        "browser_tabs" | "windows_list" => "Смотрю, что открыто.".into(),
-        "browser_switch_tab" | "window_action" => "Переключаюсь.".into(),
-        "screen_capture" | "ui_inspect" | "context_snapshot" => "Смотрю на экран.".into(),
-        "ui_act" | "input_click" => "Нажимаю.".into(),
-        "input_type" => "Печатаю.".into(),
-        "files_search" => "Ищу файлы.".into(),
-        "file_read" => "Читаю файл.".into(),
-        "file_action" => "Работаю с файлом.".into(),
-        "shell_run" | "terminal_open" => "Выполняю команду.".into(),
-        "coding_agent_run" => "Передаю задачу агенту.".into(),
-        _ => return None,
-    })
-}
+const FILLER_AFTER: Duration = Duration::from_millis(1500);
 
 /// Words that cut JARVIS off without its name (when no task is running —
 /// see `intent::classify` for what counts while one is).
@@ -138,11 +117,45 @@ fn is_reply_interruption(text: &str, continues: bool, headphones: bool) -> bool 
     if !stt::is_meaningful(text) {
         return false;
     }
-    if headphones || continues || is_stop(text) || super::wake::addressed(text).is_some() {
+    if headphones || continues || is_stop(text) || super::wake::addressed(text).is_some() || super::intent::interrupts_reply(text) {
         return true;
     }
     let first: String = text.to_lowercase().chars().take_while(|c| c.is_alphabetic()).collect();
     INTERRUPT_WORDS.contains(&first.as_str())
+}
+
+/// A held reply waits at least this long for the words, and at most this
+/// long while sound goes on.
+const HOLD_MIN: Duration = Duration::from_millis(350);
+const HOLD_MAX: Duration = Duration::from_secs(8);
+
+/// Most of the recognised words are JARVIS's own recent lines.
+fn is_echo(heard: &str, said: &VecDeque<String>) -> bool {
+    let words = |t: &str| t.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() > 2).map(str::to_string).collect::<Vec<_>>();
+    let heard = words(heard);
+    if heard.is_empty() {
+        return false;
+    }
+    let said: std::collections::HashSet<String> = said.iter().flat_map(|l| words(l)).collect();
+    let hits = heard.iter().filter(|w| said.contains(*w)).count();
+    hits * 10 >= heard.len() * 6
+}
+
+/// A phrase that repeats the running request this soon is the recogniser
+/// hearing one utterance twice, not the user asking again.
+const REPEAT_WINDOW: Duration = Duration::from_secs(5);
+
+/// `heard` is the running request again (the request may carry a
+/// «[Пользователь перебил …]» note in front, so the end is compared).
+fn same_words(heard: &str, request: &str) -> bool {
+    let norm = |t: &str| t.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+    let (h, r) = (norm(heard), norm(request));
+    !h.is_empty() && (h == r || r.ends_with(&format!(" {h}")))
+}
+
+fn short(t: &str, max: usize) -> String {
+    let t = t.trim();
+    if t.chars().count() <= max { t.to_string() } else { format!("{}…", t.chars().take(max).collect::<String>()) }
 }
 
 /// Silence after a conversation ended without the name listener: the
@@ -221,11 +234,17 @@ struct Pipeline {
     resting_since: Option<Instant>,
     /// When to say a filler if the answer hasn't started by then.
     filler_at: Option<Instant>,
-    /// When the running turn started and when it was last narrated.
+    /// When the running turn started.
     turn_started: Option<Instant>,
-    last_progress: Option<Instant>,
     /// The turn the user cut off: what it still sends is not said.
     cancelled_turn: Option<u64>,
+    /// The reply is held (speaker silent, queue kept) since the user began
+    /// talking over it: the utterance and when. Their words decide - an
+    /// interruption drops the reply, the room or an echo lets it go on.
+    held: Option<(u64, Instant)>,
+    /// The last lines queued for speech: what the microphone hears back as
+    /// an echo through speakers.
+    recent_said: VecDeque<String>,
 }
 
 impl Pipeline {
@@ -236,26 +255,37 @@ impl Pipeline {
     /// A line that is not the answer (filler, progress): queued like speech,
     /// but the answer still counts as unspoken.
     fn say_aside(&mut self, phrase: String) {
+        self.remember_said(&phrase);
         self.queued_phrases += 1;
         let _ = self.synth_tx.send((self.speech_gen, phrase));
     }
 
-    /// A tool started in the running voice turn: narrate it if the turn is
-    /// already long and nothing else is being said.
-    fn on_tool_started(&mut self, tool: &str, args: &serde_json::Value) {
-        let long = self.turn_started.is_some_and(|t| t.elapsed() >= PROGRESS_AFTER);
-        let spaced = self.last_progress.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY);
-        if !self.turn_active || !long || !spaced || self.queued_phrases > 0 || self.audio.is_playing() {
-            return;
+    fn remember_said(&mut self, phrase: &str) {
+        self.recent_said.push_back(phrase.to_string());
+        while self.recent_said.len() > 8 {
+            self.recent_said.pop_front();
         }
-        if let Some(line) = progress_line(tool, args) {
-            self.last_progress = Some(Instant::now());
-            self.filler_at = None;
-            self.say_aside(line);
+    }
+
+    /// Hold the reply while the user is talking over it.
+    fn hold(&mut self) {
+        if self.held.is_none() {
+            self.audio.set_paused(true);
+            self.held = Some((self.utterance_seq, Instant::now()));
+            tracing::info!("barge-in: reply held on speech onset");
+        }
+    }
+
+    /// Not an interruption after all: the reply goes on where it stopped.
+    fn release(&mut self, why: &str) {
+        if let Some((_, since)) = self.held.take() {
+            self.audio.set_paused(false);
+            tracing::info!(ms = since.elapsed().as_millis() as u64, why, "barge-in: held reply resumed");
         }
     }
 
     fn say(&mut self, phrase: String) {
+        self.remember_said(&phrase);
         self.queued_phrases += 1;
         self.spoken_any = true;
         let _ = self.synth_tx.send((self.speech_gen, phrase));
@@ -303,6 +333,7 @@ impl Pipeline {
 
     /// Drop everything queued or playing.
     fn hush(&mut self) {
+        self.held = None;
         self.ack_gen = None;
         self.filler_at = None;
         self.audio.clear_playback();
@@ -322,7 +353,6 @@ impl Pipeline {
         self.spoken_any = false;
         self.filler_at = Some(Instant::now() + FILLER_AFTER);
         self.turn_started = Some(Instant::now());
-        self.last_progress = None;
         let seq = self.turn_seq;
         let (dtx, mut drx) = mpsc::unbounded_channel::<String>();
         let fwd = self.ev_tx.clone();
@@ -360,7 +390,7 @@ impl Pipeline {
     /// The name alone, or an interruption with nothing to do yet: drop what
     /// is being said and done, and listen. The words that follow are the
     /// command, not a remark.
-    fn call(&mut self) {
+    fn call(&mut self, text: &str) {
         let agent = self.vm.app.state::<Arc<Agent>>().inner().clone();
         let t = Instant::now();
         self.hush();
@@ -372,7 +402,7 @@ impl Pipeline {
         }
         self.vm.metrics.lock().last_barge_in_ms = Some(t.elapsed().as_millis() as u64);
         self.wake();
-        self.say(acknowledgement(self.address_vy));
+        self.say(answer_call(text, self.address_vy));
         self.ack_gen = Some(self.speech_gen);
     }
 
@@ -382,6 +412,16 @@ impl Pipeline {
     fn take_over(&mut self, text: String) {
         let agent = self.vm.app.state::<Arc<Agent>>().inner().clone();
         let t = Instant::now();
+        // The model is told what was cut off, so «нет, короче» or «не эту
+        // папку» read as corrections of what it was doing, not new topics.
+        let speaking = self.held.is_some() || self.audio.is_playing() || self.queued_phrases > 0;
+        let text = if self.turn_active {
+            format!("[Пользователь перебил выполнение просьбы «{}»] {text}", short(&self.turn_text, 120))
+        } else if speaking {
+            format!("[Пользователь перебил твой голосовой ответ] {text}")
+        } else {
+            text
+        };
         self.hush();
         self.last_activity = Instant::now();
         self.vm.metrics.lock().last_barge_in_ms = Some(t.elapsed().as_millis() as u64);
@@ -418,9 +458,10 @@ impl Pipeline {
             let whole = format!("{} {}", self.turn_text, text);
             self.start_turn(whole);
         } else if self.turn_active {
-            // Runs after the current turn; a newer request replaces it.
-            tracing::info!("request queued behind the running voice turn");
-            self.pending_request = Some(text);
+            // A new request while one runs: the newest words win at once -
+            // waiting in a queue behind a long task felt like not being heard.
+            tracing::info!("new request replaces the running voice turn");
+            self.take_over(text);
         } else if agent.is_busy() {
             self.say("Сейчас я выполняю задачу из чата. Скажите ещё раз, когда я закончу.".into());
         } else {
@@ -492,6 +533,7 @@ impl VoiceManager {
             res=opening=>res.map_err(|e|AppError::internal(e.to_string()))??,
         };
         self.listener_failures.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.mic_failures.store(0, std::sync::atomic::Ordering::Relaxed);
         let initial = if dormant { VoiceState::Dormant } else { VoiceState::Listening };
         self.set_state(initial, None, Some((&audio.input_device, &audio.output_device)));
         tracing::info!(voice = %speaker.speaker.name(), dormant, "local voice session started");
@@ -499,6 +541,7 @@ impl VoiceManager {
         let ready_speaker=speaker.clone();
         tokio::task::spawn_blocking(move || {
             let _=ready_speaker.synthesize(&acknowledgement(address_vy));
+            let _=ready_speaker.synthesize(&answer_call("привет", address_vy));
             for f in FILLERS { let _=ready_speaker.synthesize(f); }
         });
 
@@ -566,10 +609,11 @@ impl VoiceManager {
             playback_pending:false,
             filler_at: None,
             turn_started: None,
-            last_progress: None,
             ack_gen: None,
             resting_since: None,
             cancelled_turn: None,
+            held: None,
+            recent_said: VecDeque::new(),
         };
         let mut level_tick = tokio::time::interval(Duration::from_millis(33));
         let mut last_mic=Instant::now();
@@ -578,13 +622,10 @@ impl VoiceManager {
         // action waits for confirmation (given only by clicking on the island —
         // a misheard «да» must not send a message).
         let (confirm_tx, mut confirm_rx) = mpsc::unbounded_channel::<String>();
-        let (tool_tx, mut tool_rx) = mpsc::unbounded_channel::<(String, serde_json::Value)>();
         let confirm_listener = self.app.listen(crate::agent::events::EVT_AGENT, move |e| {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(e.payload()) {
                 if v["type"] == "confirmationRequired" {
                     let _ = confirm_tx.send(v["title"].as_str().unwrap_or_default().to_string());
-                } else if v["type"] == "toolStarted" {
-                    let _ = tool_tx.send((v["tool"].as_str().unwrap_or_default().to_string(), v["args"].clone()));
                 }
             }
         });
@@ -673,6 +714,24 @@ impl VoiceManager {
                         if pl.progress_job == Some(seq) { pl.progress_job = None; }
                         let Ok(t) = res else { continue };
                         if seq != pl.utterance_seq || !vad.is_active() || !stt::is_meaningful(&t.text) { continue; }
+                        // Already answered from its stable words: later decodes of
+                        // the same sound are the same words again. Sending them
+                        // answered every such phrase twice (2026-11-18 log:
+                        // «Красавчик от души, брат» → two replies 2 s apart).
+                        if pl.consumed_seq == Some(seq) { continue; }
+                        // Words heard over a reply that sound like an interruption:
+                        // hold the reply while the rest is said. Sound alone never
+                        // holds it — holding on every noise made the reply stutter
+                        // (three pauses in six seconds, 2026-11-18).
+                        if pl.awake && pl.held.is_none() && pl.audio.is_playing() && !pl.ack_only() {
+                            let interrupting = pl.audio.headphones
+                                || is_stop(&t.text)
+                                || intent::interrupts_reply(&t.text)
+                                || super::wake::addressed(&t.text).is_some();
+                            if interrupting {
+                                pl.hold();
+                            }
+                        }
                         let words = t.text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
                         let stable = match &pl.progress_text {
                             Some((s, w, since)) if *s == seq && *w == words => since.elapsed() >= STABLE_FOR,
@@ -727,9 +786,28 @@ impl VoiceManager {
                                 // or the rest of a thought count — not the film or the
                                 // person next to the user (see `intent`).
                                 let mut t = t;
+                                // Through speakers a loud line of the reply can open the
+                                // detector by itself: that is JARVIS hearing JARVIS.
+                                if pl.held.is_some() && !pl.audio.headphones && is_echo(&t.text, &pl.recent_said) {
+                                    tracing::info!(words, "barge-in: own voice heard back, not an interruption");
+                                    pl.release("echo");
+                                    pl.refresh_state(&vad);
+                                    continue;
+                                }
+                                // The same words again within seconds of starting a turn
+                                // on them: a second decode of one phrase, not a request.
+                                if pl.awake && meaningful && !pl.turn_text.is_empty()
+                                    && pl.turn_started.is_some_and(|s| s.elapsed() < REPEAT_WINDOW)
+                                    && same_words(&t.text, &pl.turn_text)
+                                {
+                                    tracing::info!(words, "voice: repeated decode of the running request dropped");
+                                    pl.refresh_state(&vad);
+                                    continue;
+                                }
                                 if pl.awake && pl.wake_enabled && meaningful && !invited {
                                     let ctx = intent::Context {
                                         busy: pl.turn_active || reply_busy,
+                                        speaking: reply_busy,
                                         turn_active: pl.turn_active,
                                         continues,
                                         turn_age: pl.turn_started.map_or(Duration::ZERO, |s| s.elapsed()),
@@ -749,7 +827,7 @@ impl VoiceManager {
                                         }
                                         Intent::Call => {
                                             pl.emit_transcript("user", &t.text, true);
-                                            pl.call();
+                                            pl.call(&t.text);
                                             pl.refresh_state(&vad);
                                             continue;
                                         }
@@ -784,7 +862,7 @@ impl VoiceManager {
                                 } else if super::wake::addressed(&t.text).is_some_and(|a|a.only_name) {
                                     pl.wake();
                                     pl.emit_transcript("user",&t.text,true);
-                                    pl.say(acknowledgement(pl.address_vy));
+                                    pl.say(answer_call(&t.text, pl.address_vy));
                                     pl.ack_gen = Some(pl.speech_gen);
                                 } else if !pl.awake {
                                     // Waiting for the name: phrases not addressed to JARVIS
@@ -795,7 +873,7 @@ impl VoiceManager {
                                             pl.wake();
                                             pl.emit_transcript("user", &t.text, true);
                                             if a.only_name {
-                                                let ack = acknowledgement(pl.address_vy);
+                                                let ack = answer_call(&t.text, pl.address_vy);
                                                 pl.say(ack);
                                                 pl.ack_gen = Some(pl.speech_gen);
                                             } else {
@@ -889,10 +967,6 @@ impl VoiceManager {
                     }
                     Ev::Audio(..) => {}
                 },
-                Some((tool, args)) = tool_rx.recv() => {
-                    pl.on_tool_started(&tool, &args);
-                    pl.refresh_state(&vad);
-                }
                 Some(_title) = confirm_rx.recv() => {
                     // The command is on the island with its buttons; reading it
                     // aloud only got in the way. A short cue says «look».
@@ -912,10 +986,19 @@ impl VoiceManager {
                     pl.refresh_state(&vad);
                 }
                 _ = level_tick.tick() => {
+                    // Held, and nothing is being said or recognised any more:
+                    // the words (if any) did not interrupt - go on. A long
+                    // stretch of sound (a film) cannot hold the reply forever.
+                    if let Some((_, since)) = pl.held {
+                        let quiet = !vad.is_active() && pl.transcribing == 0 && since.elapsed() >= HOLD_MIN;
+                        if quiet || since.elapsed() >= HOLD_MAX {
+                            pl.release(if quiet { "no interruption" } else { "held too long" });
+                            pl.refresh_state(&vad);
+                        }
+                    }
                     if pl.turn_active && pl.filler_at.is_some_and(|t| Instant::now() >= t) {
                         pl.filler_at = None;
                         if pl.queued_phrases == 0 && !pl.audio.is_playing() {
-                            pl.last_progress = Some(Instant::now());
                             pl.say_aside(FILLERS[pl.turn_seq as usize % FILLERS.len()].to_string());
                         }
                     }
@@ -983,6 +1066,15 @@ mod tests {
         // Headphones: no echo, plain words interrupt; sounds still do not.
         assert!(is_reply_interruption("Сегодня хорошая погода.", false, true));
         assert!(!is_reply_interruption("Хм.", false, true));
+    }
+
+    #[test]
+    fn a_second_decode_of_the_running_request_is_recognised() {
+        assert!(same_words("Красавчик, от души, брат!", "Красавчик от души брат."));
+        assert!(same_words("закрой тикток", "[Пользователь перебил твой голосовой ответ] Закрой ТикТок."));
+        assert!(!same_words("закрой тикток", "открой тикток"));
+        assert!(!same_words("тикток", "[Пользователь перебил] открой тикток и ютуб"));
+        assert!(!same_words("", "что угодно"));
     }
 
     #[test]

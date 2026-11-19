@@ -6,15 +6,38 @@
 //    task queue & inline `+ Добавить задачу` composer on right).
 
 import { useMemo, useState, type FormEvent } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { FOCUS_PRESETS } from "../motion";
+import { FocusDial } from "./FocusDial";
 import { Icon } from "../../ui/Icon";
 import { emote } from "../../store/emote";
 import { islandInputHandlers } from "../../store/island";
 import { useHub } from "../../store/hub";
-import { usePrefs } from "../../store/prefs";
-import type { TaskColor, TaskItem } from "../../lib/types";
+import type { TaskItem } from "../../lib/types";
 
-const PRESETS = [15, 25, 45, 60] as const;
-const RING_COLORS: TaskColor[] = ["blue", "amber", "coral", "emerald", "violet"];
+const PRESETS = FOCUS_PRESETS;
+
+/** Digits that flip when the value changes: the old one rises away through a
+ *  blur, the new one comes up from below. Runs once per change. */
+export function FlipNumber({ value }: { value: number }) {
+  const reduced = useReducedMotion();
+  return (
+    <span className="flip-num">
+      <AnimatePresence initial={false} mode="popLayout">
+        <motion.span
+          key={value}
+          className="flip-num-digit"
+          initial={reduced ? { opacity: 0 } : { y: 10, opacity: 0, filter: "blur(4px)" }}
+          animate={{ y: 0, opacity: 1, filter: "blur(0px)" }}
+          exit={reduced ? { opacity: 0 } : { y: -10, opacity: 0, filter: "blur(4px)" }}
+          transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+        >
+          {value}
+        </motion.span>
+      </AnimatePresence>
+    </span>
+  );
+}
 
 function fmtRemaining(sec: number): string {
   const s = Math.max(0, Math.floor(sec));
@@ -29,32 +52,28 @@ function fmtEndsAt(endsAt: string | null, remainingSec: number): string {
   return dt.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
 }
 
-function JarvisMiniMark() {
-  return (
-    <span className="jarvis-mini-mark" aria-hidden="true">
-      J
-    </span>
-  );
-}
-
 function FocusRingSvg({
   size,
   stroke,
   fraction,
   centerLabel,
   paused,
+  live,
+  big,
 }: {
   size: number;
   stroke: number;
   fraction: number;
   centerLabel: string | number;
   paused?: boolean;
+  live?: boolean;
+  big?: boolean;
 }) {
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
   const clamped = Math.min(1, Math.max(0, fraction));
   return (
-    <div className={`focus-ring-wrap${paused ? " is-paused" : ""}`} style={{ width: size, height: size }}>
+    <div className={`focus-ring-wrap${paused ? " is-paused" : ""}${live ? " is-live" : ""}${big ? " is-big" : ""}`} style={{ width: size, height: size }}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="focus-ring-svg" aria-hidden="true">
         <circle cx={size / 2} cy={size / 2} r={r} strokeWidth={stroke} className="focus-ring-track" />
         <circle
@@ -67,7 +86,7 @@ function FocusRingSvg({
           className="focus-ring-arc"
         />
       </svg>
-      <span className="focus-ring-num">{centerLabel}</span>
+      <span className="focus-ring-num">{typeof centerLabel === "number" ? <FlipNumber value={centerLabel} /> : centerLabel}</span>
     </div>
   );
 }
@@ -101,13 +120,12 @@ export function FocusHoverBanner({ onExpand }: { onExpand: () => void }) {
       role="region"
       aria-label="Текущая сессия фокуса"
     >
-      <FocusRingSvg size={48} stroke={3.8} fraction={ringFrac} centerLabel={minsCeil} paused={focus.paused} />
+      <FocusRingSvg size={48} stroke={3.8} fraction={ringFrac} centerLabel={minsCeil} paused={focus.paused} live={!focus.paused} />
 
       <div className="focus-banner-body">
         <div className="focus-eyebrow">
-          <JarvisMiniMark />
-          <span>Джарвис · Фокус</span>
           <span className={`focus-live-dot${focus.paused ? " is-paused" : ""}`} aria-hidden="true" />
+          <span>{focus.paused ? "Фокус на паузе" : "Фокус"}</span>
         </div>
 
         <div className="focus-banner-title" title={focus.title}>
@@ -120,8 +138,7 @@ export function FocusHoverBanner({ onExpand }: { onExpand: () => void }) {
 
         <div className="focus-banner-meta">
           <span>
-            {fmtRemaining(rem)} осталось
-            {focus.paused ? " · на паузе" : endsLabel ? ` · до ${endsLabel}` : ""}
+            {fmtRemaining(rem)} осталось{!focus.paused && endsLabel ? `, до ${endsLabel}` : ""}
           </span>
           <span className="focus-banner-next">
             {nextTask
@@ -169,12 +186,11 @@ export function FocusDeck() {
   const taskAdd = useHub((s) => s.taskAdd);
   const taskToggle = useHub((s) => s.taskToggle);
   const taskRemove = useHub((s) => s.taskRemove);
-  const shortcut = usePrefs((p) => p.workspaceShortcut);
 
   const [presetMin, setPresetMin] = useState<number>(25);
+  const [burstKey, setBurstKey] = useState(0);
   const [customTitle, setCustomTitle] = useState<string>("");
   const [newTaskText, setNewTaskText] = useState<string>("");
-  const [ringColorIdx, setRingColorIdx] = useState<number>(0);
 
   const inputProps = islandInputHandlers();
 
@@ -203,68 +219,58 @@ export function FocusDeck() {
   const submitTask = async (e: FormEvent) => {
     e.preventDefault();
     if (!newTaskText.trim()) return;
-    const color = RING_COLORS[ringColorIdx % RING_COLORS.length]!;
-    await taskAdd(newTaskText, { color });
+    await taskAdd(newTaskText);
     setNewTaskText("");
-    setRingColorIdx((i) => (i + 1) % RING_COLORS.length);
   };
 
   const totalSec = Math.max(1, focus.totalSec);
   const remSec = Math.max(0, focus.remainingSec);
   const activeMins = Math.max(1, Math.ceil(remSec / 60));
   const endsLabel = fmtEndsAt(focus.endsAt, remSec);
-  const activeColor = RING_COLORS[ringColorIdx % RING_COLORS.length]!;
 
   return (
-    <div className="focus-deck">
-      {/* Left Elevated Bento Card */}
-      <div className={`focus-card${focus.active ? " is-active" : ""}`}>
-        <div className="focus-card-top">
-          <FocusRingSvg
-            size={56}
-            stroke={4.2}
-            fraction={focus.active ? remSec / totalSec : 1}
-            centerLabel={focus.active ? activeMins : presetMin}
-            paused={focus.active && focus.paused}
-          />
-          {focus.active && (
-            <button
-              type="button"
-              className="focus-cancel-btn"
-              aria-label="Сбросить сессию фокуса"
-              title="Отменить сессию"
-              onClick={() => void focusCancel()}
-            >
-              <Icon name="close" size={12} />
-            </button>
-          )}
-        </div>
+    <div className={`focus-deck${focus.active ? " is-active" : ""}`}>
+      {/* Hero strip: the dial, what we focus on, and the one main control. */}
+      <div className="focus-hero">
+        <FocusDial
+          fraction={focus.active ? remSec / totalSec : presetMin / 60}
+          minutes={focus.active ? activeMins : presetMin}
+          caption={focus.active && focus.paused ? "пауза" : "мин"}
+          live={focus.active && !focus.paused}
+          paused={focus.active && focus.paused}
+          active={focus.active}
+          burstKey={burstKey}
+          onSetMinutes={focus.active ? undefined : setPresetMin}
+        />
 
-        <div className="focus-card-mid">
+        <div className="focus-hero-mid">
           <div className="focus-eyebrow">
-            <JarvisMiniMark />
-            <span>Фокус</span>
             <span
               className={`focus-live-dot${!focus.active ? " is-idle" : focus.paused ? " is-paused" : ""}`}
               aria-hidden="true"
             />
+            <span>{!focus.active ? "Новая сессия" : focus.paused ? "На паузе" : "Идёт фокус"}</span>
+            {focus.active && (
+              <button type="button" className="focus-cancel-link" onClick={() => void focusCancel()}>
+                Отменить
+              </button>
+            )}
           </div>
 
           {focus.active ? (
             <>
-              <div className="focus-card-title" title={focus.title}>
+              <div className="focus-hero-title" title={focus.title}>
                 {focus.title}
               </div>
               <div className="focus-card-sub">
-                {fmtRemaining(remSec)} осталось
-                {focus.paused ? " · пауза" : endsLabel ? ` · до ${endsLabel}` : ""}
+                {fmtRemaining(remSec)} осталось{!focus.paused && endsLabel ? `, до ${endsLabel}` : ""}
               </div>
             </>
           ) : (
             <>
               <input
                 type="text"
-                className="focus-title-input"
+                className="focus-hero-input"
                 value={customTitle}
                 onChange={(e) => setCustomTitle(e.target.value)}
                 placeholder={defaultFocusTask ? defaultFocusTask.title : "Над чем сфокусируемся?"}
@@ -285,7 +291,14 @@ export function FocusDeck() {
                     className={`focus-preset-pill${presetMin === m ? " is-selected" : ""}`}
                     onClick={() => setPresetMin(m)}
                   >
-                    {m}м
+                    {presetMin === m && (
+                      <motion.span
+                        layoutId="focus-preset-sel"
+                        className="focus-preset-sel"
+                        transition={{ type: "spring", stiffness: 520, damping: 34 }}
+                      />
+                    )}
+                    <span className="focus-preset-label">{m} мин</span>
                   </button>
                 ))}
               </div>
@@ -293,30 +306,44 @@ export function FocusDeck() {
           )}
         </div>
 
-        <div className="focus-card-foot">
+        <div className="focus-hero-actions">
           {focus.active ? (
-            <div className="focus-pill-pair">
-              <button type="button" className="focus-pill-btn is-dark" onClick={() => void focusPauseToggle()}>
-                <Icon name={focus.paused ? "play" : "pause"} size={12} />
-                <span>{focus.paused ? "Дальше" : "Пауза"}</span>
+            <>
+              <button
+                type="button"
+                className="focus-round-btn is-dark"
+                aria-label={focus.paused ? "Продолжить" : "Пауза"}
+                title={focus.paused ? "Продолжить" : "Пауза"}
+                onClick={() => void focusPauseToggle()}
+              >
+                <Icon name={focus.paused ? "play" : "pause"} size={16} />
               </button>
               <button
                 type="button"
-                className="focus-pill-btn is-cobalt"
+                className="focus-round-btn is-bone"
+                aria-label="Готово"
+                title="Готово"
                 onClick={() => {
                   emote("star");
+                  setBurstKey((k) => k + 1);
                   void focusComplete();
                 }}
               >
-                <Icon name="check" size={13} />
-                <span>Готово</span>
+                <Icon name="check" size={17} />
               </button>
-            </div>
+            </>
           ) : (
-            <button type="button" className="focus-pill-btn is-cobalt is-wide" onClick={startFromHero}>
-              <Icon name="play" size={12} />
-              <span>Начать · {presetMin} мин</span>
-            </button>
+            <motion.button
+              whileHover={{ scale: 1.06 }}
+              whileTap={{ scale: 0.92 }}
+              type="button"
+              className="focus-round-btn is-bone is-big"
+              aria-label={`Начать на ${presetMin} мин`}
+              title={`Начать на ${presetMin} мин`}
+              onClick={startFromHero}
+            >
+              <Icon name="play" size={18} />
+            </motion.button>
           )}
         </div>
       </div>
@@ -324,21 +351,28 @@ export function FocusDeck() {
       {/* Right Task Queue Column */}
       <div className="focus-queue">
         <div className="focus-queue-head">
-          <span className="focus-queue-label">Далее</span>
+          <span className="focus-queue-label">Задачи</span>
           <span className="focus-queue-stats">
-            {openTasks.length} осталось · {focus.minutesToday} мин сегодня
+            {openTasks.length > 0 ? `${openTasks.length} открыто, ` : ""}
+            {focus.minutesToday} мин в фокусе сегодня
           </span>
         </div>
 
         <div className="focus-task-list scroll">
           {sortedTasks.length === 0 ? (
             <div className="focus-empty">
-              Добавьте ключевые задачи на день — нажмите на любую, чтобы запустить таймер фокуса.
+              Задач на сегодня нет. Время в конце строки — «Отчёт 15:00» — поставит задачу в календарь.
             </div>
           ) : (
-            sortedTasks.map((t) => (
-              <div
+            <AnimatePresence initial={false}>
+            {sortedTasks.map((t, i) => (
+              <motion.div
+                layout
                 key={t.id}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0, transition: { delay: Math.min(i, 6) * 0.035 } }}
+                exit={{ opacity: 0, x: 16, transition: { duration: 0.18 } }}
+                transition={{ type: "spring", stiffness: 480, damping: 36 }}
                 className={`focus-task-row${t.completed ? " is-done" : ""}${focus.active && focus.taskId === t.id ? " is-current" : ""}`}
               >
                 <button
@@ -371,30 +405,24 @@ export function FocusDeck() {
                 >
                   <Icon name="close" size={11} />
                 </button>
-              </div>
-            ))
+              </motion.div>
+            ))}
+            </AnimatePresence>
           )}
         </div>
 
         <form className="focus-add-bar" onSubmit={(e) => void submitTask(e)}>
-          <button
-            type="button"
-            className={`focus-color-pick ring-${activeColor}`}
-            title="Сменить цвет метки"
-            aria-label="Сменить цвет задачи"
-            onClick={() => setRingColorIdx((i) => (i + 1) % RING_COLORS.length)}
-          >
-            <Icon name="plus" size={10} />
-          </button>
+          <span className="focus-add-icon" aria-hidden="true">
+            <Icon name="plus" size={12} />
+          </span>
           <input
             type="text"
             value={newTaskText}
             onChange={(e) => setNewTaskText(e.target.value)}
-            placeholder="Добавить задачу (напр. Отчёт 15:00)"
+            placeholder="Новая задача"
             aria-label="Добавить задачу"
             {...inputProps}
           />
-          {shortcut && <kbd className="focus-kbd">{shortcut.replaceAll("+", " ")}</kbd>}
         </form>
       </div>
     </div>

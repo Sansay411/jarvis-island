@@ -132,6 +132,17 @@ async fn media_control(_: ToolCtx, args: Value) -> AppResult<ToolOutput> {
         media::MediaAction::Previous => "Предыдущий трек",
         media::MediaAction::Stop => "Остановлено",
     };
+    // Nothing open to resume: a media key into the void is not «playing».
+    // Saying so plainly stops the model from pressing play again and again
+    // or opening a music site (the user wants only their own player, 2026-11-18).
+    if out.method == "media_key" && !out.state.available && matches!(act, media::MediaAction::Play | media::MediaAction::PlayPause) {
+        return Ok(ToolOutput {
+            ok: false,
+            summary: "Плеер не открыт: отправил клавишу воспроизведения, но Windows не видит ни одного плеера. Скажи пользователю, что музыку нужно запустить в его плеере — сайты не открывай, если он сам не попросил.".into(),
+            data: json!({ "state": out.state, "method": out.method, "verified": false }),
+            images: vec![],
+        });
+    }
     let summary = if out.method == "media_key" {
         format!("{what}: отправлена медиаклавиша (плеер не сообщает состояние)")
     } else if out.verified {

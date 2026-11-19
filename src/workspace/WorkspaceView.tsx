@@ -132,7 +132,6 @@ function AssistantMessage({
 }) {
   const ttsSpeaking = useWorkspaceTts((s) => s.speaking);
   const ttsText = useWorkspaceTts((s) => s.text);
-  const ttsLatency = useWorkspaceTts((s) => s.latencyMs);
   const [copied, setCopied] = useState(false);
 
   const cleaned = stripMarkdownForSpeech(item.text);
@@ -185,11 +184,6 @@ function AssistantMessage({
             )}
           </button>
 
-          {isSpeaking && ttsLatency !== null && (
-            <span className="msg-tts-latency" title="Время до первого звука (Edge Neural HD)">
-              ⚡ {ttsLatency} мс
-            </span>
-          )}
 
           <button
             type="button"
@@ -200,6 +194,66 @@ function AssistantMessage({
             <WsIcon name={copied ? "check" : "copy"} size={12} />
             <span>{copied ? "Скопировано" : "Копировать"}</span>
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+type ToolItem = Extract<ChatItem, { kind: "tool" }>;
+type Row = { kind: "item"; item: ChatItem } | { kind: "tools"; id: string; tools: ToolItem[] };
+
+/** Consecutive finished tool steps fold into one line; a step still running
+ *  or waiting for permission always stays on its own. */
+function groupRows(items: ChatItem[]): Row[] {
+  const rows: Row[] = [];
+  let run: ToolItem[] = [];
+  const flush = () => {
+    if (run.length === 1) rows.push({ kind: "item", item: run[0]! });
+    else if (run.length > 1) rows.push({ kind: "tools", id: run[0]!.id, tools: run });
+    run = [];
+  };
+  for (const it of items) {
+    if (it.kind === "tool" && it.status !== "running" && it.status !== "awaiting") {
+      run.push(it);
+      continue;
+    }
+    flush();
+    rows.push({ kind: "item", item: it });
+  }
+  flush();
+  return rows;
+}
+
+function plural(n: number, one: string, few: string, many: string): string {
+  const d = n % 10;
+  const h = n % 100;
+  if (d === 1 && h !== 11) return one;
+  if (d >= 2 && d <= 4 && (h < 12 || h > 14)) return few;
+  return many;
+}
+
+function ToolGroup({ tools }: { tools: ToolItem[] }) {
+  const [open, setOpen] = useState(false);
+  const failed = tools.filter((t) => t.status === "failed").length;
+  const titles = tools.map((t) => t.title).join(", ");
+  return (
+    <div className={`tool-group${open ? " is-open" : ""}`}>
+      <button type="button" className="tool-group-line" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <span className="tool-group-count">
+          {tools.length} {plural(tools.length, "действие", "действия", "действий")}
+          {failed > 0 && <span className="tool-group-failed">, {failed} с ошибкой</span>}
+        </span>
+        <span className="tool-group-titles">{titles}</span>
+        <span className={`tool-chevron${open ? " is-open" : ""}`}>
+          <WsIcon name="chevronRight" size={12} />
+        </span>
+      </button>
+      {open && (
+        <div className="tool-group-list">
+          {tools.map((t) => (
+            <ToolRow key={t.id} item={t} />
+          ))}
         </div>
       )}
     </div>
@@ -232,14 +286,12 @@ export const WorkspaceView = memo(function WorkspaceView({ visible = true }: { v
   const items = useAgent((s) => s.items);
   const phase = useAgent((s) => s.phase);
   const active = useAgent((s) => s.activeTurn);
-  const status = useAgent((s) => s.status);
   const planSteps = useAgent((s) => s.planSteps);
   const waitLeft = useSecondsLeft(useAgent((s) => s.waitUntil));
   const newConversation = useAgent((s) => s.newConversation);
   const set = useIsland((s) => s.set);
 
   const fullControl = usePrefs((s) => s.fullControl);
-  const setFullControl = usePrefs((s) => s.setFullControl);
   const autoSpeakReplies = usePrefs((s) => s.autoSpeakReplies);
   const setAutoSpeakReplies = usePrefs((s) => s.setAutoSpeakReplies);
 
@@ -272,31 +324,32 @@ export const WorkspaceView = memo(function WorkspaceView({ visible = true }: { v
       ? `Лимит · ${waitLeft} с`
       : active && phase
         ? `${PHASE_LABEL[phase]}…`
-        : status?.configured && status.model
-          ? status.model
-          : "Джарвис";
+        : "Думает…";
 
   return (
     <div className="view view-workspace">
       <div className="brow ws-brow">
         <div className="ws-brow-left">
-          <span className={`ws-status-pill${active ? " is-busy" : ""}`} title={statusText}>
-            <span className="ws-status-dot" />
-            <span className="brow-name">{statusText}</span>
-          </span>
-
           <button
             type="button"
-            role="switch"
-            aria-checked={fullControl}
-            className={`ws-autopilot-pill${fullControl ? " is-on" : ""}`}
-            onClick={() => void setFullControl(!fullControl)}
-            title="Полное управление: агент действует сам; необратимые действия всё равно требуют подтверждения"
+            className="icon-btn"
+            aria-label="Новый разговор"
+            title="Новый разговор"
+            onClick={() => void newConversation()}
+            disabled={!!active || (items.length === 0 && planSteps.length === 0)}
           >
-            <span className="ws-autopilot-dot" />
-            <span>Автопилот</span>
-            <WsIcon name="bolt" size={11} className="ws-autopilot-bolt" />
+            <Icon name="plus" size={15} />
           </button>
+          {active ? (
+            <span className="ws-status is-busy" title={statusText}>
+              <span className="ws-status-dot" />
+              {statusText}
+            </span>
+          ) : fullControl ? (
+            <span className="ws-autopilot-mark" title="Автопилот включён: Джарвис действует сам. Выключить — в Настройках">
+              <WsIcon name="bolt" size={12} />
+            </span>
+          ) : null}
         </div>
 
         {/* Center 72px clear zone reserved for Jarvis's Eyes on the Island brow */}
@@ -308,36 +361,22 @@ export const WorkspaceView = memo(function WorkspaceView({ visible = true }: { v
               type="button"
               className="ws-stop-tts-pill"
               onClick={() => void workspaceIpc.tts.stop()}
-              title="Остановить озвучку (tts_stop)"
-              aria-label="Стоп звук"
+              title="Остановить озвучку"
+              aria-label="Остановить озвучку"
             >
               <LiveAudioBars active />
-              <span>Стоп звук</span>
             </button>
           )}
-
           <button
             type="button"
             role="switch"
             aria-checked={autoSpeakReplies}
-            className={`ws-autospeak-pill${autoSpeakReplies ? " is-on" : ""}${ttsSpeaking ? " is-compact" : ""}`}
+            className={`icon-btn ws-autospeak${autoSpeakReplies ? " is-on" : ""}`}
             onClick={() => void setAutoSpeakReplies(!autoSpeakReplies)}
-            title="Автоозвучка: автоматически озвучивать ответы Джарвиса в чате"
-            aria-label="Автоозвучка"
+            title={autoSpeakReplies ? "Ответы озвучиваются — выключить" : "Озвучивать ответы"}
+            aria-label="Озвучивать ответы"
           >
-            <WsIcon name={autoSpeakReplies ? "speaker" : "speakerOff"} size={13} />
-            {!ttsSpeaking && <span>Автоозвучка</span>}
-          </button>
-
-          <button
-            type="button"
-            className="icon-btn"
-            aria-label="Новый разговор"
-            title="Новый разговор"
-            onClick={() => void newConversation()}
-            disabled={!!active || (items.length === 0 && planSteps.length === 0)}
-          >
-            <Icon name="chat" size={15} />
+            <WsIcon name={autoSpeakReplies ? "speaker" : "speakerOff"} size={15} />
           </button>
           <button
             type="button"
@@ -379,7 +418,9 @@ export const WorkspaceView = memo(function WorkspaceView({ visible = true }: { v
         {items.length === 0 ? (
           <EmptyState />
         ) : (
-          items.map((it) => {
+          groupRows(items).map((row) => {
+            if (row.kind === "tools") return <ToolGroup key={row.id} tools={row.tools} />;
+            const it = row.item;
             switch (it.kind) {
               case "user":
                 return (
@@ -421,7 +462,6 @@ export const WorkspaceView = memo(function WorkspaceView({ visible = true }: { v
       </div>
 
       <JobsStrip />
-      {items.length > 0 && <RoutinesBar variant="strip" />}
       <Composer visible={visible} />
     </div>
   );

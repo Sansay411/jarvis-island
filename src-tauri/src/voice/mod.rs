@@ -26,6 +26,7 @@ pub mod stt;
 pub mod tts;
 pub mod vad;
 pub mod wake;
+pub mod yandex;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -213,6 +214,78 @@ fn finish_session(slot:&Mutex<Option<Session>>,id:u64)->bool {
     if current.as_ref().is_some_and(|s|s.id==id) { current.take();true } else { false }
 }
 
+/// Errors of `AudioIo::start` that mean the microphone did not open (a hang
+/// or a refusal from Windows), not settings, models or the network.
+fn is_mic_failure(e: &AppError) -> bool {
+    match e {
+        AppError::Timeout(_) => true,
+        AppError::Platform(m) => m.contains("икрофон") || m.contains("аудиоустройств"),
+        _ => false,
+    }
+}
+
+/// `jarvis.exe --probe-mic NAME` in a hidden helper process: true when the
+/// microphone opens and delivers sound there within 20 s.
+fn probe_mic_in_child(input: &str) -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let Ok(exe) = std::env::current_exe() else { return false };
+    let Ok(mut child) = std::process::Command::new(exe)
+        .args(["--probe-mic", input])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let until = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < until {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => std::thread::sleep(Duration::from_millis(200)),
+            Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    false
+}
+
+/// At most one audio self-restart per 10 minutes, remembered across
+/// restarts in a marker file, so a device that only works in fresh
+/// processes for a moment cannot make JARVIS restart in a loop.
+fn restart_allowed(marker: &std::path::Path) -> bool {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let last = std::fs::read_to_string(marker).ok().and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0);
+    if now.saturating_sub(last) < 600 {
+        return false;
+    }
+    std::fs::write(marker, now.to_string()).is_ok()
+}
+
+/// Start a new JARVIS two seconds from now and quit this one. The delay lets
+/// this process exit first: the single-instance guard would otherwise hand
+/// the new launch back to the old process.
+fn relaunch(app: &AppHandle) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let Ok(exe) = std::env::current_exe() else { return };
+    let spawned = std::process::Command::new("cmd.exe")
+        .raw_arg(format!("/c ping -n 3 127.0.0.1 >nul & start \"\" \"{}\"", exe.display()))
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+    if let Err(e) = spawned {
+        tracing::warn!("relaunch failed: {e}");
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        app.exit(0);
+    });
+}
+
 const TTS_AUDIO_IDLE_KEEP: Duration = Duration::from_secs(90);
 
 pub struct VoiceManager {
@@ -227,6 +300,10 @@ pub struct VoiceManager {
     download: Mutex<Option<CancellationToken>>,
     /// Failed starts of the name listener in a row (retry back-off).
     listener_failures: std::sync::atomic::AtomicU32,
+    /// Microphone open failures in a row, whatever started the session.
+    mic_failures: std::sync::atomic::AtomicU32,
+    /// A microphone probe / self-restart is under way.
+    healing: std::sync::atomic::AtomicBool,
     session_seq:std::sync::atomic::AtomicU64,
     /// Monotonic generation counter for universal standalone TTS (`tts_speak` / `speak_aloud`).
     tts_gen: Arc<AtomicU64>,
@@ -246,6 +323,8 @@ impl VoiceManager {
             speech: Arc::new(tts::SpeechEngine::default()),
             download: Mutex::new(None),
             listener_failures: std::sync::atomic::AtomicU32::new(0),
+            mic_failures: std::sync::atomic::AtomicU32::new(0),
+            healing: std::sync::atomic::AtomicBool::new(false),
             session_seq: std::sync::atomic::AtomicU64::new(0),
             tts_gen: Arc::new(AtomicU64::new(0)),
             tts_status: Arc::new(Mutex::new(TtsStatusPayload::default())),
@@ -299,6 +378,40 @@ impl VoiceManager {
     fn wake_word_on(&self) -> bool {
         let v = self.app.state::<AppState>().store.settings().voice;
         v.enabled && v.wake_word && v.engine != "realtime"
+    }
+
+    /// The microphone keeps failing to open. Once one IAudioClient::Initialize
+    /// hangs, Windows refuses every later attempt from the same process
+    /// («Параметр задан неверно») while a fresh process opens the device at
+    /// once — JARVIS stayed deaf until restarted (2026-11-18). So after three
+    /// failures in a row a helper process tries the microphone; if it works
+    /// there, JARVIS restarts itself (at most once per 10 minutes). If it
+    /// fails there too, the device itself needs reconnecting and the island
+    /// keeps saying so.
+    fn heal_audio(self: &Arc<Self>, e: &AppError) {
+        if !is_mic_failure(e) {
+            return;
+        }
+        let n = self.mic_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        if n < 3 || self.healing.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let me = Arc::clone(self);
+        let input = me.app.state::<AppState>().store.settings().voice.input_device;
+        tauri::async_runtime::spawn_blocking(move || {
+            let works_elsewhere = probe_mic_in_child(&input);
+            let marker = me.app.path().app_local_data_dir().ok().map(|d| d.join("audio-restart.txt"));
+            if works_elsewhere && marker.as_deref().is_some_and(restart_allowed) {
+                tracing::warn!("microphone works in a fresh process but not in this one: restarting JARVIS");
+                me.set_state(VoiceState::Connecting, Some("Перезапускаю звук…".into()), None);
+                me.stop();
+                relaunch(&me.app);
+                return;
+            }
+            tracing::warn!(works_elsewhere, "microphone probe: no restart");
+            me.mic_failures.store(0, Ordering::Relaxed);
+            me.healing.store(false, Ordering::Relaxed);
+        });
     }
 
     /// Close the microphone completely and stop any standalone TTS speech.
@@ -782,6 +895,7 @@ impl VoiceManager {
                 // The background name listener failed (a wedged microphone):
                 // no error on the island, try again later.
                 Err(e) if !was_awake => {
+                    me.heal_audio(&e);
                     let n = me.listener_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let wait = Duration::from_secs((5u64 << n.min(3)).min(30));
                     tracing::warn!("name listener failed ({e}); retrying in {} s", wait.as_secs());
@@ -794,6 +908,7 @@ impl VoiceManager {
                 }
                 Err(e) => {
                     tracing::warn!("voice session ended with error: {e}");
+                    me.heal_audio(&e);
                     me.set_state(VoiceState::Error, Some(e.to_string()), None);
                     if me.wake_word_on() {
                         let again=me.clone();
@@ -1066,6 +1181,30 @@ impl VoiceManager {
 #[cfg(test)]
 mod key_tests {
     use super::reusable_voice_key;
+
+    #[test]
+    fn only_a_microphone_that_did_not_open_triggers_the_audio_probe() {
+        use super::{is_mic_failure, AppError};
+        assert!(is_mic_failure(&AppError::Platform("Не удалось открыть микрофон: Failed to initialize audio client".into())));
+        assert!(is_mic_failure(&AppError::Timeout("Микрофон «fifine» не отвечает".into())));
+        assert!(is_mic_failure(&AppError::Timeout("Это аудиоустройство всё ещё не ответило".into())));
+        assert!(!is_mic_failure(&AppError::InvalidInput("Голосовой режим выключен в настройках".into())));
+        assert!(!is_mic_failure(&AppError::Network("ElevenLabs".into())));
+    }
+
+    #[test]
+    fn audio_self_restart_happens_at_most_once_per_ten_minutes() {
+        let dir = std::env::temp_dir().join(format!("jarvis-restart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("audio-restart.txt");
+        let _ = std::fs::remove_file(&marker);
+        assert!(super::restart_allowed(&marker));
+        assert!(!super::restart_allowed(&marker));
+        std::fs::write(&marker, "1000").unwrap();
+        assert!(super::restart_allowed(&marker));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn old_session_finishing_cannot_remove_a_new_microphone_session() {
         let slot=super::Mutex::new(Some(super::Session {id:2,cancel:Default::default(),ctl:None}));

@@ -64,7 +64,7 @@ async fn browser_switch_tab(_: ToolCtx, args: Value) -> AppResult<ToolOutput> {
 
 async fn browser_close_tab(_: ToolCtx, args: Value) -> AppResult<ToolOutput> {
     let a: TabArgs = parse(args)?;
-    let (name, st) = platform::blocking(move || {
+    let (name, closed, st) = platform::blocking(move || {
         let hwnd = match a.hwnd {
             Some(h) => h,
             None => pick_window(a.browser.as_deref())?,
@@ -72,7 +72,7 @@ async fn browser_close_tab(_: ToolCtx, args: Value) -> AppResult<ToolOutput> {
         browser::close_tab(hwnd, a.query.as_deref(), a.index)
     })
     .await?;
-    let still_open = st.tabs.iter().any(|t| t.title == name);
+    let still_open = !closed;
     Ok(ToolOutput {
         ok: !still_open,
         summary: if still_open { format!("Вкладка «{name}» не закрылась") } else { format!("Вкладка «{name}» закрыта") },

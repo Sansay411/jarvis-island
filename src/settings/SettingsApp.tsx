@@ -71,6 +71,7 @@ interface SettingsView {
   hasVoiceKey: boolean;
   hasAzureKey: boolean;
   hasElevenlabsKey: boolean;
+  hasYandexKey: boolean;
   logPath: string | null;
   dataPath: string | null;
 }
@@ -208,6 +209,7 @@ const FALLBACK_SETTINGS_VIEW: SettingsView = {
   hasVoiceKey: true,
   hasAzureKey: false,
   hasElevenlabsKey: false,
+  hasYandexKey: false,
   logPath: "C:\\Users\\-pin\\AppData\\Local\\dev.jarvis.desktop\\logs\\jarvis.log",
   dataPath: "C:\\Users\\-pin\\AppData\\Local\\dev.jarvis.desktop\\jarvis.db",
 };
@@ -449,6 +451,36 @@ function Keycaps({ value }: { value: string }) {
   );
 }
 
+/** Yandex SpeechKit through the user's own Yandex Cloud: native Russian voices, streamed. */
+function YandexVoice({
+  has,
+  notify,
+  onChanged,
+  onUse,
+}: {
+  has: boolean;
+  notify: (tone: Tone, text: string) => void;
+  onChanged: () => void;
+  onUse: (id: string) => void;
+}) {
+  return (
+    <>
+      <p className="note">
+        Яндекс SpeechKit: родные русские голоса с правильными ударениями, около 1 ₸ за фразу. Нужен API-ключ сервисного аккаунта с ролью ai.speechkit-tts.user. Наружу уходит только текст ответа; без интернета говорит локальный голос.
+      </p>
+      <KeyField
+        kind="yandex"
+        has={has}
+        notify={notify}
+        onChanged={() => {
+          onChanged();
+          onUse("yandex:kirill");
+        }}
+      />
+    </>
+  );
+}
+
 /** ElevenLabs through the user's own plan: the most natural voice, streamed. */
 function ElevenVoice({
   has,
@@ -523,7 +555,7 @@ function KeyField({
   baseUrl,
   notify,
 }: {
-  kind: "llm" | "voice" | "azure" | "elevenlabs";
+  kind: "llm" | "voice" | "azure" | "elevenlabs" | "yandex";
   has: boolean;
   onChanged: () => void;
   baseUrl?: string;
@@ -1013,6 +1045,24 @@ export default function SettingsApp({
     }
   };
 
+  // A cloud key was just saved: make its voice the current one and store it
+  // right away — reloading the settings after the key used to drop the pick.
+  const useCloudVoice = async (id: string) => {
+    if (!draft) return;
+    const next = structuredClone(draft);
+    next.voice.ttsVoice = id;
+    try {
+      if (hasTauri()) {
+        await invoke("settings_save", { settings: next });
+        await load();
+      } else {
+        setDraft(next);
+      }
+    } catch (e) {
+      notify("error", errorMessage(e));
+    }
+  };
+
   const test = async () => {
     setBusy(true);
     notify("info", "Проверяю подключение…");
@@ -1487,23 +1537,23 @@ export default function SettingsApp({
                   </Group>
 
                   <Group title="Дополнительные облачные ключи (необязательно)">
+                    <YandexVoice
+                      has={view.hasYandexKey}
+                      notify={notify}
+                      onChanged={loadVoices}
+                      onUse={(id) => void useCloudVoice(id)}
+                    />
                     <ElevenVoice
                       has={view.hasElevenlabsKey}
                       notify={notify}
-                      onChanged={() => {
-                        void load();
-                        loadVoices();
-                      }}
-                      onUse={(id) => set((s) => ({ ...s, voice: { ...s.voice, ttsVoice: id } }))}
+                      onChanged={loadVoices}
+                      onUse={(id) => void useCloudVoice(id)}
                     />
                     <AzureVoice
                       has={view.hasAzureKey}
                       notify={notify}
-                      onChanged={() => {
-                        void load();
-                        loadVoices();
-                      }}
-                      onUse={(id) => set((s) => ({ ...s, voice: { ...s.voice, ttsVoice: id } }))}
+                      onChanged={loadVoices}
+                      onUse={(id) => void useCloudVoice(id)}
                     />
                   </Group>
                 </>

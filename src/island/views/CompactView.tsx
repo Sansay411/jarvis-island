@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { hasActiveMedia, useSystem } from "../../store/system";
 import { useRunningJobs } from "../../store/jobs";
 import { Artwork, EqualizerBars } from "./MediaCard";
@@ -46,9 +47,9 @@ function FocusCompactLeft() {
   const frac = Math.min(1, Math.max(0, focus.remainingSec / Math.max(1, focus.totalSec)));
   return (
     <span className="compact-focus-ring" title={focus.title || "Фокус"}>
-      <svg className="timer-ring is-cobalt" viewBox="0 0 16 16" aria-hidden="true">
+      <svg className="timer-ring" viewBox="0 0 16 16" aria-hidden="true">
         <circle cx="8" cy="8" r="6" className="timer-ring-track" />
-        <circle cx="8" cy="8" r="6" className="timer-ring-fill is-cobalt" strokeDasharray={C} strokeDashoffset={C * (1 - frac)} />
+        <circle cx="8" cy="8" r="6" className="timer-ring-fill" strokeDasharray={C} strokeDashoffset={C * (1 - frac)} />
       </svg>
     </span>
   );
@@ -62,6 +63,40 @@ function FocusCompactRight() {
     <span className={`compact-timer is-focus${focus.paused ? " is-paused" : ""}`} title={`Фокус: ${focus.title}`}>
       {m}:{s}
     </span>
+  );
+}
+
+const PHASE_LABEL = { thinking: "Думаю", acting: "Делаю", verifying: "Проверяю" } as const;
+
+/** JARVIS works on a request: what it is doing, in a few words, and for how long. */
+function ThinkingCompact() {
+  const phase = useAgent((s) => s.phase);
+  // Primitive selectors: a fresh object per read would re-render forever.
+  const toolTitle = useAgent((s) => {
+    const it = s.items.findLast((i) => i.kind === "tool" && (i.status === "running" || i.status === "awaiting"));
+    return it?.kind === "tool" ? it.title : null;
+  });
+  const awaiting = useAgent((s) => s.items.some((i) => i.kind === "tool" && i.status === "awaiting"));
+  const turn = useAgent((s) => s.activeTurn);
+  const [since, setSince] = useState(() => Date.now());
+  useEffect(() => setSince(Date.now()), [turn]);
+  useTick(1000);
+  const sec = Math.max(0, Math.floor((Date.now() - since) / 1000));
+  const label = awaiting ? "Ждёт разрешения" : toolTitle || (phase ? PHASE_LABEL[phase] : "Думаю");
+  return (
+    <>
+      <div className="compact-side compact-left">
+        <span key={label} className={`think-label${awaiting ? " is-awaiting" : ""}`} title={label}>
+          {label}
+        </span>
+      </div>
+      <div className="compact-center-spacer" aria-hidden="true" />
+      <div className="compact-side compact-right">
+        <span className="think-time">
+          {Math.floor(sec / 60)}:{String(sec % 60).padStart(2, "0")}
+        </span>
+      </div>
+    </>
   );
 }
 
@@ -84,6 +119,14 @@ export function CompactView() {
   if (lip) return <div className="view view-compact" title={voiceError ?? undefined} />;
 
   const doneSteps = missionSteps.filter((x) => x.status === "done").length;
+
+  if (agentActive && !ttsSpeaking) {
+    return (
+      <div className="view view-compact is-thinking">
+        <ThinkingCompact />
+      </div>
+    );
+  }
 
   return (
     <div className="view view-compact">

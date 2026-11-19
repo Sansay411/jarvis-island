@@ -11,6 +11,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ipc, isTauri, on } from "../lib/ipc";
+import { mergeShelf } from "../lib/shelf";
 import type {
   ActivityHeatmap,
   FocusState,
@@ -349,8 +350,8 @@ export const useHub = create<HubStore>((set, get) => ({
       return;
     }
     try {
-      const list = await ipc.hub.shelfAddFiles(paths);
-      set({ shelf: list });
+      const added = await ipc.hub.shelfAddFiles(paths);
+      set((s) => ({ shelf: mergeShelf(s.shelf, added) }));
     } catch {
       void get().refreshAll();
     }
