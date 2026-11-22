@@ -38,12 +38,15 @@ pub fn get_state() -> AppResult<AudioState> {
 }
 pub fn set_volume(percent: u8) -> AppResult<AudioState> {
     let original = get_state()?;
-    native::apple(&format!(
+    native::apple(&volume_script(percent, original.muted))?;
+    get_state()
+}
+fn volume_script(percent: u8, muted: bool) -> String {
+    format!(
         "set volume output volume {}\nset volume output muted {}",
         percent.min(100),
-        original.muted
-    ))?;
-    get_state()
+        muted && percent == 0
+    )
 }
 pub fn adjust_volume(delta: i16) -> AppResult<AudioState> {
     let current = get_state()?;
@@ -76,6 +79,13 @@ pub fn set_app_volume(_process: &str, _percent: u8) -> AppResult<Vec<AppAudioSes
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn positive_volume_unmutes_but_zero_preserves_mute() {
+        assert!(volume_script(40, true).ends_with("muted false"));
+        assert!(volume_script(100, false).ends_with("muted false"));
+        assert!(volume_script(0, true).ends_with("muted true"));
+        assert!(volume_script(0, false).ends_with("muted false"));
+    }
     #[test]
     fn parses_volume_and_missing_or_invalid_output() {
         let state = parse_state("75|false\n").unwrap();

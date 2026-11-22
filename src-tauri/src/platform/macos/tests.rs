@@ -198,6 +198,7 @@ return true;
         Ok(original) => {
             let restored = audio::set_volume(original.volume).expect("вернуть исходную громкость");
             assert_eq!(restored.volume, original.volume);
+            let restored = audio::set_mute(original.muted).expect("вернуть исходное состояние звука");
             assert_eq!(restored.muted, original.muted);
             println!(
                 "audio: volume={}, muted={}; set_volume(original) verified",
