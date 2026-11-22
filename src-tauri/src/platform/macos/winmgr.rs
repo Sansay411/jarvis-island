@@ -4,13 +4,14 @@ use crate::error::{AppError, AppResult};
 use crate::platform::{display::Rect, HWND};
 use chrono::Utc;
 use core_foundation::{
-    base::{CFType, TCFType},
+    array::CFArray,
+    base::{CFType, CFTypeRef, TCFType},
     boolean::CFBoolean,
     dictionary::CFDictionary,
     number::CFNumber,
     string::CFString,
 };
-use core_graphics::window;
+use core_graphics::{geometry::{CGPoint, CGSize}, window};
 use parking_lot::Mutex;
 use serde_json::json;
 use std::{
@@ -32,8 +33,60 @@ fn text(d: &Dict, key: &str) -> String {
         .map(|s| s.to_string())
         .unwrap_or_default()
 }
-fn window_state(on_screen: Option<bool>) -> &'static str {
-    if on_screen == Some(false) { "minimized" } else { "normal" }
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn AXUIElementCreateApplication(pid: i32) -> CFTypeRef;
+    fn AXUIElementCopyAttributeValue(element: CFTypeRef, attribute: core_foundation::string::CFStringRef, value: *mut CFTypeRef) -> i32;
+    fn AXUIElementSetMessagingTimeout(element: CFTypeRef, timeout: f32) -> i32;
+    fn AXValueGetValue(value: CFTypeRef, kind: u32, output: *mut std::ffi::c_void) -> bool;
+}
+
+fn ax_attribute(element: &CFType, name: &str) -> Option<CFType> {
+    let name = CFString::new(name);
+    let mut value = std::ptr::null();
+    let status = unsafe { AXUIElementCopyAttributeValue(element.as_CFTypeRef(), name.as_concrete_TypeRef(), &mut value) };
+    if status != 0 || value.is_null() { return None; }
+    Some(unsafe { CFType::wrap_under_create_rule(value) })
+}
+
+struct AxWindow { title: String, rect: Rect, minimized: bool }
+
+fn ax_windows(pid: u32) -> Option<Vec<AxWindow>> {
+    let raw = unsafe { AXUIElementCreateApplication(pid as i32) };
+    if raw.is_null() { return None; }
+    let app = unsafe { CFType::wrap_under_create_rule(raw) };
+    unsafe { AXUIElementSetMessagingTimeout(app.as_CFTypeRef(), 0.1); }
+    let raw = ax_attribute(&app, "AXWindows")?.downcast::<CFArray>()?;
+    let windows: CFArray<CFType> = unsafe { TCFType::wrap_under_get_rule(raw.as_concrete_TypeRef()) };
+    let mut result = Vec::new();
+    for w in windows.iter() {
+        let Some(minimized) = ax_attribute(&w, "AXMinimized").and_then(|v| v.downcast::<CFBoolean>()) else { continue };
+        let Some(position) = ax_attribute(&w, "AXPosition") else { continue };
+        let Some(size) = ax_attribute(&w, "AXSize") else { continue };
+        let mut point = CGPoint::new(0.0, 0.0);
+        let mut extent = CGSize::new(0.0, 0.0);
+        let valid = unsafe {
+            AXValueGetValue(position.as_CFTypeRef(), 1, &mut point as *mut _ as *mut std::ffi::c_void)
+                && AXValueGetValue(size.as_CFTypeRef(), 2, &mut extent as *mut _ as *mut std::ffi::c_void)
+        };
+        if !valid { continue; }
+        let title = ax_attribute(&w, "AXTitle").and_then(|v| v.downcast::<CFString>()).map(|v| v.to_string()).unwrap_or_default();
+        result.push(AxWindow { title, minimized: minimized.into(), rect: Rect {
+            x: point.x as i32, y: point.y as i32, width: extent.width as i32, height: extent.height as i32,
+        } });
+    }
+    Some(result)
+}
+
+fn window_state(rect: Rect, title: &str, windows: Option<&[AxWindow]>) -> &'static str {
+    let Some(windows) = windows else { return "normal" };
+    let matches: Vec<_> = windows.iter().filter(|w| {
+        (w.rect.x as i64 - rect.x as i64).abs() < 3 && (w.rect.y as i64 - rect.y as i64).abs() < 3
+            && (w.rect.width as i64 - rect.width as i64).abs() < 3 && (w.rect.height as i64 - rect.height as i64).abs() < 3
+    }).collect();
+    let named: Vec<_> = windows.iter().filter(|w| !title.is_empty() && w.title == title).collect();
+    let matched = if matches.len() == 1 { Some(matches[0]) } else if named.len() == 1 { Some(named[0]) } else { None };
+    if matched.is_some_and(|w| w.minimized) { "minimized" } else { "normal" }
 }
 
 pub fn to_hwnd(h: i64) -> HWND {
@@ -58,6 +111,7 @@ pub fn list_windows() -> Vec<WindowInfo> {
     .and_then(|v| v.as_u64())
     .unwrap_or(0) as u32;
     let mut marked = false;
+    let mut accessibility = HashMap::new();
     list.iter()
         .filter_map(|d| {
             if number(&d, "kCGWindowLayer")? != 0.0 {
@@ -77,15 +131,15 @@ pub fn list_windows() -> Vec<WindowInfo> {
                 return None;
             }
             let pid = number(&d, "kCGWindowOwnerPID")? as u32;
-            let on_screen = d.find(&CFString::new("kCGWindowIsOnscreen"))
-                .and_then(|v| v.downcast::<CFBoolean>()).map(|v| v.into());
-            let state = window_state(on_screen);
+            let title = text(&d, "kCGWindowName");
+            let ax = accessibility.entry(pid).or_insert_with(|| ax_windows(pid));
+            let state = window_state(rect, &title, ax.as_deref());
             let foreground = pid == front && !marked && state != "minimized";
             marked |= foreground;
             let process = text(&d, "kCGWindowOwnerName");
             Some(WindowInfo {
                 hwnd: number(&d, "kCGWindowNumber")? as i64,
-                title: text(&d, "kCGWindowName"),
+                title,
                 pid,
                 class_name: process.clone(),
                 process,
@@ -312,10 +366,15 @@ impl ForegroundHistory {
 mod tests {
     use super::*;
     #[test]
-    fn offscreen_windows_are_reported_as_minimized() {
-        assert_eq!(window_state(Some(false)), "minimized");
-        assert_eq!(window_state(Some(true)), "normal");
-        assert_eq!(window_state(None), "normal");
+    fn ax_state_does_not_confuse_other_spaces_with_minimized_windows() {
+        let rect = Rect { x:0,y:0,width:800,height:600 };
+        let mut windows = vec![AxWindow { title:"Test".into(),rect,minimized:false }];
+        assert_eq!(window_state(rect, "Test", Some(&windows)), "normal");
+        windows[0].minimized = true;
+        assert_eq!(window_state(rect, "Test", Some(&windows)), "minimized");
+        assert_eq!(window_state(rect, "Test", None), "normal");
+        assert_eq!(window_state(rect, "Test", Some(&[])), "normal");
+        assert_eq!(window_state(Rect { x:900,..rect }, "", Some(&windows)), "normal");
     }
     #[test]
     fn snap_covers_odd_sized_areas_and_validates_regions() {
