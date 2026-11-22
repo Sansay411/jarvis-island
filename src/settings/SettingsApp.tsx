@@ -2,7 +2,7 @@
 // rail — its eyes follow the pointer, become real audio bars while a voice
 // sample plays, and smile when changes are saved. Sections speak in
 // JARVIS's voice; amber marks only JARVIS's presence (eyes, the active
-// section, focus). Secrets go straight to Windows Credential Manager through
+// section, focus). Secrets go straight to the system key store through
 // `secret_set`; the UI only ever learns whether a key exists.
 
 import { AnimatePresence, motion, useMotionValue, useSpring, type MotionValue } from "motion/react";
@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { errorMessage } from "../lib/ipc";
+import { settingsPlatformCopy } from "../lib/platform";
 import {
   CURATED_EDGE_VOICES,
   ensureWorkspaceFeeds,
@@ -27,6 +28,8 @@ import { Group, Row, Segmented, Switch } from "./controls";
 import { McpSection } from "./McpSection";
 import { ACTIVITIES, EMOTES, emote, useEmote, type Activity } from "../store/emote";
 import { LiveAudioBars, routineIconName, WsIcon } from "../workspace/WorkspaceIcons";
+
+const platformCopy = settingsPlatformCopy();
 
 interface Preset {
   id: string;
@@ -569,7 +572,7 @@ function KeyField({
     try {
       await invoke("secret_set", { kind, value, baseUrl: baseUrl ?? null });
       setValue("");
-      notify("ok", "Ключ сохранён в диспетчере учётных данных Windows");
+      notify("ok", `Ключ сохранён в ${platformCopy.keyStoreLocation}`);
       onChanged();
     } catch (e) {
       notify("error", errorMessage(e));
@@ -584,7 +587,7 @@ function KeyField({
   return (
     <Row
       label="API-ключ"
-      hint={`Хранится в диспетчере учётных данных Windows, не в файлах приложения.${kind === "llm" ? " Отправляется только на адрес, для которого сохранён." : ""}`}
+      hint={`Хранится в ${platformCopy.keyStoreLocation}, не в файлах приложения.${kind === "llm" ? " Отправляется только на адрес, для которого сохранён." : ""}`}
     >
       {editing ? (
         <div className="inline">
@@ -1262,7 +1265,7 @@ export default function SettingsApp({
                     <h2 className="tts-studio-title">Бесплатная нейросетевая озвучка HD (Edge Neural)</h2>
                     <p className="tts-studio-desc">
                       Студийные нейронные голоса работают сразу после установки — без платных подписок, ключей и тяжёлых загрузок.
-                      Тёплый потоковый пул выдаёт первый звук за ~160–240 мс, 2-уровневый кэш (RAM + диск) отвечает быстрее 10 мс, а без интернета Джарвис автоматически переходит на локальный движок (Supertonic / Piper / Windows).
+                      Тёплый потоковый пул выдаёт первый звук за ~160–240 мс, 2-уровневый кэш (RAM + диск) отвечает быстрее 10 мс, а без интернета Джарвис автоматически переходит на локальный движок ({platformCopy.localTts}).
                     </p>
                   </div>
                 </div>
@@ -1766,9 +1769,9 @@ export default function SettingsApp({
                     }
                   />
                 </Row>
-                <Row label="Запускать вместе с Windows">
+                <Row label={platformCopy.startup}>
                   <Switch
-                    label="Запускать вместе с Windows"
+                    label={platformCopy.startup}
                     checked={draft.launchAtStartup}
                     onChange={(v) => set((s) => ({ ...s, launchAtStartup: v }))}
                   />
