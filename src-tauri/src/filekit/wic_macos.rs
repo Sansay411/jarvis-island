@@ -1,5 +1,5 @@
 use crate::error::{AppError, AppResult};
-use image::ImageEncoder;
+use image::{ImageDecoder, ImageEncoder};
 use std::path::Path;
 pub struct Rgba {
     pub width: u32,
@@ -97,9 +97,16 @@ pub fn decode(path: &Path, max_side: Option<u32>) -> AppResult<Rgba> {
             "Изображение слишком большое для обработки",
         ));
     }
-    let image = image::open(path)
+    let mut decoder = image::ImageReader::open(path)
         .map_err(|e| AppError::invalid(format!("Не удалось открыть изображение: {e}")))?
-        .to_rgba8();
+        .into_decoder()
+        .map_err(|e| AppError::invalid(format!("Не удалось прочитать изображение: {e}")))?;
+    let orientation = decoder.orientation()
+        .map_err(|e| AppError::invalid(format!("Не удалось прочитать ориентацию изображения: {e}")))?;
+    let mut image = image::DynamicImage::from_decoder(decoder)
+        .map_err(|e| AppError::invalid(format!("Не удалось декодировать изображение: {e}")))?;
+    image.apply_orientation(orientation);
+    let image = image.to_rgba8();
     let decoded = Rgba {
         width: image.width(),
         height: image.height(),
@@ -139,6 +146,30 @@ pub fn ocr_pdf(_path: &Path, _progress: impl FnMut(u32, u32) -> bool) -> AppResu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn applies_exif_rotation_before_thumbnailing() {
+        let path = std::env::temp_dir().join(format!("jarvis-oriented-{}.jpg", uuid::Uuid::new_v4()));
+        let image = image::RgbImage::from_fn(16, 8, |x, _| {
+            if x < 8 { image::Rgb([255, 0, 0]) } else { image::Rgb([0, 0, 255]) }
+        });
+        let mut bytes = Vec::new();
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 100);
+        encoder.set_exif_metadata(vec![
+            b'I', b'I', 42, 0, 8, 0, 0, 0, 1, 0,
+            0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
+        ]).unwrap();
+        encoder.encode_image(&image).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        let decoded = decode(&path, None).unwrap();
+        assert_eq!((decoded.width, decoded.height), (8, 16));
+        let pixels = image::RgbaImage::from_raw(decoded.width, decoded.height, decoded.pixels).unwrap();
+        assert!(pixels.get_pixel(4, 2)[0] > 240);
+        assert!(pixels.get_pixel(4, 14)[2] > 240);
+        let thumbnail = decode(&path, Some(4)).unwrap();
+        assert_eq!((thumbnail.width, thumbnail.height), (2, 4));
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn decode_file_preserves_pixels_and_limits_size() {
