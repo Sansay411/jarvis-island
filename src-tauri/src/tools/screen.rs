@@ -605,6 +605,18 @@ mod tests {
             }
             println!("{target}: PNG {}x{}, {} bytes; island pixel {:?} -> background {:?}", image.width(), image.height(), bytes.len(), island_pixel, background);
         }
+        if let Ok(menu_id) = std::env::var("JARVIS_CAPTURE_TEST_MENU_ID") {
+            let bounds = capture::window_frame(platform::HWND(menu_id.parse().unwrap())).unwrap();
+            let rect = Rect { x: bounds.x + 16, y: bounds.y + 16, width: (bounds.width - 32).max(1), height: (bounds.height - 32).max(1) };
+            let expected = capture::capture_rect(rect, None).unwrap();
+            let actual = capture::capture_rect(rect, Some(island)).unwrap();
+            assert_eq!((actual.width, actual.height), (expected.width, expected.height));
+            let matching = actual.pixels.chunks_exact(4).zip(expected.pixels.chunks_exact(4))
+                .filter(|(a, b)| a[..3].iter().zip(&b[..3]).all(|(a, b)| a.abs_diff(*b) <= 12)).count();
+            let total = actual.width as usize * actual.height as usize;
+            assert!(matching * 100 >= total * 95, "open menu disappeared from the agent capture: {matching}/{total} pixels match");
+            println!("Open menu preserved: {matching}/{total} pixels match the ordinary capture (RGB tolerance 12)");
+        }
     }
 
     #[test]

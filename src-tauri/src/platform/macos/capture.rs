@@ -111,28 +111,63 @@ pub fn capture_window(hwnd: HWND) -> AppResult<Frame> {
     capture(window_frame(hwnd)?, Some(window_id(hwnd)?), None)
 }
 
-fn capture_options(window_id: Option<u32>, excluded: Option<u32>) -> (u32, u32) {
-    match (window_id, excluded) {
-        (Some(id), _) => (window::kCGWindowListOptionIncludingWindow, id),
-        (_, Some(id)) => (window::kCGWindowListOptionOnScreenBelowWindow, id),
-        _ => (
+fn exclude_island_window(ids: impl Iterator<Item = u32>, excluded: u32) -> Vec<u32> {
+    ids.filter(|id| *id != excluded).collect()
+}
+
+fn capture_image(rect: Rect, window_id: Option<u32>, excluded: Option<u32>) -> Option<CGImage> {
+    let image_options =
+        window::kCGWindowImageBoundsIgnoreFraming | window::kCGWindowImageBestResolution;
+    if let Some(id) = window_id {
+        return window::create_image(
+            cg_rect(rect),
+            window::kCGWindowListOptionIncludingWindow,
+            id,
+            image_options,
+        );
+    }
+    if let Some(excluded) = excluded {
+        let raw = window::copy_window_info(
             window::kCGWindowListOptionOnScreenOnly,
             window::kCGNullWindowID,
-        ),
+        )?;
+        let windows: CFArray<CFDictionary<CFString, CFType>> =
+            unsafe { TCFType::wrap_under_get_rule(raw.as_concrete_TypeRef()) };
+        let ids = exclude_island_window(
+            windows.iter().filter_map(|description| {
+                description
+                    .find(CFString::new("kCGWindowNumber"))
+                    .and_then(|value| value.downcast::<CFNumber>())
+                    .and_then(|number| number.to_i64())
+                    .and_then(|id| u32::try_from(id).ok())
+            }),
+            excluded,
+        );
+        if ids.is_empty() {
+            return None;
+        }
+        // CGWindowListCreateImageFromArray takes pointer-sized window IDs, not CFNumbers.
+        let pointers: Vec<*const std::ffi::c_void> =
+            ids.into_iter().map(|id| id as usize as *const _).collect();
+        return window::create_image_from_array(
+            cg_rect(rect),
+            CFArray::from_copyable(&pointers),
+            image_options,
+        );
     }
+    window::create_image(
+        cg_rect(rect),
+        window::kCGWindowListOptionOnScreenOnly,
+        window::kCGNullWindowID,
+        image_options,
+    )
 }
 
 fn capture(rect: Rect, window_id: Option<u32>, excluded: Option<u32>) -> AppResult<Frame> {
     validate_rect(rect)?;
     require_permission(unsafe { CGPreflightScreenCaptureAccess() })?;
     let started = Instant::now();
-    let (options, relative_to) = capture_options(window_id, excluded);
-    let image = window::create_image(
-        cg_rect(rect),
-        options,
-        relative_to,
-        window::kCGWindowImageBoundsIgnoreFraming | window::kCGWindowImageBestResolution,
-    );
+    let image = capture_image(rect, window_id, excluded);
     let (width, height, pixels) = if let Some(image) = image {
         rgba(&image)?
     } else {
@@ -268,26 +303,14 @@ pub fn encode(frame: Frame, max_side: u32) -> AppResult<EncodedCapture> {
 mod tests {
     use super::*;
     #[test]
-    fn capture_options_exclude_only_for_screen_and_region_targets() {
+    fn exclusion_preserves_windows_above_and_below_the_island_in_order() {
         assert_eq!(
-            capture_options(None, None),
-            (
-                window::kCGWindowListOptionOnScreenOnly,
-                window::kCGNullWindowID
-            )
+            exclude_island_window([12, 42, 99, 7].into_iter(), 42),
+            [12, 99, 7]
         );
-        assert_eq!(
-            capture_options(None, Some(42)),
-            (window::kCGWindowListOptionOnScreenBelowWindow, 42)
-        );
-        assert_eq!(
-            capture_options(Some(7), None),
-            (window::kCGWindowListOptionIncludingWindow, 7)
-        );
-        assert_eq!(
-            capture_options(Some(7), Some(42)),
-            (window::kCGWindowListOptionIncludingWindow, 7)
-        );
+        assert_eq!(exclude_island_window([12, 99].into_iter(), 42), [12, 99]);
+        assert!(exclude_island_window([42].into_iter(), 42).is_empty());
+        assert!(exclude_island_window([].into_iter(), 42).is_empty());
     }
     #[test]
     fn fallback_refuses_to_capture_if_the_island_cannot_be_hidden() {
