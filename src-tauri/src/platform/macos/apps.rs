@@ -17,6 +17,58 @@ pub struct AppIndex {
 struct Cache {
     updated: Option<Instant>,
     entries: Vec<AppEntry>,
+    aliases: BTreeMap<String, Vec<String>>,
+}
+
+fn localized_names(info: &plist::Value) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Some(dict) = info.as_dictionary() {
+        for (key, value) in dict {
+            if matches!(key.as_str(), "CFBundleDisplayName" | "CFBundleName") {
+                if let Some(name) = value.as_string().filter(|s| !s.trim().is_empty()) {
+                    names.push(name.to_owned());
+                }
+            } else if value.as_dictionary().is_some() {
+                names.extend(localized_names(value));
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn bundle_aliases(path: &Path) -> Vec<String> {
+    let resources = path.join("Contents/Resources");
+    let mut files = vec![resources.join("InfoPlist.loctable")];
+    if let Ok(dirs) = std::fs::read_dir(&resources) {
+        for dir in dirs.flatten() {
+            let name = dir.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".lproj") && (name.starts_with("ru") || name.starts_with("en")
+                || matches!(name.as_str(), "Russian.lproj" | "English.lproj" | "Base.lproj")) {
+                files.push(dir.path().join("InfoPlist.strings"));
+            }
+        }
+    }
+    let mut names = Vec::new();
+    for file in files.into_iter().filter(|p| p.is_file()) {
+        let info = plist::Value::from_file(&file).ok().or_else(|| {
+            let file = file.to_str()?;
+            let xml = native::execute("/usr/bin/plutil", &["-convert", "xml1", "-o", "-", "--", file], None).ok()?;
+            plist::Value::from_reader_xml(std::io::Cursor::new(xml)).ok()
+        });
+        if let Some(info) = info { names.extend(localized_names(&info)); }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn alias_score(app: &AppEntry, aliases: &[String], query: &str) -> u32 {
+    aliases.iter().fold(score(app, query), |best, name| {
+        let alias = AppEntry { name: name.clone(), ..app.clone() };
+        best.max(score(&alias, query))
+    })
 }
 
 fn bundle_entry(path: &Path, info: &plist::Value) -> Option<AppEntry> {
@@ -100,6 +152,9 @@ impl AppIndex {
         }
         cache.entries = entries.into_values().collect();
         cache.entries.sort_by_key(|a| a.name.to_lowercase());
+        cache.aliases = cache.entries.iter().map(|app| {
+            (app.id.clone(), app.exe.as_deref().map(|p| bundle_aliases(Path::new(p))).unwrap_or_default())
+        }).collect();
         cache.updated = Some(Instant::now());
         Ok(())
     }
@@ -112,13 +167,11 @@ impl AppIndex {
     }
     pub fn search_scored(&self, query: &str, limit: usize) -> AppResult<Vec<(u32, AppEntry)>> {
         self.ensure_fresh(Duration::from_secs(600))?;
-        let mut found: Vec<_> = self
-            .cache
-            .lock()
-            .entries
+        let cache = self.cache.lock();
+        let mut found: Vec<_> = cache.entries
             .iter()
             .filter_map(|a| {
-                let score = score(a, query);
+                let score = alias_score(a, cache.aliases.get(&a.id).map(Vec::as_slice).unwrap_or(&[]), query);
                 (score > 0).then(|| (score, a.clone()))
             })
             .collect();
@@ -214,6 +267,19 @@ pub fn running_windows(app: &AppEntry) -> Vec<WindowInfo> {
 mod tests {
     use super::*;
     #[test]
+    fn localized_bundle_names_match_without_replacing_english_names() {
+        let info = plist::Value::from_reader_xml(std::io::Cursor::new(r#"<plist version="1.0"><dict><key>ru</key><dict><key>CFBundleDisplayName</key><string>Калькулятор</string><key>CFBundleName</key><string>Калькулятор</string></dict><key>en</key><dict><key>CFBundleName</key><string>Calculator</string></dict></dict></plist>"#)).unwrap();
+        let aliases = localized_names(&info);
+        assert_eq!(aliases.len(), 2);
+        let app = AppEntry { name:"Calculator".into(),id:"com.apple.calculator".into(),exe:None,kind:"desktop" };
+        assert_eq!(alias_score(&app, &aliases, "калькулятор"), 100);
+        assert_eq!(alias_score(&app, &aliases, "calculator"), 100);
+        assert_eq!(alias_score(&app, &aliases, "Кальк"), 80);
+        assert_eq!(alias_score(&app, &aliases, "missing"), 0);
+        assert!(localized_names(&plist::Value::Dictionary(Default::default())).is_empty());
+        assert!(localized_names(&plist::Value::String("invalid".into())).is_empty());
+    }
+    #[test]
     fn parses_bundle_metadata_and_searches_names_and_ids() {
         let info = plist::Value::from_reader_xml(std::io::Cursor::new(br#"<plist version="1.0"><dict><key>CFBundleDisplayName</key><string>Text Edit</string><key>CFBundleIdentifier</key><string>com.test.editor</string></dict></plist>"#)).unwrap();
         let app = bundle_entry(Path::new("/Applications/Editor.app"), &info).unwrap();
@@ -242,6 +308,7 @@ mod tests {
             cache: Mutex::new(Cache {
                 updated: Some(Instant::now()),
                 entries: vec![],
+                aliases: Default::default(),
             }),
         };
         assert!(index.all().unwrap().is_empty());
