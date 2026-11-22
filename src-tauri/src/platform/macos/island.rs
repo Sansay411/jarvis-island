@@ -6,7 +6,7 @@ use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSRunningApplication, NSStatusWindowLevel,
-    NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
+    NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::NSPoint;
 use parking_lot::Mutex;
@@ -90,20 +90,24 @@ impl Island {
         let window = unsafe { &*(self.window.ns_window()? as *const NSWindow) };
         self.window_id
             .store(window.windowNumber() as i32, Ordering::Relaxed);
-        let mut style = window.styleMask();
-        style.set(
-            NSWindowStyleMask::NonactivatingPanel,
-            !INPUT_FOCUSABLE.load(Ordering::Relaxed),
-        );
-        window.setStyleMask(style);
-        window.setLevel(NSStatusWindowLevel + 2);
-        window.setHasShadow(false);
-        window.setCollectionBehavior(
-            NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::Stationary
-                | NSWindowCollectionBehavior::FullScreenAuxiliary
-                | NSWindowCollectionBehavior::IgnoresCycle,
-        );
+        let input = INPUT_FOCUSABLE.load(Ordering::Relaxed);
+        let style_changed = set_input_style(window, input);
+        if window.level() != NSStatusWindowLevel + 2 {
+            window.setLevel(NSStatusWindowLevel + 2);
+        }
+        if window.hasShadow() {
+            window.setHasShadow(false);
+        }
+        let behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::IgnoresCycle;
+        if window.collectionBehavior() != behavior {
+            window.setCollectionBehavior(behavior);
+        }
+        if style_changed && input {
+            self.focus_webview()?;
+        }
         if let Some(screen) = notch::read(mtm) {
             let mut current = self.screen.lock();
             if current.as_ref() == Some(&screen) {
@@ -188,8 +192,19 @@ impl Island {
         }
         INPUT_FOCUSABLE.store(true, Ordering::Relaxed);
         let window = unsafe { &*(self.window.ns_window()? as *const NSWindow) };
-        window.setStyleMask(window.styleMask() & !NSWindowStyleMask::NonactivatingPanel);
+        set_input_style(window, true);
         self.window.set_focus()?;
+        self.focus_webview()
+    }
+    fn focus_webview(&self) -> AppResult<()> {
+        self.window.with_webview(|webview| {
+            if INPUT_FOCUSABLE.load(Ordering::Relaxed) {
+                let view = unsafe { &*(webview.inner() as *const NSView) };
+                if let Some(window) = view.window() {
+                    window.makeFirstResponder(Some(view));
+                }
+            }
+        })?;
         Ok(())
     }
     pub fn end_input(&self, restore: bool) -> AppResult<()> {
@@ -199,7 +214,7 @@ impl Island {
         window.makeFirstResponder(None);
         window.resignKeyWindow();
         INPUT_FOCUSABLE.store(false, Ordering::Relaxed);
-        window.setStyleMask(window.styleMask() | NSWindowStyleMask::NonactivatingPanel);
+        set_input_style(window, false);
         let pid = self.previous_app.swap(0, Ordering::Relaxed);
         let front = NSWorkspace::sharedWorkspace()
             .frontmostApplication()
@@ -369,6 +384,21 @@ fn should_restore_input(restore: bool, previous: i32, front: i32) -> bool {
     restore && previous != 0 && (front == previous || front == std::process::id() as i32)
 }
 
+fn input_style(mut style: NSWindowStyleMask, input: bool) -> NSWindowStyleMask {
+    style.set(NSWindowStyleMask::NonactivatingPanel, !input);
+    style
+}
+
+fn set_input_style(window: &NSWindow, input: bool) -> bool {
+    let current = window.styleMask();
+    let desired = input_style(current, input);
+    if current == desired {
+        return false;
+    }
+    window.setStyleMask(desired);
+    true
+}
+
 fn should_restore_capture_key(was_key: bool, input: bool, front: i32) -> bool {
     was_key && input && front == std::process::id() as i32
 }
@@ -443,6 +473,19 @@ fn contains_cocoa(shape: ShapeRect, x: f64, y: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn input_style_changes_only_the_nonactivating_bit_and_is_idempotent() {
+        for base in [
+            NSWindowStyleMask::empty(),
+            NSWindowStyleMask::Resizable | NSWindowStyleMask::Titled,
+        ] {
+            let idle = input_style(base, false);
+            assert!(idle.contains(NSWindowStyleMask::NonactivatingPanel));
+            assert_eq!(input_style(idle, false), idle);
+            assert_eq!(input_style(idle, true), base);
+            assert_eq!(input_style(base, true), base);
+        }
+    }
     #[test]
     fn capture_restores_input_only_if_the_user_has_not_switched_apps() {
         let own = std::process::id() as i32;
