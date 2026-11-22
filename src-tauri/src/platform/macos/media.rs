@@ -21,15 +21,18 @@ let result=null, failure=null;
 for(const id of ids) {
     try {
         const app=Application(id), status=String(app.playerState());
-        if(status==='stopped') continue;
+        let item={source:id,title:'',artist:'',album:'',status:status,position:0,duration:0,key:'',artwork_url:''};
+        try {
         const t=app.currentTrack();
         let key='', artwork='';
         try { key=id==='com.spotify.client' ? t.id() : t.persistentID(); } catch(e) {}
         if(id==='com.spotify.client') { try { artwork=t.artworkUrl(); } catch(e) {} }
-        const item={source:id,title:t.name(),artist:t.artist(),album:t.album(),status:status,
+        item={source:id,title:t.name(),artist:t.artist(),album:t.album(),status:status,
             position:Number(app.playerPosition()),duration:Number(t.duration())/(id==='com.spotify.client'?1000:1),
             key:String(key),artwork_url:String(artwork)};
-        if(!result || status==='playing') result=item;
+        } catch(e) { if(status==='playing') throw e; }
+        const rank=s => s==='playing' ? 2 : s==='paused' ? 1 : 0;
+        if(!result || rank(status)>rank(result.status)) result=item;
         if(status==='playing') break;
     } catch(e) { failure=e; }
 }
@@ -245,6 +248,19 @@ impl MediaWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stopped_and_paused_players_remain_controllable_without_metadata() {
+        for status in ["stopped", "paused"] {
+            let track: Track = serde_json::from_value(json!({
+                "source":"com.apple.Music","title":"","artist":"","album":"","status":status,
+                "position":0,"duration":0,"key":""
+            })).unwrap();
+            let state = state(Some(track));
+            assert!(state.available && state.can_toggle);
+            assert_eq!(state.source_app, "com.apple.Music");
+            assert_eq!(state.status, status);
+        }
+    }
     #[test]
     fn parses_player_payload_and_normalizes_timing() {
         let t:Track=serde_json::from_str(r#"{"source":"com.spotify.client","title":"Песня","artist":"Автор","album":"Альбом","status":"playing","position":1.5,"duration":120,"key":"id"}"#).unwrap();
