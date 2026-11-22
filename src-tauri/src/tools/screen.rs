@@ -577,6 +577,36 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "Requires the running island's CG window ID in JARVIS_CAPTURE_TEST_ISLAND_ID"]
+    fn macos_island_exclusion_live() {
+        use base64::Engine;
+        let island = std::env::var("JARVIS_CAPTURE_TEST_ISLAND_ID").expect("running island window ID").parse::<isize>().unwrap();
+        let bounds = capture::window_frame(platform::HWND(island)).unwrap();
+        let region = Rect { x: bounds.x + bounds.width / 2 - 80, y: bounds.y + 4, width: 160, height: 16 };
+        let visible = capture::capture_rect(region, None).unwrap();
+        let index = ((visible.height / 2 * visible.width + visible.width / 2) * 4) as usize;
+        let island_pixel = &visible.pixels[index..index + 4];
+        assert_eq!(&island_pixel[..3], &[0, 0, 0], "keep the black island visible during this check");
+        for args in [json!({"target": "screen"}), json!({"target": "region", "region": region})] {
+            let target = args["target"].as_str().unwrap().to_owned();
+            let encoded = capture_target(parse(args).unwrap(), island).unwrap();
+            let bytes = base64::engine::general_purpose::STANDARD.decode(encoded.data_url.strip_prefix("data:image/png;base64,").unwrap()).unwrap();
+            let image = image::load_from_memory(&bytes).unwrap().to_rgba8();
+            let x = ((region.x + region.width / 2 - encoded.screen_rect.x) as f64 / encoded.scale) as u32;
+            let y = ((region.y + region.height / 2 - encoded.screen_rect.y) as f64 / encoded.scale) as u32;
+            let background = image.get_pixel(x, y).0;
+            assert_ne!(&background[..3], &island_pixel[..3], "agent capture must reveal the background under the island");
+            if let Some(dir) = std::env::var_os("JARVIS_CAPTURE_TEST_DIR") {
+                let path = std::path::PathBuf::from(dir).join(format!("macos-agent-{target}-without-island.png"));
+                std::fs::write(&path, &bytes).unwrap();
+                println!("{}", path.display());
+            }
+            println!("{target}: PNG {}x{}, {} bytes; island pixel {:?} -> background {:?}", image.width(), image.height(), bytes.len(), island_pixel, background);
+        }
+    }
+
     #[test]
     fn sensitive_targets_need_confirmation() {
         assert_eq!(click_risk(&json!({"target_description": "кнопка «Отправить» в Telegram"})), Risk::High);

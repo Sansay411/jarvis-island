@@ -20,6 +20,8 @@ use core_graphics::{
 };
 use std::{io::Cursor, os::unix::fs::DirBuilderExt, path::PathBuf, time::Instant};
 
+static COMMAND_CAPTURE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 pub const MAX_SIDE: u32 = 1600;
 
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -50,8 +52,12 @@ fn cg_rect(rect: Rect) -> CGRect {
     )
 }
 
-pub fn capture_rect(rect: Rect, _island_hwnd: Option<isize>) -> AppResult<Frame> {
-    capture(rect, None)
+pub fn capture_rect(rect: Rect, island_hwnd: Option<isize>) -> AppResult<Frame> {
+    let excluded = island_hwnd
+        .filter(|id| *id != 0)
+        .map(|id| window_id(HWND(id)))
+        .transpose()?;
+    capture(rect, None, excluded)
 }
 
 pub fn window_frame(hwnd: HWND) -> AppResult<Rect> {
@@ -102,28 +108,36 @@ fn window_id(hwnd: HWND) -> AppResult<u32> {
 }
 
 pub fn capture_window(hwnd: HWND) -> AppResult<Frame> {
-    capture(window_frame(hwnd)?, Some(window_id(hwnd)?))
+    capture(window_frame(hwnd)?, Some(window_id(hwnd)?), None)
 }
 
-fn capture(rect: Rect, window_id: Option<u32>) -> AppResult<Frame> {
+fn capture_options(window_id: Option<u32>, excluded: Option<u32>) -> (u32, u32) {
+    match (window_id, excluded) {
+        (Some(id), _) => (window::kCGWindowListOptionIncludingWindow, id),
+        (_, Some(id)) => (window::kCGWindowListOptionOnScreenBelowWindow, id),
+        _ => (
+            window::kCGWindowListOptionOnScreenOnly,
+            window::kCGNullWindowID,
+        ),
+    }
+}
+
+fn capture(rect: Rect, window_id: Option<u32>, excluded: Option<u32>) -> AppResult<Frame> {
     validate_rect(rect)?;
     require_permission(unsafe { CGPreflightScreenCaptureAccess() })?;
     let started = Instant::now();
+    let (options, relative_to) = capture_options(window_id, excluded);
     let image = window::create_image(
         cg_rect(rect),
-        if window_id.is_some() {
-            window::kCGWindowListOptionIncludingWindow
-        } else {
-            window::kCGWindowListOptionOnScreenOnly
-        },
-        window_id.unwrap_or(window::kCGNullWindowID),
+        options,
+        relative_to,
         window::kCGWindowImageBoundsIgnoreFraming | window::kCGWindowImageBestResolution,
     );
     let (width, height, pixels) = if let Some(image) = image {
         rgba(&image)?
     } else {
         // Recent macOS versions can disable the deprecated CGWindowListCreateImage API.
-        capture_command(rect, window_id)?
+        capture_command(rect, window_id, excluded)?
     };
     Ok(Frame {
         width,
@@ -174,7 +188,15 @@ impl Drop for CaptureDir {
     }
 }
 
-fn capture_command(rect: Rect, window_id: Option<u32>) -> AppResult<(u32, u32, Vec<u8>)> {
+fn capture_command(
+    rect: Rect,
+    window_id: Option<u32>,
+    excluded: Option<u32>,
+) -> AppResult<(u32, u32, Vec<u8>)> {
+    let _capture_lock = COMMAND_CAPTURE.lock();
+    let _visibility = excluded
+        .map(|id| super::island::hide_for_capture(id as isize))
+        .transpose()?;
     let dir =
         CaptureDir(std::env::temp_dir().join(format!("jarvis-capture-{}", uuid::Uuid::new_v4())));
     std::fs::DirBuilder::new().mode(0o700).create(&dir.0)?;
@@ -246,6 +268,41 @@ pub fn encode(frame: Frame, max_side: u32) -> AppResult<EncodedCapture> {
 mod tests {
     use super::*;
     #[test]
+    fn capture_options_exclude_only_for_screen_and_region_targets() {
+        assert_eq!(
+            capture_options(None, None),
+            (
+                window::kCGWindowListOptionOnScreenOnly,
+                window::kCGNullWindowID
+            )
+        );
+        assert_eq!(
+            capture_options(None, Some(42)),
+            (window::kCGWindowListOptionOnScreenBelowWindow, 42)
+        );
+        assert_eq!(
+            capture_options(Some(7), None),
+            (window::kCGWindowListOptionIncludingWindow, 7)
+        );
+        assert_eq!(
+            capture_options(Some(7), Some(42)),
+            (window::kCGWindowListOptionIncludingWindow, 7)
+        );
+    }
+    #[test]
+    fn fallback_refuses_to_capture_if_the_island_cannot_be_hidden() {
+        assert!(capture_command(
+            Rect {
+                width: 1,
+                height: 1,
+                ..Rect::default()
+            },
+            None,
+            Some(u32::MAX)
+        )
+        .is_err());
+    }
+    #[test]
     #[ignore = "Requires a logged-in macOS desktop and Screen Recording permission"]
     fn macos_command_capture_live() {
         require_permission(unsafe { CGPreflightScreenCaptureAccess() }).unwrap();
@@ -255,7 +312,7 @@ mod tests {
             width: 128,
             height: 96,
         };
-        let (width, height, pixels) = capture_command(rect, None).unwrap();
+        let (width, height, pixels) = capture_command(rect, None, None).unwrap();
         let encoded = encode(
             Frame {
                 width,
@@ -339,6 +396,15 @@ mod tests {
         empty.width = 0;
         assert!(encode(empty, MAX_SIDE).is_err());
         assert!(capture_rect(Rect::default(), None).is_err());
+        assert!(capture_rect(
+            Rect {
+                width: 1,
+                height: 1,
+                ..Rect::default()
+            },
+            Some(-1)
+        )
+        .is_err());
         assert!(window_frame(HWND(0)).is_err());
         assert!(window_frame(HWND(-1)).is_err());
         assert!(validate_rect(Rect {

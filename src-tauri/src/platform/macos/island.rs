@@ -12,7 +12,7 @@ use objc2_foundation::NSPoint;
 use parking_lot::Mutex;
 use std::sync::{
     atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
-    Arc,
+    mpsc, Arc, Weak,
 };
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, LogicalSize, WebviewWindow};
@@ -24,6 +24,7 @@ pub const EVT_PRESENCE: &str = "island:presence";
 pub const EVT_BLUR: &str = "island:blur";
 pub const EVT_CONTEXT: &str = "island:context";
 static INPUT_FOCUSABLE: AtomicBool = AtomicBool::new(false);
+static CAPTURE_ISLAND: Mutex<Weak<Island>> = Mutex::new(Weak::new());
 pub struct Island {
     pub tracker_ticks: AtomicU64,
     window: WebviewWindow,
@@ -36,6 +37,8 @@ pub struct Island {
     pointer_inside: AtomicBool,
     previous_app: AtomicI32,
     last_external_app: AtomicI32,
+    window_id: AtomicI32,
+    capture_hidden: AtomicBool,
     screen: Mutex<Option<notch::ScreenGeometry>>,
 }
 impl Island {
@@ -62,6 +65,8 @@ impl Island {
             pointer_suppressed: AtomicBool::new(false),
             pointer_inside: AtomicBool::new(false),
             previous_app: AtomicI32::new(0),
+            window_id: AtomicI32::new(0),
+            capture_hidden: AtomicBool::new(false),
             last_external_app: AtomicI32::new(
                 NSWorkspace::sharedWorkspace()
                     .frontmostApplication()
@@ -72,16 +77,19 @@ impl Island {
             screen: Mutex::new(None),
         });
         island.place()?;
+        *CAPTURE_ISLAND.lock() = Arc::downgrade(&island);
         Ok(island)
     }
     pub fn hwnd(&self) -> isize {
-        0
+        self.window_id.load(Ordering::Relaxed) as isize
     }
     pub fn place(&self) -> AppResult<()> {
         let Some(mtm) = MainThreadMarker::new() else {
             return Ok(());
         };
         let window = unsafe { &*(self.window.ns_window()? as *const NSWindow) };
+        self.window_id
+            .store(window.windowNumber() as i32, Ordering::Relaxed);
         let mut style = window.styleMask();
         style.set(
             NSWindowStyleMask::NonactivatingPanel,
@@ -122,7 +130,7 @@ impl Island {
     }
     fn apply_visibility(&self, reason: &'static str) {
         let visible = self.is_visible();
-        let result = if visible {
+        let result = if visible && !self.capture_hidden.load(Ordering::Relaxed) {
             self.window.show()
         } else {
             self.window.hide()
@@ -166,6 +174,9 @@ impl Island {
         self.set_user_hidden(!self.hidden.load(Ordering::Relaxed));
     }
     pub fn begin_input(&self) -> AppResult<()> {
+        if self.capture_hidden.load(Ordering::Relaxed) {
+            return Err(AppError::platform("Дождитесь завершения снимка экрана"));
+        }
         if self.previous_app.load(Ordering::Relaxed) == 0 {
             let front = NSWorkspace::sharedWorkspace()
                 .frontmostApplication()
@@ -223,7 +234,9 @@ impl Island {
         }
     }
     pub fn on_focus_lost(&self) {
-        let _ = self.app.emit_to(LABEL, EVT_BLUR, ());
+        if !self.capture_hidden.load(Ordering::Relaxed) {
+            let _ = self.app.emit_to(LABEL, EVT_BLUR, ());
+        }
     }
     pub fn spawn_tracker(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
@@ -253,6 +266,7 @@ impl Island {
                         let window = unsafe { &*(raw as *const NSWindow) };
                         let point = window.mouseLocationOutsideOfEventStream();
                         let inside = island.is_visible()
+                            && !island.capture_hidden.load(Ordering::Relaxed)
                             && !island.pointer_suppressed.load(Ordering::Relaxed)
                             && contains_cocoa(*island.shape.lock(), point.x, point.y);
                         window.setIgnoresMouseEvents(!inside);
@@ -279,8 +293,84 @@ impl Island {
     }
 }
 
+pub(super) struct CaptureVisibility {
+    island: Arc<Island>,
+    was_visible: Arc<AtomicBool>,
+    was_key: Arc<AtomicBool>,
+}
+
+pub(super) fn hide_for_capture(hwnd: isize) -> AppResult<CaptureVisibility> {
+    let island = CAPTURE_ISLAND
+        .lock()
+        .upgrade()
+        .filter(|island| island.hwnd() == hwnd)
+        .ok_or_else(|| AppError::platform("Не удалось исключить окно острова из снимка"))?;
+    let guard = CaptureVisibility {
+        island,
+        was_visible: Arc::new(AtomicBool::new(false)),
+        was_key: Arc::new(AtomicBool::new(false)),
+    };
+    guard.set_hidden(true)?;
+    Ok(guard)
+}
+
+impl CaptureVisibility {
+    fn set_hidden(&self, hidden: bool) -> AppResult<()> {
+        let island = self.island.clone();
+        let was_visible = self.was_visible.clone();
+        let was_key = self.was_key.clone();
+        let change = move || -> AppResult<()> {
+            if !hidden {
+                island.capture_hidden.store(false, Ordering::Relaxed);
+            }
+            let window = unsafe { &*(island.window.ns_window()? as *const NSWindow) };
+            if hidden {
+                was_visible.store(window.isVisible(), Ordering::Relaxed);
+                was_key.store(window.isKeyWindow(), Ordering::Relaxed);
+                island.capture_hidden.store(true, Ordering::Relaxed);
+                window.orderOut(None);
+            } else if was_visible.load(Ordering::Relaxed) && island.is_visible() {
+                window.orderFrontRegardless();
+                let front = NSWorkspace::sharedWorkspace()
+                    .frontmostApplication()
+                    .map(|app| app.processIdentifier())
+                    .unwrap_or(0);
+                if should_restore_capture_key(
+                    was_key.load(Ordering::Relaxed),
+                    INPUT_FOCUSABLE.load(Ordering::Relaxed),
+                    front,
+                ) {
+                    window.makeKeyWindow();
+                }
+            }
+            Ok(())
+        };
+        if MainThreadMarker::new().is_some() {
+            return change();
+        }
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.island.app.run_on_main_thread(move || {
+            let _ = tx.send(change());
+        })?;
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| AppError::platform("Окно острова не ответило при создании снимка"))?
+    }
+}
+
+impl Drop for CaptureVisibility {
+    fn drop(&mut self) {
+        if let Err(error) = self.set_hidden(false) {
+            tracing::warn!(%error, "could not restore island after capture");
+        }
+    }
+}
+
 fn should_restore_input(restore: bool, previous: i32, front: i32) -> bool {
     restore && previous != 0 && (front == previous || front == std::process::id() as i32)
+}
+
+fn should_restore_capture_key(was_key: bool, input: bool, front: i32) -> bool {
+    was_key && input && front == std::process::id() as i32
 }
 
 unsafe fn install_panel(window: *mut AnyObject) -> AppResult<()> {
@@ -353,6 +443,15 @@ fn contains_cocoa(shape: ShapeRect, x: f64, y: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capture_restores_input_only_if_the_user_has_not_switched_apps() {
+        let own = std::process::id() as i32;
+        assert!(should_restore_capture_key(true, true, own));
+        assert!(!should_restore_capture_key(false, true, own));
+        assert!(!should_restore_capture_key(true, false, own));
+        assert!(!should_restore_capture_key(true, true, 0));
+        assert!(!should_restore_capture_key(true, true, 42));
+    }
     #[test]
     fn previous_app_survives_activation_before_input_begins() {
         assert_eq!(previous_app_pid(Some(42), 43), 42);
