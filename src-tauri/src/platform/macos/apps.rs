@@ -52,16 +52,23 @@ fn parse_strings(bytes: &[u8]) -> Option<plist::Value> {
     plist::Value::from_reader_ascii(std::io::Cursor::new(format!("{{{text}}}"))).ok()
 }
 
+fn locale_variants(locale: &str) -> Vec<String> {
+    let locale = locale.split(['.', '@']).next().unwrap_or("").replace('_', "-");
+    if locale.is_empty() || !locale.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return vec![];
+    }
+    let mut names = vec![locale.clone(), locale.replace('-', "_")];
+    if let Some((base, _)) = locale.split_once('-') { names.push(base.into()); }
+    names.sort(); names.dedup(); names
+}
+
 fn localization_names() -> Vec<String> {
-    let mut names = vec!["ru".into(), "Russian".into(), "en".into(), "English".into(), "Base".into()];
+    let mut names = vec!["Russian".into(), "English".into(), "Base".into()];
+    for locale in ["ru-RU", "en-US"] { names.extend(locale_variants(locale)); }
     for key in ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"] {
         if let Ok(value) = std::env::var(key) {
             for locale in value.split(':') {
-                let locale = locale.split(['.', '@']).next().unwrap_or("").replace('_', "-");
-                if !locale.is_empty() && locale.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-                    names.push(locale.clone());
-                    if let Some((base, _)) = locale.split_once('-') { names.push(base.into()); }
-                }
+                names.extend(locale_variants(locale));
             }
         }
     }
@@ -298,6 +305,19 @@ pub fn running_windows(app: &AppEntry) -> Vec<WindowInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn localized_regions_try_hyphens_underscores_and_language_fallbacks() {
+        let expected = vec!["ru".to_string(), "ru-RU".to_string(), "ru_RU".to_string()];
+        assert_eq!(locale_variants("ru-RU"), expected);
+        assert_eq!(locale_variants("ru_RU.UTF-8"), expected);
+        assert_eq!(locale_variants("en"), ["en"]);
+        assert!(locale_variants("").is_empty());
+        assert!(locale_variants("../ru").is_empty());
+        let locales = localization_names();
+        for name in ["ru", "ru-RU", "ru_RU", "en", "English", "Base"] {
+            assert!(locales.iter().any(|candidate| candidate == name));
+        }
+    }
     #[test]
     fn parses_binary_and_utf16_and_text_strings_without_a_subprocess() {
         let text = r#"/* label */ "CFBundleDisplayName" = "Калькулятор";"#;
