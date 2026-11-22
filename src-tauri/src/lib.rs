@@ -311,6 +311,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             shortcuts::island_frontend_ready,
             ipc::island_set_shape,
+            ipc::island_notch_geometry,
             ipc::island_begin_input,
             ipc::island_end_input,
             ipc::island_set_hidden,

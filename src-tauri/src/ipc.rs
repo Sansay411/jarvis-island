@@ -14,6 +14,19 @@ use crate::state::AppState;
 // ---------- island ----------
 
 #[tauri::command]
+pub fn island_notch_geometry() -> serde_json::Value {
+    #[cfg(target_os = "macos")]
+    {
+        objc2::MainThreadMarker::new()
+            .and_then(platform::island::notch::read)
+            .map(|screen| serde_json::to_value(screen.notch).unwrap_or_default())
+            .unwrap_or(serde_json::Value::Null)
+    }
+    #[cfg(not(target_os = "macos"))]
+    serde_json::Value::Null
+}
+
+#[tauri::command]
 pub fn island_set_shape(state: State<'_, AppState>, shape: ShapeRect) {
     state.island.set_shape(shape);
 }

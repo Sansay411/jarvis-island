@@ -1,12 +1,20 @@
 pub use super::data_island::*;
+#[path = "notch.rs"]
+pub mod notch;
 use crate::error::AppResult;
+use objc2::MainThreadMarker;
+use objc2_app_kit::{
+    NSApplicationActivationOptions, NSMainMenuWindowLevel, NSRunningApplication, NSWindow,
+    NSWindowCollectionBehavior, NSWorkspace,
+};
+use objc2_foundation::NSPoint;
 use parking_lot::Mutex;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
     Arc,
 };
 use std::time::Instant;
-use tauri::{AppHandle, Emitter, LogicalSize, PhysicalPosition, WebviewWindow};
+use tauri::{AppHandle, Emitter, LogicalSize, WebviewWindow};
 pub const LABEL: &str = "island";
 pub const CANVAS_W: f64 = 760.0;
 pub const CANVAS_H: f64 = 640.0;
@@ -23,6 +31,9 @@ pub struct Island {
     covered: AtomicBool,
     shape: Mutex<ShapeRect>,
     pointer_suppressed: AtomicBool,
+    pointer_inside: AtomicBool,
+    previous_app: AtomicI32,
+    screen: Mutex<Option<notch::ScreenGeometry>>,
 }
 impl Island {
     pub fn new(app: AppHandle, window: WebviewWindow) -> AppResult<Arc<Self>> {
@@ -43,6 +54,9 @@ impl Island {
                 height: 0.0,
             }),
             pointer_suppressed: AtomicBool::new(false),
+            pointer_inside: AtomicBool::new(false),
+            previous_app: AtomicI32::new(0),
+            screen: Mutex::new(None),
         });
         island.place()?;
         Ok(island)
@@ -51,14 +65,33 @@ impl Island {
         0
     }
     pub fn place(&self) -> AppResult<()> {
-        if let Some(mon) = self.window.primary_monitor()? {
-            let scale = mon.scale_factor();
-            let area = mon.work_area();
+        let Some(mtm) = MainThreadMarker::new() else {
+            return Ok(());
+        };
+        if let Some(screen) = notch::read(mtm) {
+            let mut current = self.screen.lock();
+            if current.as_ref() == Some(&screen) {
+                return Ok(());
+            }
             self.window.set_size(LogicalSize::new(CANVAS_W, CANVAS_H))?;
-            self.window.set_position(PhysicalPosition::new(
-                area.position.x + (area.size.width as i32 - (CANVAS_W * scale).round() as i32) / 2,
-                area.position.y,
-            ))?;
+            // AppKit screen coordinates are logical points with a bottom-left origin.
+            let window = unsafe { &*(self.window.ns_window()? as *const NSWindow) };
+            window.setFrameTopLeftPoint(NSPoint::new(
+                screen.center_x - CANVAS_W / 2.0,
+                screen.frame.origin.y + screen.frame.size.height,
+            ));
+            window.setLevel(NSMainMenuWindowLevel + 2);
+            window.setHasShadow(false);
+            window.setCollectionBehavior(
+                NSWindowCollectionBehavior::CanJoinAllSpaces
+                    | NSWindowCollectionBehavior::Stationary
+                    | NSWindowCollectionBehavior::FullScreenAuxiliary
+                    | NSWindowCollectionBehavior::IgnoresCycle,
+            );
+            *current = Some(screen);
+            let _ = self
+                .app
+                .emit_to(LABEL, "island:notch-geometry", screen.notch);
         }
         Ok(())
     }
@@ -114,12 +147,29 @@ impl Island {
         self.set_user_hidden(!self.hidden.load(Ordering::Relaxed));
     }
     pub fn begin_input(&self) -> AppResult<()> {
+        if self.previous_app.load(Ordering::Relaxed) == 0 {
+            if let Some(app) = NSWorkspace::sharedWorkspace().frontmostApplication() {
+                let pid = app.processIdentifier();
+                if pid != std::process::id() as i32 {
+                    self.previous_app.store(pid, Ordering::Relaxed);
+                }
+            }
+        }
         self.window.set_focusable(true)?;
         self.window.set_focus()?;
         Ok(())
     }
-    pub fn end_input(&self, _restore: bool) -> AppResult<()> {
+    pub fn end_input(&self, restore: bool) -> AppResult<()> {
+        let was_focused = self.window.is_focused()?;
         self.window.set_focusable(false)?;
+        let pid = self.previous_app.swap(0, Ordering::Relaxed);
+        if restore && was_focused && pid != 0 {
+            if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+                if !app.activateWithOptions(NSApplicationActivationOptions::empty()) {
+                    tracing::warn!(pid, "could not restore focus to previous application");
+                }
+            }
+        }
         Ok(())
     }
     pub fn suppress_pointer(&self, on: bool) {
@@ -134,40 +184,40 @@ impl Island {
     pub fn spawn_tracker(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         tauri::async_runtime::spawn(async move {
-            let mut last_inside = false;
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(32));
             loop {
                 interval.tick().await;
                 let Some(island) = weak.upgrade() else { break };
-                island.tracker_ticks.fetch_add(1, Ordering::Relaxed);
-                let inside = match (
-                    island.window.cursor_position(),
-                    island.window.outer_position(),
-                    island.window.scale_factor(),
-                ) {
-                    (Ok(cursor), Ok(origin), Ok(scale)) => {
-                        island.is_visible()
+                let refresh = island.tracker_ticks.fetch_add(1, Ordering::Relaxed) % 32 == 0;
+                let weak = Arc::downgrade(&island);
+                let _ = island.app.run_on_main_thread(move || {
+                    if let Some(island) = weak.upgrade() {
+                        if refresh {
+                            if let Err(e) = island.place() {
+                                tracing::warn!("island screen refresh: {e}");
+                            }
+                        }
+                        let Ok(raw) = island.window.ns_window() else {
+                            return;
+                        };
+                        let window = unsafe { &*(raw as *const NSWindow) };
+                        let point = window.mouseLocationOutsideOfEventStream();
+                        let inside = island.is_visible()
                             && !island.pointer_suppressed.load(Ordering::Relaxed)
-                            && contains(
-                                *island.shape.lock(),
-                                (cursor.x - f64::from(origin.x)) / scale,
-                                (cursor.y - f64::from(origin.y)) / scale,
-                            )
+                            && contains_cocoa(*island.shape.lock(), point.x, point.y);
+                        window.setIgnoresMouseEvents(!inside);
+                        if inside != island.pointer_inside.swap(inside, Ordering::Relaxed) {
+                            let _ = island.app.emit_to(
+                                LABEL,
+                                EVT_POINTER,
+                                PointerEvent {
+                                    inside,
+                                    drag_approach: false,
+                                },
+                            );
+                        }
                     }
-                    _ => false,
-                };
-                let _ = island.window.set_ignore_cursor_events(!inside);
-                if inside != last_inside {
-                    last_inside = inside;
-                    let _ = island.app.emit_to(
-                        LABEL,
-                        EVT_POINTER,
-                        PointerEvent {
-                            inside,
-                            drag_approach: false,
-                        },
-                    );
-                }
+                });
             }
         });
     }
@@ -181,6 +231,10 @@ impl Island {
 
 fn contains(shape: ShapeRect, x: f64, y: f64) -> bool {
     x >= shape.x && y >= shape.y && x < shape.x + shape.width && y < shape.y + shape.height
+}
+
+fn contains_cocoa(shape: ShapeRect, x: f64, y: f64) -> bool {
+    contains(shape, x, CANVAS_H - y)
 }
 
 #[cfg(test)]
@@ -197,6 +251,10 @@ mod tests {
         assert!(contains(shape, 50.0, 20.0));
         assert!(!contains(shape, 184.0, 20.0));
         assert!(!contains(shape, 50.0, -1.0));
+        assert!(contains_cocoa(shape, 50.0, CANVAS_H));
+        assert!(contains_cocoa(shape, 50.0, CANVAS_H - 20.0));
+        assert!(!contains_cocoa(shape, 50.0, CANVAS_H - 36.0));
+        assert!(!contains_cocoa(shape, 50.0, CANVAS_H + 1.0));
         assert!(!contains(
             ShapeRect {
                 width: 0.0,
