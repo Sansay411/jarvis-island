@@ -53,6 +53,7 @@ tar = "0.4"
 url = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+image = { version = "0.25", default-features = false, features = ["gif", "tiff"] }
 libc = "0.2"
 keyring = { version = "3", features = ["apple-native"] }
 

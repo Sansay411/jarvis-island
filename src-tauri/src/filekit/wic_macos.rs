@@ -148,6 +148,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn decodes_advertised_gif_and_tiff_formats() {
+        let image = image::RgbaImage::from_pixel(3, 2, image::Rgba([20, 40, 60, 255]));
+        for extension in ["gif", "tiff"] {
+            let path = std::env::temp_dir().join(format!("jarvis-format-{}.{extension}", uuid::Uuid::new_v4()));
+            image.save(&path).unwrap();
+            assert_eq!(dimensions(&path).unwrap(), (3, 2));
+            let decoded = decode(&path, None).unwrap();
+            assert_eq!((decoded.width, decoded.height), (3, 2));
+            assert_eq!(decoded.pixels, image.as_raw().as_slice());
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
     fn applies_exif_rotation_before_thumbnailing() {
         let path = std::env::temp_dir().join(format!("jarvis-oriented-{}.jpg", uuid::Uuid::new_v4()));
         let image = image::RgbImage::from_fn(16, 8, |x, _| {
