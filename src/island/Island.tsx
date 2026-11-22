@@ -66,7 +66,9 @@ function sampleFrames(label: string): () => void {
   return () => cancelAnimationFrame(raf);
 }
 
-function useIslandController() {
+function useIslandController(nativeGeometry: NotchGeometry | null) {
+  const macIsland = useRef(nativeGeometry !== null);
+  useEffect(() => { macIsland.current = nativeGeometry !== null; }, [nativeGeometry]);
   const enterTimer = useRef<number | undefined>(undefined);
   const leaveTimer = useRef<number | undefined>(undefined);
 
@@ -174,7 +176,7 @@ function useIslandController() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         const s = useIsland.getState();
-        if (s.inputFocused && !s.workspaceOpen && !s.clipsOpen) {
+        if (macIsland.current && s.inputFocused && !s.workspaceOpen && !s.clipsOpen) {
           e.preventDefault();
           window.clearTimeout(enterTimer.current);
           void endInlineInput(() => {
@@ -298,7 +300,7 @@ export function Island() {
     return () => { active = false; void unlisten.then((off) => off()); };
   }, []);
   const notch = notchLayout(notchGeometry);
-  useIslandController();
+  useIslandController(notchGeometry);
   const st = useIsland();
   const media = useSystem((s) => s.media);
   const artworkRgb = useSystem((s) => s.artworkRgb);
