@@ -114,7 +114,9 @@ struct ShellArgs {
 
 async fn shell_run(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
     let a: ShellArgs = parse(args)?;
+    #[cfg(windows)]
     let prelude = "$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.Encoding]::UTF8;$OutputEncoding=[Text.Encoding]::UTF8;";
+    #[cfg(windows)]
     let spec = Spec {
         program: "powershell.exe".into(),
         args: vec![
@@ -124,6 +126,15 @@ async fn shell_run(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
             "-Command".into(),
             format!("{prelude} {}", a.command),
         ],
+        cwd: a.cwd.map(PathBuf::from).or_else(dirs::home_dir),
+        env: vec![],
+        timeout: Duration::from_secs(a.timeout_secs.unwrap_or(60).clamp(5, 600)),
+        stdin: None,
+    };
+    #[cfg(target_os = "macos")]
+    let spec = Spec {
+        program: "/bin/zsh".into(),
+        args: vec!["-lc".into(), a.command.clone()],
         cwd: a.cwd.map(PathBuf::from).or_else(dirs::home_dir),
         env: vec![],
         timeout: Duration::from_secs(a.timeout_secs.unwrap_or(60).clamp(5, 600)),

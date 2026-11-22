@@ -8,6 +8,10 @@
 pub mod archive;
 pub mod media;
 pub mod telegram;
+#[cfg(windows)]
+pub mod wic;
+#[cfg(target_os = "macos")]
+#[path = "wic_macos.rs"]
 pub mod wic;
 
 use std::collections::HashMap;
@@ -470,9 +474,14 @@ pub fn execute(voice: Option<&crate::voice::VoiceManager>, paths: &[String], act
             done(if n > 1 { format!("Открыл {}", plural(n, "файл", "файла", "файлов")) } else { "Открыл".into() }, vec![])
         }
         "reveal" => {
+            #[cfg(windows)]
+            {
             let arg = format!("/select,\"{}\"", std::path::absolute(&first).unwrap_or(first.clone()).display());
             { use std::os::windows::process::CommandExt; std::process::Command::new("explorer.exe").raw_arg(&arg).spawn() }.map_err(|e| AppError::platform(format!("Проводник: {e}")))?;
             done("Показал в Проводнике".into(), vec![])
+            }
+            #[cfg(target_os = "macos")]
+            { Err(AppError::unsupported("Пока не поддерживается на macOS")) }
         }
         "copy_path" => {
             crate::platform::clipboard::write_text(&paths.join("\r\n"))?;

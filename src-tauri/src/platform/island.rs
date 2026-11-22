@@ -43,14 +43,7 @@ pub const EVT_PRESENCE: &str = "island:presence";
 pub const EVT_BLUR: &str = "island:blur";
 pub const EVT_CONTEXT: &str = "island:context";
 
-/// Island shape in logical pixels relative to the canvas window's client area.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
-pub struct ShapeRect {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
+pub use super::data_island::ShapeRect;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct ScreenRect {
@@ -90,19 +83,9 @@ struct Placement {
     monitor: isize,
 }
 
-#[derive(Serialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct PointerEvent {
-    pub inside: bool,
-    pub drag_approach: bool,
-}
+pub use super::data_island::PointerEvent;
 
-#[derive(Serialize, Clone, Copy)]
-#[serde(rename_all = "camelCase")]
-pub struct PresenceEvent {
-    pub visible: bool,
-    pub reason: &'static str,
-}
+pub use super::data_island::PresenceEvent;
 
 pub struct Island {
     window: WebviewWindow,

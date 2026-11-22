@@ -1,10 +1,13 @@
 //! Small cross-cutting helpers.
 
+#[cfg(windows)]
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+#[cfg(windows)]
 use windows::Win32::System::Threading::GetCurrentProcess;
 
 /// Current process working set in MiB (host process only; WebView2 runs in
 /// separate processes and is measured externally).
+#[cfg(windows)]
 pub fn working_set_mb() -> f64 {
     unsafe {
         let mut pmc = PROCESS_MEMORY_COUNTERS {
@@ -17,4 +20,10 @@ pub fn working_set_mb() -> f64 {
             0.0
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+pub fn working_set_mb() -> f64 {
+    std::process::Command::new("/bin/ps").args(["-p", &std::process::id().to_string(), "-o", "rss="]).output().ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok()).and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(0.0) / 1024.0
 }

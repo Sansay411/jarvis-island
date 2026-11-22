@@ -22,11 +22,14 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Secrets, ServerConfig, TransportConfig};
 use crate::error::{AppError, AppResult};
-use crate::platform::supervisor::{read_line_capped, which, Job, CREATE_SUSPENDED};
+use crate::platform::supervisor::{read_line_capped, which, Job};
+#[cfg(windows)]
+use crate::platform::supervisor::CREATE_SUSPENDED;
 
 /// The revision we speak; servers answer with the one they support and the
 /// parts we use (tools, ping) are the same in all of them.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const STDERR_LINES: usize = 20;
 /// Largest JSON-RPC message accepted from a stdio server (a big `tools/list`
@@ -211,6 +214,9 @@ fn resolve(command: &str) -> AppResult<PathBuf> {
     }
     // Next to `npx.cmd` Node ships an extension-less `npx` shell script that
     // Windows cannot start: without an extension, look for the shims first.
+    #[cfg(target_os = "macos")]
+    let found = which(command);
+    #[cfg(windows)]
     let found = if p.extension().is_none() {
         [".exe", ".cmd", ".bat", ".com"].iter().find_map(|ext| which(&format!("{command}{ext}"))).or_else(|| which(command))
     } else {
@@ -261,8 +267,11 @@ impl StdioConn {
             .stdin(PipeMode::piped())
             .stdout(PipeMode::piped())
             .stderr(PipeMode::piped())
-            .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED)
             .kill_on_drop(true);
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
+        #[cfg(target_os = "macos")]
+        cmd.process_group(0);
         let dir = if cwd.trim().is_empty() { dirs::home_dir() } else { Some(PathBuf::from(expand(cwd.trim()))) };
         if let Some(d) = dir.filter(|d| d.is_dir()) {
             cmd.current_dir(d);

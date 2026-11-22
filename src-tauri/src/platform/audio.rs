@@ -15,31 +15,11 @@ use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL, STGM_READ};
 use super::process::process_name;
 use crate::error::{AppError, AppResult};
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AudioState {
-    /// 0..=100, rounded from the scalar endpoint level.
-    pub volume: u8,
-    pub muted: bool,
-    pub device: String,
-}
+pub use super::data_audio::AudioState;
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OutputDevice {
-    pub id: String,
-    pub name: String,
-    pub is_default: bool,
-}
+pub use super::data_audio::OutputDevice;
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppAudioSession {
-    pub pid: u32,
-    pub process: String,
-    pub volume: u8,
-    pub muted: bool,
-}
+pub use super::data_audio::AppAudioSession;
 
 /// PKEY_Device_FriendlyName (functiondiscoverykeys_devpkey.h); declared here to
 /// avoid pulling the whole FunctionDiscovery feature into the build.

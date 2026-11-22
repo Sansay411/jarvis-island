@@ -28,16 +28,7 @@ use windows::Win32::System::Wmi::{
 use super::from_wide;
 use crate::error::{AppError, AppResult};
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DisplayBrightness {
-    pub id: String,
-    pub name: String,
-    /// "internal" (WMI) or "external" (DDC/CI)
-    pub kind: &'static str,
-    pub brightness: Option<u8>,
-    pub supported: bool,
-}
+pub use super::data_brightness::DisplayBrightness;
 
 // ---------- WMI (internal panels) ----------
 
