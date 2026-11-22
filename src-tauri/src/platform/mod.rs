@@ -149,6 +149,10 @@ pub fn from_wide(buf: &[u16]) -> String {
 
 mod data_apps;
 
+#[cfg(target_os = "macos")]
+#[path = "macos/native.rs"]
+mod native;
+
 mod data_audio;
 
 mod data_brightness;

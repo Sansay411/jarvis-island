@@ -141,16 +141,15 @@ async fn cancellation_kills_descendants() {
 }
 
 #[test]
-fn unavailable_capabilities_report_unsupported() {
+fn capabilities_outside_this_step_report_unsupported() {
     assert!(matches!(
-        platform::audio::get_state(),
+        platform::audio::list_app_sessions(),
         Err(AppError::Unsupported(_))
     ));
     assert!(matches!(
-        platform::clipboard::write_text(""),
+        platform::capture::capture_rect(platform::display::Rect::default(), None),
         Err(AppError::Unsupported(_))
     ));
-    assert!(platform::winmgr::list_windows().is_empty());
 }
 
 #[test]
@@ -164,4 +163,103 @@ fn model_paths_preserve_unicode() {
         crate::voice::models::native_path(std::path::Path::new("")).unwrap(),
         ""
     );
+}
+
+#[test]
+#[ignore = "изменяет системную громкость и буфер обмена с последующим восстановлением"]
+fn macos_live_smoke() {
+    use platform::{apps::AppIndex, audio, clipboard, native, winmgr};
+    use serde_json::{json, Value};
+
+    struct ClipboardRestore(Value);
+    impl Drop for ClipboardRestore {
+        fn drop(&mut self) {
+            let result = native::jxa(
+                r#"
+const p=$.NSPasteboard.generalPasteboard, items=$.NSMutableArray.alloc.init;
+for(const saved of a) {
+    const item=$.NSPasteboardItem.alloc.init;
+    for(const entry of saved) {
+        const data=$.NSData.alloc.initWithBase64EncodedStringOptions(entry.data,0);
+        if(!item.setDataForType(data,entry.type)) throw Error('Не удалось восстановить формат буфера обмена');
+    }
+    items.addObject(item);
+}
+p.clearContents;
+if(items.count && !p.writeObjects(items)) throw Error('Не удалось восстановить буфер обмена');
+return true;
+"#,
+                self.0.clone(),
+            );
+            assert!(result.is_ok(), "не удалось восстановить буфер обмена");
+        }
+    }
+    match audio::get_state() {
+        Ok(original) => {
+            let restored = audio::set_volume(original.volume).expect("вернуть исходную громкость");
+            assert_eq!(restored.volume, original.volume);
+            assert_eq!(restored.muted, original.muted);
+            println!(
+                "audio: volume={}, muted={}; set_volume(original) verified",
+                restored.volume, restored.muted
+            );
+        }
+        Err(e) => println!("audio: {e}; set_volume skipped: no original device volume"),
+    }
+    let apps = AppIndex::default().all().unwrap();
+    println!(
+        "apps: count={}, first 3={:?}",
+        apps.len(),
+        apps.iter().take(3).map(|a| &a.name).collect::<Vec<_>>()
+    );
+    assert!(!apps.is_empty());
+    println!("windows: count={}", winmgr::list_windows().len());
+    let saved = native::jxa(r#"
+const p=$.NSPasteboard.generalPasteboard, result=[];
+const types=ObjC.deepUnwrap(p.types)||[];
+if(types.includes('org.nspasteboard.ConcealedType')) throw Error('Буфер обмена содержит конфиденциальные данные');
+const items=p.pasteboardItems;
+if(items && !items.isNil()) for(let i=0;i<items.count;i++) {
+    const item=items.objectAtIndex(i), saved=[];
+    for(const type of ObjC.deepUnwrap(item.types)) {
+        const data=item.dataForType(type);
+        if(data && !data.isNil()) saved.push({type:type,data:ObjC.unwrap(data.base64EncodedStringWithOptions(0))});
+    }
+    result.push(saved);
+}
+return result;
+"#, json!(null)).expect("сохранить буфер обмена");
+    let restore = ClipboardRestore(saved);
+    let text = "Jarvis macOS smoke — тест\n\"quotes\" \\ path";
+    clipboard::write_text(text).unwrap();
+    assert_eq!(clipboard::read().unwrap().text.as_deref(), Some(text));
+    println!("clipboard: text write/read verified");
+
+    let image = image::RgbaImage::from_pixel(2, 2, image::Rgba([20, 40, 60, 255]));
+    let mut png = Vec::new();
+    image
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    clipboard::write_image(&png, &[]).unwrap();
+    assert_eq!(
+        clipboard::snapshot().unwrap().png.as_deref(),
+        Some(png.as_slice())
+    );
+    println!("clipboard: PNG write/read verified");
+
+    let path = std::env::temp_dir().join(format!("jarvis-pasteboard-{}.txt", uuid::Uuid::new_v4()));
+    std::fs::write(&path, b"smoke").unwrap();
+    clipboard::write_files(&[path.to_string_lossy().into_owned()]).unwrap();
+    let read = clipboard::read().unwrap();
+    assert_eq!(
+        read.files,
+        vec![std::fs::canonicalize(&path)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()]
+    );
+    std::fs::remove_file(path).unwrap();
+    println!("clipboard: file list write/read verified");
+    drop(restore);
+    println!("clipboard: original formats restored");
 }
