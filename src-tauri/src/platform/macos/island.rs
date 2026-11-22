@@ -1,11 +1,12 @@
 pub use super::data_island::*;
 #[path = "notch.rs"]
 pub mod notch;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
+use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
-    NSApplicationActivationOptions, NSMainMenuWindowLevel, NSRunningApplication, NSWindow,
-    NSWindowCollectionBehavior, NSWorkspace,
+    NSApplicationActivationOptions, NSRunningApplication, NSStatusWindowLevel, NSWindow,
+    NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::NSPoint;
 use parking_lot::Mutex;
@@ -22,6 +23,7 @@ pub const EVT_POINTER: &str = "island:pointer";
 pub const EVT_PRESENCE: &str = "island:presence";
 pub const EVT_BLUR: &str = "island:blur";
 pub const EVT_CONTEXT: &str = "island:context";
+static INPUT_FOCUSABLE: AtomicBool = AtomicBool::new(false);
 pub struct Island {
     pub tracker_ticks: AtomicU64,
     window: WebviewWindow,
@@ -38,6 +40,9 @@ pub struct Island {
 impl Island {
     pub fn new(app: AppHandle, window: WebviewWindow) -> AppResult<Arc<Self>> {
         app.set_activation_policy(tauri::ActivationPolicy::Accessory)?;
+        unsafe {
+            install_panel(window.ns_window()? as *mut AnyObject)?;
+        }
         window.set_visible_on_all_workspaces(true)?;
         window.set_ignore_cursor_events(true)?;
         let island = Arc::new(Self {
@@ -68,6 +73,16 @@ impl Island {
         let Some(mtm) = MainThreadMarker::new() else {
             return Ok(());
         };
+        let window = unsafe { &*(self.window.ns_window()? as *const NSWindow) };
+        window.setStyleMask(window.styleMask() | NSWindowStyleMask::NonactivatingPanel);
+        window.setLevel(NSStatusWindowLevel + 2);
+        window.setHasShadow(false);
+        window.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::IgnoresCycle,
+        );
         if let Some(screen) = notch::read(mtm) {
             let mut current = self.screen.lock();
             if current.as_ref() == Some(&screen) {
@@ -75,19 +90,10 @@ impl Island {
             }
             self.window.set_size(LogicalSize::new(CANVAS_W, CANVAS_H))?;
             // AppKit screen coordinates are logical points with a bottom-left origin.
-            let window = unsafe { &*(self.window.ns_window()? as *const NSWindow) };
             window.setFrameTopLeftPoint(NSPoint::new(
                 screen.center_x - CANVAS_W / 2.0,
                 screen.frame.origin.y + screen.frame.size.height,
             ));
-            window.setLevel(NSMainMenuWindowLevel + 2);
-            window.setHasShadow(false);
-            window.setCollectionBehavior(
-                NSWindowCollectionBehavior::CanJoinAllSpaces
-                    | NSWindowCollectionBehavior::Stationary
-                    | NSWindowCollectionBehavior::FullScreenAuxiliary
-                    | NSWindowCollectionBehavior::IgnoresCycle,
-            );
             *current = Some(screen);
             let _ = self
                 .app
@@ -155,13 +161,13 @@ impl Island {
                 }
             }
         }
-        self.window.set_focusable(true)?;
+        INPUT_FOCUSABLE.store(true, Ordering::Relaxed);
         self.window.set_focus()?;
         Ok(())
     }
     pub fn end_input(&self, restore: bool) -> AppResult<()> {
         let was_focused = self.window.is_focused()?;
-        self.window.set_focusable(false)?;
+        INPUT_FOCUSABLE.store(false, Ordering::Relaxed);
         let pid = self.previous_app.swap(0, Ordering::Relaxed);
         if restore && was_focused && pid != 0 {
             if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
@@ -227,6 +233,59 @@ impl Island {
             .saturating_sub(ticks_then) as f64
             / since.elapsed().as_secs_f64().max(0.001)
     }
+}
+
+unsafe fn install_panel(window: *mut AnyObject) -> AppResult<()> {
+    let original = unsafe { &*window }.class();
+    let panel =
+        AnyClass::get(c"NSPanel").ok_or_else(|| AppError::platform("NSPanel недоступен"))?;
+    let tao =
+        AnyClass::get(c"TaoWindow").ok_or_else(|| AppError::platform("Нет класса TaoWindow"))?;
+    let is_tao = std::iter::successors(Some(original), |class| class.superclass())
+        .any(|class| std::ptr::eq(class, tao));
+    if !is_tao || panel.instance_size() > original.instance_size() {
+        return Err(AppError::platform(format!(
+            "Несовместимая структура окна {:?}: {} / NSPanel {}",
+            original.name(),
+            original.instance_size(),
+            panel.instance_size()
+        )));
+    }
+    let class = AnyClass::get(c"JarvisIslandPanel").unwrap_or_else(|| {
+        let mut builder =
+            ClassBuilder::new(c"JarvisIslandPanel", panel).expect("unique panel class");
+        unsafe {
+            builder.add_method(
+                objc2::sel!(canBecomeKeyWindow),
+                panel_can_become_key as extern "C" fn(_, _) -> _,
+            );
+        }
+        let class = builder.register();
+        for method in tao.instance_methods().iter() {
+            if method.name() != objc2::sel!(sendEvent:) {
+                continue;
+            }
+            unsafe {
+                objc2::ffi::class_addMethod(
+                    class as *const _ as *mut _,
+                    method.name(),
+                    method.implementation(),
+                    objc2::ffi::method_getTypeEncoding(*method),
+                );
+            }
+        }
+        class
+    });
+    // NSPanel fits in TaoWindow's allocation; keep NSWindow storage and Tao's event dispatch.
+    unsafe {
+        objc2::ffi::object_setClass(window, class);
+    }
+    let _: () = unsafe { objc2::msg_send![window, setHidesOnDeactivate: false] };
+    Ok(())
+}
+
+extern "C" fn panel_can_become_key(_: &AnyObject, _: Sel) -> Bool {
+    Bool::new(INPUT_FOCUSABLE.load(Ordering::Relaxed))
 }
 
 fn contains(shape: ShapeRect, x: f64, y: f64) -> bool {
