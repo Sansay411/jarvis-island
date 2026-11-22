@@ -5,6 +5,7 @@ use crate::platform::{display::Rect, HWND};
 use chrono::Utc;
 use core_foundation::{
     base::{CFType, TCFType},
+    boolean::CFBoolean,
     dictionary::CFDictionary,
     number::CFNumber,
     string::CFString,
@@ -30,6 +31,9 @@ fn text(d: &Dict, key: &str) -> String {
         .and_then(|v| v.downcast::<CFString>())
         .map(|s| s.to_string())
         .unwrap_or_default()
+}
+fn window_state(on_screen: Option<bool>) -> &'static str {
+    if on_screen == Some(false) { "minimized" } else { "normal" }
 }
 
 pub fn to_hwnd(h: i64) -> HWND {
@@ -73,7 +77,10 @@ pub fn list_windows() -> Vec<WindowInfo> {
                 return None;
             }
             let pid = number(&d, "kCGWindowOwnerPID")? as u32;
-            let foreground = pid == front && !marked;
+            let on_screen = d.find(&CFString::new("kCGWindowIsOnscreen"))
+                .and_then(|v| v.downcast::<CFBoolean>()).map(|v| v.into());
+            let state = window_state(on_screen);
+            let foreground = pid == front && !marked && state != "minimized";
             marked |= foreground;
             let process = text(&d, "kCGWindowOwnerName");
             Some(WindowInfo {
@@ -82,7 +89,7 @@ pub fn list_windows() -> Vec<WindowInfo> {
                 pid,
                 class_name: process.clone(),
                 process,
-                state: "normal",
+                state,
                 foreground,
                 rect,
                 monitor: String::new(),
@@ -304,6 +311,12 @@ impl ForegroundHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn offscreen_windows_are_reported_as_minimized() {
+        assert_eq!(window_state(Some(false)), "minimized");
+        assert_eq!(window_state(Some(true)), "normal");
+        assert_eq!(window_state(None), "normal");
+    }
     #[test]
     fn snap_covers_odd_sized_areas_and_validates_regions() {
         let area = Rect {
