@@ -8,7 +8,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ipc, isTauri, on } from "../lib/ipc";
-import { resolveMode, useIsland } from "../store/island";
+import { endInlineInput, resolveMode, useIsland } from "../store/island";
 import { hasActiveMedia, useSystem } from "../store/system";
 import { useRunningJobs } from "../store/jobs";
 import { useAgent, useAgentMood } from "../store/agent";
@@ -174,6 +174,14 @@ function useIslandController() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         const s = useIsland.getState();
+        if (s.inputFocused && !s.workspaceOpen && !s.clipsOpen) {
+          e.preventDefault();
+          window.clearTimeout(enterTimer.current);
+          void endInlineInput(() => {
+            if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+          }).catch(console.error);
+          return;
+        }
         if (useFiles.getState().open) closeFiles();
         else if (s.workspaceOpen) set({ workspaceOpen: false });
         else if (s.voiceOpen) {

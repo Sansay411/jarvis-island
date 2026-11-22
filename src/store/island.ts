@@ -71,6 +71,13 @@ export const useIsland = create<IslandStore>((set) => ({
 }));
 
 let inputFocusCount = 0;
+export function endInlineInput(blur: () => void): Promise<void> {
+  blur();
+  window.clearTimeout(blurReleaseTimer);
+  inputFocusCount = 0;
+  useIsland.setState({ inputFocused: false, hovered: false, focusBannerDismissed: false });
+  return ipc.island.endInput(true);
+}
 let blurReleaseTimer: number | undefined;
 
 /** Wire onto inline `<input>` elements inside PeekView so Windows grants
