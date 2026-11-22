@@ -5,8 +5,8 @@ use crate::error::{AppError, AppResult};
 use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
-    NSApplicationActivationOptions, NSRunningApplication, NSStatusWindowLevel, NSWindow,
-    NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
+    NSApplication, NSApplicationActivationOptions, NSRunningApplication, NSStatusWindowLevel,
+    NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::NSPoint;
 use parking_lot::Mutex;
@@ -35,6 +35,7 @@ pub struct Island {
     pointer_suppressed: AtomicBool,
     pointer_inside: AtomicBool,
     previous_app: AtomicI32,
+    last_external_app: AtomicI32,
     screen: Mutex<Option<notch::ScreenGeometry>>,
 }
 impl Island {
@@ -61,6 +62,13 @@ impl Island {
             pointer_suppressed: AtomicBool::new(false),
             pointer_inside: AtomicBool::new(false),
             previous_app: AtomicI32::new(0),
+            last_external_app: AtomicI32::new(
+                NSWorkspace::sharedWorkspace()
+                    .frontmostApplication()
+                    .map(|app| app.processIdentifier())
+                    .filter(|pid| *pid != std::process::id() as i32)
+                    .unwrap_or(0),
+            ),
             screen: Mutex::new(None),
         });
         island.place()?;
@@ -74,7 +82,12 @@ impl Island {
             return Ok(());
         };
         let window = unsafe { &*(self.window.ns_window()? as *const NSWindow) };
-        window.setStyleMask(window.styleMask() | NSWindowStyleMask::NonactivatingPanel);
+        let mut style = window.styleMask();
+        style.set(
+            NSWindowStyleMask::NonactivatingPanel,
+            !INPUT_FOCUSABLE.load(Ordering::Relaxed),
+        );
+        window.setStyleMask(style);
         window.setLevel(NSStatusWindowLevel + 2);
         window.setHasShadow(false);
         window.setCollectionBehavior(
@@ -154,24 +167,49 @@ impl Island {
     }
     pub fn begin_input(&self) -> AppResult<()> {
         if self.previous_app.load(Ordering::Relaxed) == 0 {
-            if let Some(app) = NSWorkspace::sharedWorkspace().frontmostApplication() {
-                let pid = app.processIdentifier();
-                if pid != std::process::id() as i32 {
-                    self.previous_app.store(pid, Ordering::Relaxed);
-                }
-            }
+            let front = NSWorkspace::sharedWorkspace()
+                .frontmostApplication()
+                .map(|app| app.processIdentifier());
+            self.previous_app.store(
+                previous_app_pid(front, self.last_external_app.load(Ordering::Relaxed)),
+                Ordering::Relaxed,
+            );
         }
         INPUT_FOCUSABLE.store(true, Ordering::Relaxed);
+        let window = unsafe { &*(self.window.ns_window()? as *const NSWindow) };
+        window.setStyleMask(window.styleMask() & !NSWindowStyleMask::NonactivatingPanel);
         self.window.set_focus()?;
         Ok(())
     }
     pub fn end_input(&self, restore: bool) -> AppResult<()> {
-        let was_focused = self.window.is_focused()?;
+        let mtm = MainThreadMarker::new()
+            .ok_or_else(|| AppError::platform("Фокус окна требует главный поток"))?;
+        let window = unsafe { &*(self.window.ns_window()? as *const NSWindow) };
+        window.makeFirstResponder(None);
+        window.resignKeyWindow();
         INPUT_FOCUSABLE.store(false, Ordering::Relaxed);
+        window.setStyleMask(window.styleMask() | NSWindowStyleMask::NonactivatingPanel);
         let pid = self.previous_app.swap(0, Ordering::Relaxed);
-        if restore && was_focused && pid != 0 {
+        let front = NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .map(|app| app.processIdentifier())
+            .unwrap_or(0);
+        if should_restore_input(restore, pid, front) {
             if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
-                if !app.activateWithOptions(NSApplicationActivationOptions::empty()) {
+                let application = NSApplication::sharedApplication(mtm);
+                let can_yield: bool = unsafe {
+                    objc2::msg_send![&application, respondsToSelector: objc2::sel!(yieldActivationToApplication:)]
+                };
+                if can_yield {
+                    application.yieldActivationToApplication(&app);
+                }
+                application.deactivate();
+                #[allow(deprecated)]
+                let activated = app.activateWithOptions(
+                    NSApplicationActivationOptions::ActivateIgnoringOtherApps
+                        | NSApplicationActivationOptions::ActivateAllWindows,
+                );
+                if !activated {
                     tracing::warn!(pid, "could not restore focus to previous application");
                 }
             }
@@ -198,6 +236,12 @@ impl Island {
                 let weak = Arc::downgrade(&island);
                 let _ = island.app.run_on_main_thread(move || {
                     if let Some(island) = weak.upgrade() {
+                        if let Some(app) = NSWorkspace::sharedWorkspace().frontmostApplication() {
+                            let pid = app.processIdentifier();
+                            if pid != std::process::id() as i32 {
+                                island.last_external_app.store(pid, Ordering::Relaxed);
+                            }
+                        }
                         if refresh {
                             if let Err(e) = island.place() {
                                 tracing::warn!("island screen refresh: {e}");
@@ -233,6 +277,10 @@ impl Island {
             .saturating_sub(ticks_then) as f64
             / since.elapsed().as_secs_f64().max(0.001)
     }
+}
+
+fn should_restore_input(restore: bool, previous: i32, front: i32) -> bool {
+    restore && previous != 0 && (front == previous || front == std::process::id() as i32)
 }
 
 unsafe fn install_panel(window: *mut AnyObject) -> AppResult<()> {
@@ -292,6 +340,12 @@ fn contains(shape: ShapeRect, x: f64, y: f64) -> bool {
     x >= shape.x && y >= shape.y && x < shape.x + shape.width && y < shape.y + shape.height
 }
 
+fn previous_app_pid(front: Option<i32>, last_external: i32) -> i32 {
+    front
+        .filter(|pid| *pid > 0 && *pid != std::process::id() as i32)
+        .unwrap_or(last_external)
+}
+
 fn contains_cocoa(shape: ShapeRect, x: f64, y: f64) -> bool {
     contains(shape, x, CANVAS_H - y)
 }
@@ -299,6 +353,23 @@ fn contains_cocoa(shape: ShapeRect, x: f64, y: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn previous_app_survives_activation_before_input_begins() {
+        assert_eq!(previous_app_pid(Some(42), 43), 42);
+        assert_eq!(previous_app_pid(Some(std::process::id() as i32), 42), 42);
+        assert_eq!(previous_app_pid(None, 42), 42);
+        assert_eq!(previous_app_pid(None, 0), 0);
+        assert_eq!(previous_app_pid(Some(0), 42), 42);
+    }
+    #[test]
+    fn input_restore_respects_the_frontmost_application() {
+        let own = std::process::id() as i32;
+        assert!(should_restore_input(true, 42, own));
+        assert!(should_restore_input(true, 42, 42));
+        assert!(!should_restore_input(false, 42, own));
+        assert!(!should_restore_input(true, 0, own));
+        assert!(!should_restore_input(true, 42, 43));
+    }
     #[test]
     fn pointer_hit_test_handles_inside_outside_and_empty_shapes() {
         let shape = ShapeRect {
