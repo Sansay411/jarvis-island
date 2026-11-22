@@ -55,6 +55,20 @@ fn segments(command: &str) -> Vec<String> {
 }
 
 pub fn classify(command: &str) -> Risk {
+    #[cfg(target_os = "macos")]
+    {
+        if command.chars().any(|c| "&;|\n\r$`<>(){}\\".contains(c)) {
+            return Risk::High;
+        }
+        let first = command.split_whitespace().next().unwrap_or("");
+        if !matches!(first, "echo" | "pwd" | "whoami" | "hostname" | "ls" | "cat" | "git") {
+            return Risk::Moderate;
+        }
+    }
+    classify_powershell(command)
+}
+
+fn classify_powershell(command: &str) -> Risk {
     let lc = command.to_lowercase();
     // Output redirection writes files; subexpressions can hide anything.
     if lc.contains('>') || lc.contains("$(") || lc.contains('`') {
@@ -195,6 +209,35 @@ pub fn tools() -> Vec<Tool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::classify_powershell as classify;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn zsh_metacharacters_always_require_confirmation() {
+        for command in [
+            "echo ok & touch /tmp/x",
+            "echo ok; touch /tmp/x",
+            "echo ok | touch /tmp/x",
+            "echo ok && touch /tmp/x",
+            "echo ok || touch /tmp/x",
+            "echo ok\ntouch /tmp/x",
+            "echo $(touch /tmp/x)",
+            "echo `touch /tmp/x`",
+            "echo ok > /tmp/x",
+            "echo ok >> /tmp/x",
+            "cat <(touch /tmp/x)",
+            "echo *(e:touch:)",
+            "echo \"literal &\"",
+        ] {
+            assert_eq!(super::classify(command), Risk::High, "{command}");
+        }
+        for command in ["echo ok", "ls", "cat file.txt", "git status"] {
+            assert_eq!(super::classify(command), Risk::Low, "{command}");
+        }
+        for command in ["", "sort -o file input", "unknown", "git log --output=file"] {
+            assert_ne!(super::classify(command), Risk::Low, "{command}");
+        }
+    }
 
     #[test]
     fn risk_classification() {
