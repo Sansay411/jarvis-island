@@ -60,6 +60,20 @@ pub fn classify(command: &str) -> Risk {
         if command.chars().any(|c| "&;|\n\r$`<>(){}\\".contains(c)) {
             return Risk::High;
         }
+        if classify_powershell(command) == Risk::High {
+            return Risk::High;
+        }
+        let Some(words) = shlex::split(command) else { return Risk::High };
+        let words: Vec<_> = words.iter().map(|w| w.to_lowercase()).collect();
+        if words.iter().any(|w| {
+            let base = w.rsplit('/').next().unwrap_or(w);
+            matches!(base, "mv" | "sudo" | "doas" | "chmod" | "chown" | "chgrp" | "dd" |
+                "mkfs" | "diskutil" | "killall" | "reboot" | "halt" | "launchctl")
+                || base.starts_with("mkfs.")
+        }) || (words.first().is_some_and(|w| w.rsplit('/').next() == Some("git"))
+            && words.iter().any(|w| matches!(w.as_str(), "push" | "reset" | "clean"))) {
+            return Risk::High;
+        }
         let first = command.split_whitespace().next().unwrap_or("");
         if !matches!(first, "echo" | "pwd" | "whoami" | "hostname" | "ls" | "cat" | "git") {
             return Risk::Moderate;
@@ -210,6 +224,27 @@ pub fn tools() -> Vec<Tool> {
 mod tests {
     use super::*;
     use super::classify_powershell as classify;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dangerous_plain_zsh_commands_require_confirmation() {
+        for command in [
+            "rm file", "rm -rf ~/x", "/bin/rm file", "'rm' file", "rmdir folder",
+            "mv source destination", "sudo echo ok", "chmod 777 file", "chown root file",
+            "dd if=input of=output", "mkfs /dev/disk1", "diskutil eraseDisk APFS X disk1",
+            "killall process", "shutdown -h now", "reboot",
+            "git push --force", "git reset --hard", "git -C repo reset --hard",
+        ] {
+            assert_eq!(super::classify(command), Risk::High, "{command}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dangerous_windows_commands_reach_the_shared_check() {
+        assert_eq!(super::classify("rm file"), Risk::High);
+        assert_eq!(super::classify("Remove-Item -Recurse folder"), Risk::High);
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
