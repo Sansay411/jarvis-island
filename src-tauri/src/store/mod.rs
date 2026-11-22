@@ -3,6 +3,10 @@
 //! Windows Credential Manager (see [`secrets`]).
 
 pub mod clips;
+#[cfg(windows)]
+pub mod secrets;
+#[cfg(target_os = "macos")]
+#[path = "secrets_macos.rs"]
 pub mod secrets;
 pub mod settings;
 

@@ -31,24 +31,9 @@ pub fn browser_label(process: &str) -> Option<&'static str> {
     BROWSERS.iter().find(|(p, _)| p.eq_ignore_ascii_case(process)).map(|(_, l)| *l)
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Tab {
-    pub index: usize,
-    pub title: String,
-    pub selected: bool,
-}
+pub use super::data_browser::Tab;
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BrowserState {
-    pub browser: String,
-    pub minimized: bool,
-    pub hwnd: i64,
-    pub window_title: String,
-    pub url: Option<String>,
-    pub tabs: Vec<Tab>,
-}
+pub use super::data_browser::BrowserState;
 
 fn uia() -> AppResult<IUIAutomation> {
     unsafe {

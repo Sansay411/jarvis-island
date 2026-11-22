@@ -66,13 +66,7 @@ pub fn move_to(x: i32, y: i32) -> AppResult<()> {
     send(&[mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, nx, ny, 0)])
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Button {
-    Left,
-    Right,
-    Middle,
-}
+pub use super::data_input::Button;
 
 pub fn click(x: i32, y: i32, button: Button, count: u32) -> AppResult<()> {
     move_to(x, y)?;

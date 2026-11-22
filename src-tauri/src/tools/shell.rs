@@ -55,6 +55,34 @@ fn segments(command: &str) -> Vec<String> {
 }
 
 pub fn classify(command: &str) -> Risk {
+    #[cfg(target_os = "macos")]
+    {
+        if command.chars().any(|c| "&;|\n\r$`<>(){}\\".contains(c)) {
+            return Risk::High;
+        }
+        if classify_powershell(command) == Risk::High {
+            return Risk::High;
+        }
+        let Some(words) = shlex::split(command) else { return Risk::High };
+        let words: Vec<_> = words.iter().map(|w| w.to_lowercase()).collect();
+        if words.iter().any(|w| {
+            let base = w.rsplit('/').next().unwrap_or(w);
+            matches!(base, "mv" | "sudo" | "doas" | "chmod" | "chown" | "chgrp" | "dd" |
+                "mkfs" | "diskutil" | "killall" | "reboot" | "halt" | "launchctl")
+                || base.starts_with("mkfs.")
+        }) || (words.first().is_some_and(|w| w.rsplit('/').next() == Some("git"))
+            && words.iter().any(|w| matches!(w.as_str(), "push" | "reset" | "clean"))) {
+            return Risk::High;
+        }
+        let first = command.split_whitespace().next().unwrap_or("");
+        if !matches!(first, "echo" | "pwd" | "whoami" | "hostname" | "ls" | "cat" | "git") {
+            return Risk::Moderate;
+        }
+    }
+    classify_powershell(command)
+}
+
+fn classify_powershell(command: &str) -> Risk {
     let lc = command.to_lowercase();
     // Output redirection writes files; subexpressions can hide anything.
     if lc.contains('>') || lc.contains("$(") || lc.contains('`') {
@@ -114,7 +142,9 @@ struct ShellArgs {
 
 async fn shell_run(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
     let a: ShellArgs = parse(args)?;
+    #[cfg(windows)]
     let prelude = "$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.Encoding]::UTF8;$OutputEncoding=[Text.Encoding]::UTF8;";
+    #[cfg(windows)]
     let spec = Spec {
         program: "powershell.exe".into(),
         args: vec![
@@ -124,6 +154,15 @@ async fn shell_run(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
             "-Command".into(),
             format!("{prelude} {}", a.command),
         ],
+        cwd: a.cwd.map(PathBuf::from).or_else(dirs::home_dir),
+        env: vec![],
+        timeout: Duration::from_secs(a.timeout_secs.unwrap_or(60).clamp(5, 600)),
+        stdin: None,
+    };
+    #[cfg(target_os = "macos")]
+    let spec = Spec {
+        program: "/bin/zsh".into(),
+        args: vec!["-lc".into(), a.command.clone()],
         cwd: a.cwd.map(PathBuf::from).or_else(dirs::home_dir),
         env: vec![],
         timeout: Duration::from_secs(a.timeout_secs.unwrap_or(60).clamp(5, 600)),
@@ -184,6 +223,56 @@ pub fn tools() -> Vec<Tool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::classify_powershell as classify;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dangerous_plain_zsh_commands_require_confirmation() {
+        for command in [
+            "rm file", "rm -rf ~/x", "/bin/rm file", "'rm' file", "rmdir folder",
+            "mv source destination", "sudo echo ok", "chmod 777 file", "chown root file",
+            "dd if=input of=output", "mkfs /dev/disk1", "diskutil eraseDisk APFS X disk1",
+            "killall process", "shutdown -h now", "reboot",
+            "git push --force", "git reset --hard", "git -C repo reset --hard",
+        ] {
+            assert_eq!(super::classify(command), Risk::High, "{command}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dangerous_windows_commands_reach_the_shared_check() {
+        assert_eq!(super::classify("rm file"), Risk::High);
+        assert_eq!(super::classify("Remove-Item -Recurse folder"), Risk::High);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn zsh_metacharacters_always_require_confirmation() {
+        for command in [
+            "echo ok & touch /tmp/x",
+            "echo ok; touch /tmp/x",
+            "echo ok | touch /tmp/x",
+            "echo ok && touch /tmp/x",
+            "echo ok || touch /tmp/x",
+            "echo ok\ntouch /tmp/x",
+            "echo $(touch /tmp/x)",
+            "echo `touch /tmp/x`",
+            "echo ok > /tmp/x",
+            "echo ok >> /tmp/x",
+            "cat <(touch /tmp/x)",
+            "echo *(e:touch:)",
+            "echo \"literal &\"",
+        ] {
+            assert_eq!(super::classify(command), Risk::High, "{command}");
+        }
+        for command in ["echo ok", "ls", "cat file.txt", "git status"] {
+            assert_eq!(super::classify(command), Risk::Low, "{command}");
+        }
+        for command in ["", "sort -o file input", "unknown", "git log --output=file"] {
+            assert_ne!(super::classify(command), Risk::Low, "{command}");
+        }
+    }
 
     #[test]
     fn risk_classification() {

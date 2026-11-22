@@ -6,6 +6,7 @@ use jarvis_lib::platform::{self, apps, audio, brightness, capture, display, medi
 
 fn main() {
     // Match the app: per-monitor DPI aware v2, so coordinates are physical.
+    #[cfg(windows)]
     unsafe {
         let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }

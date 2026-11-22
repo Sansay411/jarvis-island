@@ -28,21 +28,7 @@ use super::display::{self, Rect};
 use super::process::process_name;
 use crate::error::{AppError, AppResult};
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WindowInfo {
-    /// Window handle as an integer; stable while the window exists.
-    pub hwnd: i64,
-    pub title: String,
-    pub process: String,
-    pub pid: u32,
-    pub class_name: String,
-    /// "normal" | "minimized" | "maximized"
-    pub state: &'static str,
-    pub foreground: bool,
-    pub rect: Rect,
-    pub monitor: String,
-}
+pub use super::data_winmgr::WindowInfo;
 
 pub fn to_hwnd(h: i64) -> HWND {
     HWND(h as isize as *mut _)
@@ -249,13 +235,7 @@ pub fn restore(hwnd: i64) -> AppResult<WindowInfo> {
     describe(h).ok_or_else(|| AppError::not_found("Окно закрылось"))
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CloseOutcome {
-    pub closed: bool,
-    /// The app is still open — usually because it asked about unsaved work.
-    pub still_open_reason: Option<String>,
-}
+pub use super::data_winmgr::CloseOutcome;
 
 /// Politely ask a window to close (WM_CLOSE) so the application can prompt
 /// about unsaved work. Never terminates the process.
@@ -373,14 +353,7 @@ pub fn find_windows(query: &str) -> Vec<WindowInfo> {
         .collect()
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ForegroundEntry {
-    pub hwnd: i64,
-    pub title: String,
-    pub process: String,
-    pub at: DateTime<Utc>,
-}
+pub use super::data_winmgr::ForegroundEntry;
 
 /// Most-recent-first history of foreground application windows.
 #[derive(Default)]

@@ -25,16 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use super::winmgr::{self, WindowInfo};
 use crate::error::{AppError, AppResult};
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppEntry {
-    pub name: String,
-    /// AppsFolder parsing name (AUMID for packaged apps, path-like otherwise).
-    pub id: String,
-    pub exe: Option<String>,
-    /// "packaged" | "desktop"
-    pub kind: &'static str,
-}
+pub use super::data_apps::AppEntry;
 
 #[derive(Default)]
 pub struct AppIndex {
@@ -249,15 +240,7 @@ impl AppIndex {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LaunchOutcome {
-    pub app: AppEntry,
-    /// A window belonging to the app was observed after launching.
-    pub verified: bool,
-    pub window: Option<WindowInfo>,
-    pub note: Option<String>,
-}
+pub use super::data_apps::LaunchOutcome;
 
 pub fn shell_open(target: &str, args: Option<&str>, cwd: Option<&str>) -> AppResult<()> {
     let target_w = HSTRING::from(target);
