@@ -78,46 +78,47 @@ fn default_target() -> String {
     "active_window".into()
 }
 
+fn capture_target(a: CaptureArgs, island: isize) -> AppResult<capture::EncodedCapture> {
+    let frame = match a.target.as_str() {
+        "screen" => {
+            let mon = display::primary_monitor().ok_or_else(|| AppError::platform("Монитор не найден"))?;
+            capture::capture_rect(mon.bounds, Some(island))?
+        }
+        "cursor_screen" => {
+            #[cfg(windows)]
+            let mon = {
+                let mut pt = windows::Win32::Foundation::POINT::default();
+                unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt)? };
+                display::monitor_for_point(pt.x, pt.y).ok_or_else(|| AppError::platform("Монитор не найден"))?
+            };
+            #[cfg(target_os = "macos")]
+            let mon = display::monitor_for_cursor().ok_or_else(|| AppError::platform("Монитор не найден"))?;
+            capture::capture_rect(mon.bounds, Some(island))?
+        }
+        "region" => capture::capture_rect(a.region.ok_or_else(|| AppError::invalid("Для region нужен region"))?, Some(island))?,
+        "window" | "active_window" => {
+            let hwnd = match (a.hwnd, a.query.as_deref()) {
+                (Some(h), _) => h,
+                (None, Some(q)) if !q.is_empty() => winmgr::find_windows(q).first().map(|w| w.hwnd).ok_or_else(|| AppError::not_found(format!("Окно «{q}» не найдено")))?,
+                _ => winmgr::foreground_window().map(|w| w.hwnd).ok_or_else(|| AppError::not_found("Нет активного окна"))?,
+            };
+            let h = winmgr::to_hwnd(hwnd);
+            match capture::capture_window(h) {
+                Ok(f) => f,
+                // Hardware-rendered windows: fall back to the on-screen pixels.
+                Err(_) => capture::capture_rect(capture::window_frame(h)?, Some(island))?,
+            }
+        }
+        other => return Err(AppError::invalid(format!("Неизвестная цель захвата: {other}"))),
+    };
+    capture::encode(frame, capture::MAX_SIDE)
+}
+
 async fn screen_capture(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
     screen_allowed(&ctx)?;
     let a: CaptureArgs = parse(args)?;
     let island = ctx.state().island.hwnd();
-    let enc = platform::blocking(move || {
-        let frame = match a.target.as_str() {
-            "screen" => {
-                let mon = display::primary_monitor().ok_or_else(|| AppError::platform("Монитор не найден"))?;
-                capture::capture_rect(mon.bounds, Some(island))?
-            }
-            "cursor_screen" => {
-                #[cfg(windows)]
-                let mon = {
-                    let mut pt = windows::Win32::Foundation::POINT::default();
-                    unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt)? };
-                    display::monitor_for_point(pt.x, pt.y).ok_or_else(|| AppError::platform("Монитор не найден"))?
-                };
-                #[cfg(target_os = "macos")]
-                let mon = display::primary_monitor().ok_or_else(|| AppError::unsupported("Пока не поддерживается на macOS"))?;
-                capture::capture_rect(mon.bounds, Some(island))?
-            }
-            "region" => capture::capture_rect(a.region.ok_or_else(|| AppError::invalid("Для region нужен region"))?, Some(island))?,
-            "window" | "active_window" => {
-                let hwnd = match (a.hwnd, a.query.as_deref()) {
-                    (Some(h), _) => h,
-                    (None, Some(q)) if !q.is_empty() => winmgr::find_windows(q).first().map(|w| w.hwnd).ok_or_else(|| AppError::not_found(format!("Окно «{q}» не найдено")))?,
-                    _ => winmgr::foreground_window().map(|w| w.hwnd).ok_or_else(|| AppError::not_found("Нет активного окна"))?,
-                };
-                let h = winmgr::to_hwnd(hwnd);
-                match capture::capture_window(h) {
-                    Ok(f) => f,
-                    // Hardware-rendered windows: fall back to the on-screen pixels.
-                    Err(_) => capture::capture_rect(capture::window_frame(h)?, Some(island))?,
-                }
-            }
-            other => return Err(AppError::invalid(format!("Неизвестная цель захвата: {other}"))),
-        };
-        capture::encode(frame, capture::MAX_SIDE)
-    })
-    .await?;
+    let enc = platform::blocking(move || capture_target(a, island)).await?;
     let id = NEXT_CAPTURE.fetch_add(1, Ordering::Relaxed);
     {
         let mut caps = CAPTURES.lock();
@@ -535,6 +536,46 @@ pub fn tools() -> Vec<Tool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn capture_target_rejects_invalid_arguments() {
+        for args in [json!({"target": "unknown"}), json!({"target": "region"}), json!({"target": "region", "region": {"x": 0, "y": 0, "width": 0, "height": 10}})] {
+            assert!(matches!(capture_target(parse(args).unwrap(), 0), Err(AppError::InvalidInput(_))));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "Requires a logged-in macOS desktop and Screen Recording permission"]
+    async fn macos_screen_capture_live() {
+        use base64::Engine;
+        let monitor = display::primary_monitor().expect("primary monitor");
+        assert!(monitor.scale > 0.0);
+        assert!(monitor.work_area.height <= monitor.bounds.height);
+        println!("Primary monitor: {} {:?}, work area {:?}, scale {}", monitor.name, monitor.bounds, monitor.work_area, monitor.scale);
+        let foreground = winmgr::foreground_window().expect("foreground window");
+        println!("Foreground CG window: {} ({})", foreground.hwnd, foreground.process);
+        assert!(capture::window_frame(winmgr::to_hwnd(foreground.hwnd)).is_ok());
+        assert!(display::monitor_for_window(winmgr::to_hwnd(foreground.hwnd)).is_some());
+        let rect = Rect { width: 128, height: 96, ..monitor.bounds };
+        for args in [json!({"target": "screen"}), json!({"target": "cursor_screen"}), json!({"target": "region", "region": rect}), json!({"target": "window", "hwnd": foreground.hwnd}), json!({"target": "active_window"})] {
+            let target = args["target"].as_str().unwrap().to_owned();
+            let encoded = platform::blocking(move || capture_target(parse(args)?, 0)).await.unwrap();
+            let bytes = base64::engine::general_purpose::STANDARD.decode(encoded.data_url.strip_prefix("data:image/png;base64,").expect("PNG data URL")).unwrap();
+            assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+            assert_eq!(bytes.len(), encoded.bytes);
+            let image = image::load_from_memory(&bytes).unwrap();
+            assert!(image.width() > 0 && image.height() > 0);
+            assert!(!bytes.is_empty());
+            if let Some(dir) = std::env::var_os("JARVIS_CAPTURE_TEST_DIR") {
+                let path = std::path::PathBuf::from(dir).join(format!("macos-capture-{target}.png"));
+                std::fs::write(&path, &bytes).unwrap();
+                println!("{}", path.display());
+            }
+            println!("{target}: PNG {}x{}, {} bytes, scale {}", image.width(), image.height(), bytes.len(), encoded.scale);
+        }
+    }
 
     #[test]
     fn sensitive_targets_need_confirmation() {
