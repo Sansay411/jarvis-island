@@ -198,14 +198,6 @@ function getInitialScene(): QaScene {
   return "workspace-active";
 }
 
-const QA_BENCH_SAMPLE = {
-  voice: "edge:ru-RU-DmitryNeural",
-  firstChunkMs: 235,
-  totalMs: 312,
-  samples: 38400,
-  cachedMs: 5,
-};
-
 function QaWorkspaceApp() {
   const [scene, setScene] = useState<QaScene>(() => getInitialScene());
   const [withConfirm, setWithConfirm] = useState(false);
@@ -235,7 +227,7 @@ function QaWorkspaceApp() {
       {scene === "workspace-active" || scene === "workspace-empty" ? (
         <IslandWorkspaceFrame />
       ) : scene === "settings-voice" ? (
-        <SettingsApp initialSection="voice" initialBenchResult={QA_BENCH_SAMPLE} />
+        <SettingsApp initialSection="voice" />
       ) : (
         <SettingsApp initialSection="behaviour" />
       )}

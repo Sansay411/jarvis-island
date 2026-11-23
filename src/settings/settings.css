@@ -1561,3 +1561,71 @@
   font-variant-numeric: tabular-nums;
   color: var(--text-3);
 }
+
+/* ---------- 2026-11-23: icons in the rail, plain section lines, «Дополнительно» ---------- */
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 12px 9px 30px;
+}
+.nav-icon {
+  flex: none;
+  color: var(--text-3);
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.nav-item:hover .nav-icon {
+  color: var(--text-2);
+}
+.nav-item.is-active .nav-icon {
+  color: var(--amber);
+}
+.says {
+  padding-left: 0;
+  color: var(--text-3);
+  font-size: 14px;
+}
+.says::before {
+  display: none;
+}
+.page-head h1 {
+  font-size: 28px;
+}
+details.more {
+  margin-top: 4px;
+  border-bottom: 1px solid var(--line);
+}
+details.more > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 0;
+  color: var(--text-2);
+  font-size: var(--fs-13);
+  font-weight: 560;
+  cursor: pointer;
+  user-select: none;
+}
+details.more > summary::-webkit-details-marker {
+  display: none;
+}
+details.more > summary::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+details.more[open] > summary::before {
+  transform: rotate(45deg);
+}
+details.more > summary:hover {
+  color: var(--text-1);
+}
+details.more[open] {
+  padding-bottom: 6px;
+}

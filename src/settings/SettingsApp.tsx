@@ -1,9 +1,8 @@
-// Settings: JARVIS's own room. The face from the island lives in the left
-// rail — its eyes follow the pointer, become real audio bars while a voice
-// sample plays, and smile when changes are saved. Sections speak in
-// JARVIS's voice; amber marks only JARVIS's presence (eyes, the active
-// section, focus). Secrets go straight to the system key store through
-// `secret_set`; the UI only ever learns whether a key exists.
+// Settings. The face from the island lives in the left rail — its eyes follow
+// the pointer, become real audio bars while a voice sample plays, and smile
+// when changes are saved. Eight short sections, plain words, only the
+// settings people actually change. Secrets go straight to the system key
+// store through `secret_set`; the UI only ever learns whether a key exists.
 
 import { AnimatePresence, motion, useMotionValue, useSpring, type MotionValue } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -19,7 +18,6 @@ import {
   useWorkspaceTts,
   workspaceIpc,
   type RoutineItem,
-  type TtsBenchResult,
 } from "../lib/workspace-ipc";
 import { Eyes, type EyeMood } from "../island/Eyes";
 import "./settings.css";
@@ -28,6 +26,8 @@ import { Group, Row, Segmented, Switch } from "./controls";
 import { McpSection } from "./McpSection";
 import { ACTIVITIES, EMOTES, emote, useEmote, type Activity } from "../store/emote";
 import { LiveAudioBars, routineIconName, WsIcon } from "../workspace/WorkspaceIcons";
+import { Icon, type IconName } from "../ui/Icon";
+import { startUpdatesFeed, useUpdates } from "../store/updates";
 
 const platformCopy = settingsPlatformCopy();
 
@@ -66,6 +66,7 @@ export interface Settings {
   agent: { maxSteps: number; confirmModerate: boolean; fullControl: boolean; projectRoots: string[] };
   launchAtStartup: boolean;
   reduceMotion: boolean;
+  updates: { autoCheck: boolean };
 }
 
 interface SettingsView {
@@ -91,16 +92,6 @@ interface AudioDevices {
   outputs: string[];
   defaultInput: string | null;
   defaultOutput: string | null;
-}
-
-interface VoiceStatus {
-  state: string;
-  metrics: {
-    lastTimeToFirstAudioMs: number | null;
-    lastBargeInMs: number | null;
-    connectMs: number | null;
-    lastSttMs: number | null;
-  };
 }
 
 interface SpeechModel {
@@ -134,23 +125,7 @@ interface TaskRecord {
   startedAt: string;
 }
 
-interface Diagnostics {
-  uptimeSecs: number;
-  trackerHz: number;
-  workingSetMb: number;
-  monitors: { name: string; primary: boolean; scale: number; bounds: { width: number; height: number } }[];
-}
-
-export type Section =
-  | "persona"
-  | "voice"
-  | "model"
-  | "behaviour"
-  | "mcp"
-  | "shortcuts"
-  | "privacy"
-  | "memory"
-  | "diagnostics";
+export type Section = "general" | "model" | "voice" | "persona" | "behaviour" | "privacy" | "memory" | "mcp";
 type Tone = "ok" | "error" | "info";
 
 const FALLBACK_SETTINGS_VIEW: SettingsView = {
@@ -191,6 +166,7 @@ const FALLBACK_SETTINGS_VIEW: SettingsView = {
     },
     launchAtStartup: true,
     reduceMotion: false,
+    updates: { autoCheck: true },
   },
   presets: [
     {
@@ -224,8 +200,11 @@ function normalizeSettingsView(v: SettingsView): SettingsView {
     ...v,
     settings: {
       ...v.settings,
+      updates: v.settings.updates ?? { autoCheck: true },
       voice: {
         ...v.settings.voice,
+        // The realtime engine left the settings (2026-11-23): one voice pipeline.
+        engine: "local",
         ttsVoice: v.settings.voice.ttsVoice || "edge:ru-RU-DmitryNeural",
         ttsRate: typeof v.settings.voice.ttsRate === "number" ? v.settings.voice.ttsRate : 1.0,
         ttsPitch: typeof v.settings.voice.ttsPitch === "number" ? v.settings.voice.ttsPitch : 0,
@@ -235,59 +214,16 @@ function normalizeSettingsView(v: SettingsView): SettingsView {
   };
 }
 
-/** Section titles, and the line JARVIS says about each (ты / вы). */
-const SECTIONS: { id: Section; label: string; line: [string, string] }[] = [
-  {
-    id: "persona",
-    label: "Характер",
-    line: ["Как мне к тебе обращаться и каким быть в разговоре.", "Как мне к вам обращаться и каким быть в разговоре."],
-  },
-  {
-    id: "voice",
-    label: "Голос",
-    line: [
-      "Как я звучу и как слышу тебя. Речь распознаётся на этом компьютере.",
-      "Как я звучу и как слышу вас. Речь распознаётся на этом компьютере.",
-    ],
-  },
-  {
-    id: "model",
-    label: "Модель",
-    line: ["Здесь решается, чем я думаю. Без модели я умею только моргать.", "Здесь решается, чем я думаю. Без модели я умею только моргать."],
-  },
-  {
-    id: "behaviour",
-    label: "Агент и управление",
-    line: [
-      "Сколько я делаю сам, где лежат твои проекты и что запускать одной кнопкой.",
-      "Сколько я делаю сам, где лежат ваши проекты и что запускать одной кнопкой.",
-    ],
-  },
-  {
-    id: "mcp",
-    label: "MCP-серверы",
-    line: ["Чужие инструменты, которыми я умею пользоваться.", "Чужие инструменты, которыми я умею пользоваться."],
-  },
-  {
-    id: "shortcuts",
-    label: "Сочетания клавиш",
-    line: ["Как позвать меня с клавиатуры.", "Как позвать меня с клавиатуры."],
-  },
-  {
-    id: "privacy",
-    label: "Приватность",
-    line: ["Что мне можно видеть и что хранить.", "Что мне можно видеть и что хранить."],
-  },
-  {
-    id: "memory",
-    label: "Память",
-    line: ["Что я о тебе помню. Любую запись можно стереть.", "Что я о вас помню. Любую запись можно стереть."],
-  },
-  {
-    id: "diagnostics",
-    label: "Состояние",
-    line: ["Как я себя чувствую — в честных цифрах.", "Как я себя чувствую — в честных цифрах."],
-  },
+/** Sections, with one plain line under each title. */
+const SECTIONS: { id: Section; label: string; icon: IconName; hint: string }[] = [
+  { id: "general", label: "Основное", icon: "settings", hint: "Запуск, обновления и сочетания клавиш." },
+  { id: "model", label: "Модель", icon: "bolt", hint: "Нейросеть, которая понимает просьбы и выполняет задачи." },
+  { id: "voice", label: "Голос", icon: "mic", hint: "Как Джарвис говорит и как слышит." },
+  { id: "persona", label: "Характер", icon: "chat", hint: "Обращение и манера разговора." },
+  { id: "behaviour", label: "Самостоятельность", icon: "target", hint: "Что Джарвис делает сам, а что — только с вашего разрешения." },
+  { id: "privacy", label: "Приватность", icon: "eye", hint: "Что можно видеть и что хранить на этом компьютере." },
+  { id: "memory", label: "Память", icon: "clipboard", hint: "Что Джарвис помнит о вас. Любую запись можно стереть." },
+  { id: "mcp", label: "Подключения", icon: "globe", hint: "Инструменты других программ по протоколу MCP." },
 ];
 
 const STYLES: { id: Settings["persona"]["style"]; label: string; sample: [string, string] }[] = [
@@ -894,11 +830,9 @@ function RoutinesSettingsManager({ notify }: { notify: (tone: Tone, text: string
 // ---------- the window ----------
 
 export default function SettingsApp({
-  initialSection = "persona",
-  initialBenchResult = null,
+  initialSection = "general",
 }: {
   initialSection?: Section;
-  initialBenchResult?: TtsBenchResult | null;
 } = {}) {
   const [view, setView] = useState<SettingsView | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
@@ -908,18 +842,12 @@ export default function SettingsApp({
   const [happy, setHappy] = useState(false);
   const [memories, setMemories] = useState<Memory[]>([]);
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
-  const [diag, setDiag] = useState<Diagnostics | null>(null);
   const [shortcutProblems, setShortcutProblems] = useState<string[]>([]);
   const [devices, setDevices] = useState<AudioDevices | null>(null);
-  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null);
   const [ttsVoices, setTtsVoices] = useState<TtsVoice[]>([]);
 
-  // Interactive TTS Studio Preview & Benchmark state
-  const [samplePhrase, setSamplePhrase] = useState(
-    "Доброе утро, сэр. Все системы Джарвиса работают штатно, задержка потокового синтеза минимальна.",
-  );
-  const [benchBusy, setBenchBusy] = useState(false);
-  const [benchResult, setBenchResult] = useState<TtsBenchResult | null>(initialBenchResult);
+  const [samplePhrase, setSamplePhrase] = useState("Доброе утро. Всё готово: почта разобрана, на сегодня три встречи.");
+  const updates = useUpdates();
   const ttsSpeaking = useWorkspaceTts((s) => s.speaking);
 
   const preview = useVoicePreview();
@@ -970,6 +898,7 @@ export default function SettingsApp({
 
   useEffect(() => {
     void ensureWorkspaceFeeds();
+    void startUpdatesFeed();
     void load();
     loadVoices();
     if (hasTauri()) {
@@ -982,10 +911,6 @@ export default function SettingsApp({
     if (section === "memory") {
       void invoke<Memory[]>("memories_list").then(setMemories).catch(() => {});
       void invoke<TaskRecord[]>("tasks_recent").then(setTasks).catch(() => {});
-    }
-    if (section === "diagnostics") {
-      void invoke<Diagnostics>("diagnostics_get").then(setDiag).catch(() => {});
-      void invoke<VoiceStatus>("voice_status").then(setVoiceStatus).catch(() => {});
     }
     if (section === "voice") {
       void invoke<AudioDevices>("audio_devices").then(setDevices).catch(() => {});
@@ -1015,7 +940,7 @@ export default function SettingsApp({
     "Дмитрий HD · Neural";
 
   const mood: EyeMood =
-    demoMood ?? (preview.playing || ttsSpeaking ? "speaking" : happy ? "happy" : busy || benchBusy ? "thinking" : "attentive");
+    demoMood ?? (preview.playing || ttsSpeaking ? "speaking" : happy ? "happy" : busy || updates.checking ? "thinking" : "attentive");
 
   const showMood = (m: EyeMood) => {
     window.clearTimeout(demoTimer.current);
@@ -1083,22 +1008,6 @@ export default function SettingsApp({
     }
   };
 
-  const runBenchmark = async () => {
-    setBenchBusy(true);
-    try {
-      const res = await workspaceIpc.tts.benchmark(draft.voice.ttsVoice || "edge:ru-RU-DmitryNeural");
-      setBenchResult(res);
-      notify(
-        "ok",
-        `Замер завершён: первый звук ${res.firstChunkMs} мс · синтез ${res.totalMs} мс · кэш ${res.cachedMs} мс`,
-      );
-    } catch (e) {
-      notify("error", errorMessage(e));
-    } finally {
-      setBenchBusy(false);
-    }
-  };
-
   const toggleFullControlLive = async (enabled: boolean) => {
     set((s) => ({ ...s, agent: { ...s.agent, fullControl: enabled } }));
     try {
@@ -1124,8 +1033,7 @@ export default function SettingsApp({
           caption={
             <>
               <strong>Джарвис</strong>
-              <span>{draft.provider.model || "модель не выбрана"}</span>
-              <span>{draft.voice.engine === "local" ? voiceName : "Qwen Omni Realtime"}</span>
+              <span>{updates.status ? `версия ${updates.status.current}` : voiceName}</span>
             </>
           }
         />
@@ -1144,7 +1052,8 @@ export default function SettingsApp({
                   transition={{ type: "spring", stiffness: 520, damping: 40 }}
                 />
               )}
-              {s.label}
+              <Icon name={s.icon} size={16} className="nav-icon" />
+              <span>{s.label}</span>
             </button>
           ))}
         </nav>
@@ -1154,7 +1063,7 @@ export default function SettingsApp({
         <div className="page-scroll">
           <header className="page-head" key={section}>
             <h1>{current.label}</h1>
-            <p className="says">{vy ? current.line[1] : current.line[0]}</p>
+            <p className="says">{current.hint}</p>
           </header>
 
           {section === "persona" && (
@@ -1259,10 +1168,9 @@ export default function SettingsApp({
               <section className="tts-studio-card" aria-label="Голос">
                 <div className="tts-studio-head">
                   <div className="tts-studio-title-wrap">
-                    <span className="tts-studio-eyebrow">Edge Neural · без ключей</span>
-                    <h2 className="tts-studio-title">Мой голос</h2>
+                    <h2 className="tts-studio-title">Голос Джарвиса</h2>
                     <p className="tts-studio-desc">
-                      Работают сразу, ничего скачивать не нужно. Без интернета говорю скачанным локальным голосом ({platformCopy.localTts}).
+                      Работают сразу. Без интернета Джарвис говорит скачанным голосом ({platformCopy.localTts}).
                     </p>
                   </div>
                 </div>
@@ -1354,44 +1262,17 @@ export default function SettingsApp({
                         <span>Прослушать</span>
                       </button>
                     )}
-                    <button
-                      type="button"
-                      className="btn"
-                      disabled={benchBusy}
-                      onClick={() => void runBenchmark()}
-                    >
-                      <WsIcon name="gauge" size={14} />
-                      <span>{benchBusy ? "Замеряю…" : "Замерить скорость"}</span>
-                    </button>
                   </div>
-
-                  {benchResult && (
-                    <div className="tts-bench-metrics" role="status" aria-label="Результаты замера скорости TTS">
-                      <span className="tts-metric-pill is-fast">
-                        <span className="tts-metric-dot" />
-                        Первый звук: <strong>{benchResult.firstChunkMs} мс</strong>
-                      </span>
-                      <span className="tts-metric-pill">
-                        Синтез: <strong>{benchResult.totalMs} мс</strong>
-                      </span>
-                      <span className="tts-metric-pill is-cache">
-                        Кэш: <strong>{benchResult.cachedMs} мс</strong>
-                      </span>
-                      <span className="tts-metric-meta mono">
-                        24 кГц PCM · {(benchResult.samples / 24000).toFixed(1).replace(".", ",")} с
-                      </span>
-                    </div>
-                  )}
                 </div>
               </section>
 
               <Group title="Речь">
                 <Row
-                  label="Озвучивать ответы Джарвиса в чате"
-                  hint="Автоматически читать вслух завершённые ответы ассистента в рабочем пространстве (также переключается кнопкой «Автоозвучка» в шапке чата)."
+                  label="Озвучивать ответы в чате"
+                  hint="Читать вслух ответы, написанные в чате."
                 >
                   <Switch
-                    label="Озвучивать ответы Джарвиса в чате"
+                    label="Озвучивать ответы в чате"
                     checked={draft.voice.autoSpeakReplies}
                     onChange={(v) => set((s) => ({ ...s, voice: { ...s.voice, autoSpeakReplies: v } }))}
                   />
@@ -1414,26 +1295,6 @@ export default function SettingsApp({
                     <span className="slider-readout mono">{draft.voice.ttsRate.toFixed(2).replace(".", ",")}×</span>
                   </div>
                 </Row>
-                <Row
-                  label="Тон голоса (Pitch)"
-                  hint={`От -20 до +20 · сейчас ${draft.voice.ttsPitch > 0 ? `+${draft.voice.ttsPitch}` : draft.voice.ttsPitch}`}
-                >
-                  <div className="inline">
-                    <input
-                      className="slider"
-                      type="range"
-                      min={-20}
-                      max={20}
-                      step={1}
-                      value={draft.voice.ttsPitch}
-                      aria-label="Тон голоса"
-                      onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, ttsPitch: Number(e.target.value) } }))}
-                    />
-                    <span className="slider-readout mono">
-                      {draft.voice.ttsPitch > 0 ? `+${draft.voice.ttsPitch}` : draft.voice.ttsPitch}
-                    </span>
-                  </div>
-                </Row>
               </Group>
 
               <Group title="Разговор">
@@ -1447,7 +1308,7 @@ export default function SettingsApp({
                 {draft.voice.engine === "local" && (
                   <Row
                     label="Откликаться на имя"
-                    hint="«Джарвис, …» — и я слушаю. Команды плеера — «пауза», «играй», «дальше», «назад», «стоп» — работают и без имени, от любого голоса. Остальное без имени я не слушаю."
+                    hint="Скажите «Джарвис, …». Выполнив просьбу, он снова ждёт имени. «Пауза», «дальше», «назад» работают и без имени."
                   >
                     <Switch
                       label="Откликаться на имя"
@@ -1457,7 +1318,7 @@ export default function SettingsApp({
                   </Row>
                 )}
                 {draft.voice.engine === "local" && (
-                  <Row label="Приглушать музыку" hint="Пока мы говорим, другие приложения звучат тише — так я лучше слышу. Потом громкость возвращается.">
+                  <Row label="Приглушать музыку" hint="Пока вы говорите с Джарвисом, остальные приложения звучат тише.">
                     <Switch
                       label="Приглушать музыку"
                       checked={draft.voice.duckMedia}
@@ -1465,20 +1326,8 @@ export default function SettingsApp({
                     />
                   </Row>
                 )}
-                <Row label="Где работает голос">
-                  <Segmented
-                    label="Где работает голос"
-                    value={draft.voice.engine}
-                    options={[
-                      { id: "local", label: "На этом компьютере + Edge HD" },
-                      { id: "realtime", label: "Qwen Omni Realtime" },
-                    ]}
-                    onChange={(v) => set((s) => ({ ...s, voice: { ...s.voice, engine: v } }))}
-                  />
-                </Row>
               </Group>
 
-              {draft.voice.engine === "local" ? (
                 <>
                   {sttModels.length > 0 && (
                     <Group title="Распознавание речи">
@@ -1486,7 +1335,7 @@ export default function SettingsApp({
                         <Row
                           key={m.id}
                           label={m.label}
-                          hint="Модель Сбера, обучена на русской речи, работает на процессоре. Вместе с ней скачивается Silero VAD — он отличает речь от шума и музыки."
+                          hint="Нужна для голосового режима, работает без интернета."
                         >
                           <DownloadControl model={m} progress={progress} onDownload={() => void download(m.id)} />
                         </Row>
@@ -1494,13 +1343,9 @@ export default function SettingsApp({
                     </Group>
                   )}
 
-                  <Group title="Все голоса">
+                  <Group title="Голоса без интернета">
                     <div className="voices" role="radiogroup" aria-label="Голос Джарвиса">
-                      {[
-                        { id: "", name: "Автоматический выбор (Edge Neural HD → Офлайн)", language: "ru" },
-                        ...CURATED_EDGE_VOICES.map((v) => ({ id: v.id, name: v.name, language: v.lang })),
-                        ...nonEdgeVoices,
-                      ].map((v) => {
+                      {nonEdgeVoices.map((v) => {
                         const on = draft.voice.ttsVoice === v.id;
                         const key = `voice:${v.id}`;
                         const pKey = `tts:${key}`;
@@ -1544,7 +1389,8 @@ export default function SettingsApp({
                     )}
                   </Group>
 
-                  <Group title="Облачные голоса">
+                  <details className="more">
+                    <summary>Облачные голоса: Яндекс, ElevenLabs, Azure</summary>
                     <YandexVoice
                       has={view.hasYandexKey}
                       notify={notify}
@@ -1563,43 +1409,8 @@ export default function SettingsApp({
                       onChanged={loadVoices}
                       onUse={(id) => void useCloudVoice(id)}
                     />
-                  </Group>
+                  </details>
                 </>
-              ) : (
-                <Group title="Qwen Omni Realtime">
-                  <Row label="Адрес" hint="WebSocket-адрес Model Studio без параметра ?model=">
-                    <input
-                      className="mono"
-                      value={draft.voice.realtimeUrl}
-                      spellCheck={false}
-                      onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, realtimeUrl: e.target.value } }))}
-                    />
-                  </Row>
-                  <Row label="Модель">
-                    <input
-                      className="mono"
-                      value={draft.voice.model}
-                      spellCheck={false}
-                      onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, model: e.target.value } }))}
-                    />
-                  </Row>
-                  <Row label="Голос" hint="Для русского: Katerina, Marina, Alek, Tina.">
-                    <input
-                      value={draft.voice.voice}
-                      spellCheck={false}
-                      onChange={(e) => set((s) => ({ ...s, voice: { ...s.voice, voice: e.target.value } }))}
-                    />
-                  </Row>
-                  <Row label="Ключ модели" hint="Один аккаунт Model Studio для текста и голоса.">
-                    <Switch
-                      label="Ключ модели"
-                      checked={draft.voice.reuseLlmKey}
-                      onChange={(v) => set((s) => ({ ...s, voice: { ...s.voice, reuseLlmKey: v } }))}
-                    />
-                  </Row>
-                  {!draft.voice.reuseLlmKey && <KeyField kind="voice" has={view.hasVoiceKey} onChanged={() => void load()} notify={notify} />}
-                </Group>
-              )}
 
               <Group title="Устройства">
                 <Row label="Микрофон">
@@ -1629,10 +1440,6 @@ export default function SettingsApp({
                   </select>
                 </Row>
               </Group>
-              <p className="note">
-                Перебить меня можно голосом — просто начни говорить. «Стоп» или «хватит» останавливают и ответ, и задачу. В наушниках я слышу {vy ? "вас" : "тебя"} лучше
-                всего.
-              </p>
             </>
           )}
 
@@ -1656,6 +1463,17 @@ export default function SettingsApp({
                   ))}
                 </select>
               </Row>
+              {preset.needsKey && (
+                <KeyField
+                  kind="llm"
+                  has={view.hasLlmKey}
+                  baseUrl={draft.provider.baseUrl.trim() || preset.baseUrl}
+                  onChanged={() => void load()}
+                  notify={notify}
+                />
+              )}
+              <details className="more">
+                <summary>Адрес API и модель для изображений</summary>
               <Row label="Адрес API" hint={preset.baseUrl ? `Пусто — ${preset.baseUrl}` : "Укажите адрес OpenAI-совместимого API."}>
                 <input
                   className="mono"
@@ -1690,18 +1508,10 @@ export default function SettingsApp({
                   onChange={(e) => set((s) => ({ ...s, provider: { ...s.provider, visionModel: e.target.value } }))}
                 />
               </Row>
-              {preset.needsKey && (
-                <KeyField
-                  kind="llm"
-                  has={view.hasLlmKey}
-                  baseUrl={draft.provider.baseUrl.trim() || preset.baseUrl}
-                  onChanged={() => void load()}
-                  notify={notify}
-                />
-              )}
-              <Row label="Связь с моделью" hint="Короткий запрос: адрес, ключ и модель.">
+              </details>
+              <Row label="Проверить подключение" hint="Короткий запрос к модели с этим ключом.">
                 <button className="btn" disabled={busy} onClick={() => void test()}>
-                  {busy ? "Проверяю…" : "Проверить подключение"}
+                  {busy ? "Проверяю…" : "Проверить"}
                 </button>
               </Row>
             </Group>
@@ -1717,8 +1527,8 @@ export default function SettingsApp({
                   </div>
                   <h2>Полное управление</h2>
                   <p>
-                    Делаю дело без лишних вопросов: окна, программы, файлы, фокус, план задачи. Удаление, покупки и отправку сообщений
-                    {vy ? " всё равно сначала покажу вам." : " всё равно сначала покажу тебе."}
+                    Окна, программы, файлы и таймеры — без лишних вопросов. Удаление, покупки и отправку сообщений Джарвис всё равно
+                    сначала покажет {vy ? "вам" : "тебе"}.
                   </p>
                 </div>
                 <div className="autopilot-hero-switch">
@@ -1730,7 +1540,7 @@ export default function SettingsApp({
                 </div>
               </section>
 
-              <Group title="Границы самостоятельности">
+              <Group title="Разрешения">
                 {!draft.agent.fullControl && (
                   <Row
                     label="Спрашивать перед изменениями"
@@ -1743,17 +1553,7 @@ export default function SettingsApp({
                     />
                   </Row>
                 )}
-                <Row label="Предел шагов на задачу" hint="Чтобы многошаговая миссия не крутилась бесконечно.">
-                  <input
-                    className="narrow"
-                    type="number"
-                    min={4}
-                    max={60}
-                    value={draft.agent.maxSteps}
-                    onChange={(e) => set((s) => ({ ...s, agent: { ...s.agent, maxSteps: Number(e.target.value) || 24 } }))}
-                  />
-                </Row>
-                <Row label="Папки проектов" hint="По одной на строке. Используются для поиска кода и реальной статистики коммитов.">
+                <Row label="Папки проектов" hint="По одной на строке: здесь Джарвис ищет код, отсюда берёт коммиты для «Стрика».">
                   <textarea
                     className="mono"
                     rows={3}
@@ -1773,20 +1573,6 @@ export default function SettingsApp({
                     }
                   />
                 </Row>
-                <Row label={platformCopy.startup}>
-                  <Switch
-                    label={platformCopy.startup}
-                    checked={draft.launchAtStartup}
-                    onChange={(v) => set((s) => ({ ...s, launchAtStartup: v }))}
-                  />
-                </Row>
-                <Row label="Меньше движения" hint="Мгновенные переходы вместо пружинной анимации.">
-                  <Switch
-                    label="Меньше движения"
-                    checked={draft.reduceMotion}
-                    onChange={(v) => set((s) => ({ ...s, reduceMotion: v }))}
-                  />
-                </Row>
               </Group>
 
               <RoutinesSettingsManager notify={notify} />
@@ -1795,9 +1581,57 @@ export default function SettingsApp({
 
           {section === "mcp" && <McpSection notify={notify} vy={vy} />}
 
-          {section === "shortcuts" && (
+          {section === "general" && (
             <>
-              <Group>
+              <Group title="Запуск">
+                <Row label={platformCopy.startup}>
+                  <Switch
+                    label={platformCopy.startup}
+                    checked={draft.launchAtStartup}
+                    onChange={(v) => set((s) => ({ ...s, launchAtStartup: v }))}
+                  />
+                </Row>
+                <Row label="Меньше движения" hint="Мгновенные переходы вместо пружинной анимации.">
+                  <Switch label="Меньше движения" checked={draft.reduceMotion} onChange={(v) => set((s) => ({ ...s, reduceMotion: v }))} />
+                </Row>
+              </Group>
+
+              <Group title="Обновления">
+                <Row
+                  label={updates.status?.available ? `Доступна версия ${updates.status.available.version}` : "Установлена последняя версия"}
+                  hint={
+                    updates.error ??
+                    (updates.progress
+                      ? updates.progress.total
+                        ? `Скачиваю — ${Math.round((updates.progress.downloaded / updates.progress.total) * 100)}%`
+                        : "Скачиваю…"
+                      : updates.status?.available
+                        ? "Скачается, проверится подписью и установится, затем Джарвис перезапустится."
+                        : updates.status
+                          ? `Сейчас ${updates.status.current}${updates.status.checkedAt ? `, проверено в ${new Date(updates.status.checkedAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}` : ""}`
+                          : undefined)
+                  }
+                >
+                  {updates.status?.available ? (
+                    <button className="btn btn-primary" disabled={updates.progress !== null} onClick={() => void updates.install()}>
+                      {updates.progress ? "Устанавливаю…" : "Обновить и перезапустить"}
+                    </button>
+                  ) : (
+                    <button className="btn" disabled={updates.checking} onClick={() => void updates.check()}>
+                      {updates.checking ? "Проверяю…" : "Проверить"}
+                    </button>
+                  )}
+                </Row>
+                <Row label="Проверять автоматически" hint="Раз в шесть часов. Устанавливается только по вашей команде.">
+                  <Switch
+                    label="Проверять обновления автоматически"
+                    checked={draft.updates.autoCheck}
+                    onChange={(v) => set((s) => ({ ...s, updates: { ...s.updates, autoCheck: v } }))}
+                  />
+                </Row>
+              </Group>
+
+              <Group title="Сочетания клавиш">
                 <Row label="Открыть или свернуть чат" hint="Например, Ctrl+Alt+J. Сочетания с Win заняты системой.">
                   <div className="inline">
                     <input
@@ -1839,7 +1673,14 @@ export default function SettingsApp({
                   ))}
                 </div>
               )}
-              <p className="note">Esc закрывает чат. Остановить задачу — кнопка в чате, пункт в меню трея или голосом: «стоп».</p>
+              <Group title="О программе">
+                <Row label="Журнал" wide>
+                  <span className="value mono path">{view.logPath}</span>
+                </Row>
+                <Row label="Данные" wide>
+                  <span className="value mono path">{view.dataPath}</span>
+                </Row>
+              </Group>
             </>
           )}
 
@@ -2011,43 +1852,6 @@ export default function SettingsApp({
             </>
           )}
 
-          {section === "diagnostics" &&
-            (diag ? (
-              <Group>
-                <Row label="Время работы">
-                  <span className="value">{Math.round(diag.uptimeSecs / 60)} мин</span>
-                </Row>
-                <Row label="Память процесса" hint="Без WebView2.">
-                  <span className="value">{diag.workingSetMb.toFixed(1).replace(".", ",")} МБ</span>
-                </Row>
-                <Row label="Трекер курсора">
-                  <span className="value">{diag.trackerHz.toFixed(1).replace(".", ",")} Гц</span>
-                </Row>
-                <Row label="Мониторы">
-                  <span className="value">
-                    {diag.monitors
-                      .map((m) => `${m.bounds.width}×${m.bounds.height}, ${Math.round(m.scale * 100)}%${m.primary ? ", основной" : ""}`)
-                      .join("; ")}
-                  </span>
-                </Row>
-                <Row label="Распознавание последней фразы">
-                  <span className="value">{voiceStatus?.metrics.lastSttMs != null ? `${voiceStatus.metrics.lastSttMs} мс` : "ещё не было"}</span>
-                </Row>
-                <Row label="От конца фразы до моего ответа">
-                  <span className="value">
-                    {voiceStatus?.metrics.lastTimeToFirstAudioMs != null ? `${voiceStatus.metrics.lastTimeToFirstAudioMs} мс` : "ещё не было"}
-                  </span>
-                </Row>
-                <Row label="Журнал" wide>
-                  <span className="value mono path">{view.logPath}</span>
-                </Row>
-                <Row label="Данные" wide>
-                  <span className="value mono path">{view.dataPath}</span>
-                </Row>
-              </Group>
-            ) : (
-              <p className="empty">Измеряю…</p>
-            ))}
         </div>
 
         <AnimatePresence>
