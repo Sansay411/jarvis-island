@@ -1,6 +1,6 @@
 [package]
 name = "jarvis-setup"
-version = "0.2.0"
+version = "0.2.1"
 description = "Установщик и удаление Джарвиса"
 edition = "2021"
 publish = false
