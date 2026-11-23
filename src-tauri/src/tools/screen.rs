@@ -89,9 +89,14 @@ async fn screen_capture(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
                 capture::capture_rect(mon.bounds, Some(island))?
             }
             "cursor_screen" => {
-                let mut pt = windows::Win32::Foundation::POINT::default();
-                unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt)? };
-                let mon = display::monitor_for_point(pt.x, pt.y).ok_or_else(|| AppError::platform("Монитор не найден"))?;
+                #[cfg(windows)]
+                let mon = {
+                    let mut pt = windows::Win32::Foundation::POINT::default();
+                    unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt)? };
+                    display::monitor_for_point(pt.x, pt.y).ok_or_else(|| AppError::platform("Монитор не найден"))?
+                };
+                #[cfg(target_os = "macos")]
+                let mon = display::primary_monitor().ok_or_else(|| AppError::unsupported("Пока не поддерживается на macOS"))?;
                 capture::capture_rect(mon.bounds, Some(island))?
             }
             "region" => capture::capture_rect(a.region.ok_or_else(|| AppError::invalid("Для region нужен region"))?, Some(island))?,

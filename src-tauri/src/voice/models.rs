@@ -258,6 +258,7 @@ pub fn find_file(dir: &Path, prefix: &str, ext: &str) -> Option<PathBuf> {
 /// A path string sherpa-onnx can open: it takes narrow (ANSI code page)
 /// paths on Windows, so profile folders with Cyrillic names go through the
 /// 8.3 short form.
+#[cfg(windows)]
 pub fn native_path(path: &Path) -> AppResult<String> {
     let s = path.to_str().ok_or_else(|| AppError::Storage("Некорректный путь к модели".into()))?;
     if s.is_ascii() {
@@ -275,6 +276,11 @@ pub fn native_path(path: &Path) -> AppResult<String> {
             path.display()
         ))),
     }
+}
+
+#[cfg(target_os = "macos")]
+pub fn native_path(path: &Path) -> AppResult<String> {
+    path.to_str().map(str::to_owned).ok_or_else(|| AppError::Storage("Некорректный путь к модели".into()))
 }
 
 #[cfg(test)]

@@ -8,6 +8,10 @@ mod apps;
 mod browser;
 mod clipboard_history;
 mod dev;
+#[cfg(windows)]
+pub mod executive;
+#[cfg(target_os = "macos")]
+#[path = "executive_macos.rs"]
 pub mod executive;
 mod file_actions;
 mod files;

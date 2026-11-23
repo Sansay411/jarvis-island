@@ -105,11 +105,14 @@ pub async fn hub_shelf_thumbnail(path: String) -> AppResult<Option<String>> {
 #[tauri::command]
 pub async fn hub_shelf_drag_out(window: tauri::WebviewWindow, paths: Vec<String>) -> AppResult<bool> {
     platform::dragout::validate_drag_paths(&paths)?;
+    #[cfg(windows)]
     let hwnd = window.hwnd().map_err(|e| crate::error::AppError::platform(e.to_string()))?.0 as isize;
+    #[cfg(target_os = "macos")]
+    let hwnd = 0isize;
     let (tx, rx) = tokio::sync::oneshot::channel();
     window
         .run_on_main_thread(move || {
-            let hwnd = windows::Win32::Foundation::HWND(hwnd as _);
+            let hwnd = crate::platform::HWND(hwnd as _);
             let _ = tx.send(platform::dragout::drag_files_out(hwnd, &paths));
         })
         .map_err(|e| crate::error::AppError::platform(e.to_string()))?;

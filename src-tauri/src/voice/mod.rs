@@ -12,6 +12,10 @@
 //! work is delegated to the text agent (`delegate_to_agent`).
 
 pub mod audio;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use macos::{probe_mic_in_child, relaunch};
 pub mod azure;
 pub mod edge;
 pub mod elevenlabs;
@@ -21,9 +25,15 @@ pub mod models;
 pub mod neural;
 pub mod phrases;
 pub mod ru_speech;
+#[cfg(windows)]
+pub mod sapi;
+#[cfg(target_os = "macos")]
+#[path = "sapi_macos.rs"]
 pub mod sapi;
 pub mod stt;
 pub mod tts;
+#[cfg(target_os = "macos")]
+mod tts_macos;
 pub mod vad;
 pub mod wake;
 pub mod yandex;
@@ -226,6 +236,7 @@ fn is_mic_failure(e: &AppError) -> bool {
 
 /// `jarvis.exe --probe-mic NAME` in a hidden helper process: true when the
 /// microphone opens and delivers sound there within 20 s.
+#[cfg(windows)]
 fn probe_mic_in_child(input: &str) -> bool {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -267,6 +278,7 @@ fn restart_allowed(marker: &std::path::Path) -> bool {
 /// Start a new JARVIS two seconds from now and quit this one. The delay lets
 /// this process exit first: the single-instance guard would otherwise hand
 /// the new launch back to the old process.
+#[cfg(windows)]
 fn relaunch(app: &AppHandle) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;

@@ -1,8 +1,11 @@
 //! Isolate native Windows capture initialization from CPAL, ASR and the UI.
 //! No microphone samples are read or saved. Kill this probe if Windows hangs.
+#[cfg(windows)]
 use windows::Win32::Media::Audio::{eCapture, eConsole, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED};
+#[cfg(windows)]
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED};
 
+#[cfg(windows)]
 fn main() -> windows::core::Result<()> {
     unsafe {
         CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
@@ -23,4 +26,10 @@ fn main() -> windows::core::Result<()> {
         eprintln!("Native capture start/stop succeeded; no audio read");
     }
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("Проверка WASAPI поддерживается только на Windows");
+    std::process::exit(1);
 }

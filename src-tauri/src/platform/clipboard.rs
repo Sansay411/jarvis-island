@@ -36,12 +36,7 @@ impl Drop for Open {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClipboardContent {
-    pub text: Option<String>,
-    pub files: Vec<String>,
-}
+pub use super::data_clipboard::ClipboardContent;
 
 pub fn read() -> AppResult<ClipboardContent> {
     let _guard = Open::acquire()?;
@@ -93,20 +88,7 @@ unsafe fn files_open() -> Vec<String> {
 const MAX_TEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_IMAGE_BYTES: usize = 200 * 1024 * 1024;
 
-/// What the history sees on the clipboard right now.
-#[derive(Debug, Default)]
-pub struct Snapshot {
-    pub sequence: u32,
-    pub owner_pid: Option<u32>,
-    /// The program that copied asked for this to stay out of histories
-    /// (password managers do). Nothing else was read.
-    pub private: bool,
-    pub text: Option<String>,
-    pub files: Vec<String>,
-    /// Raw clipboard formats of a picture: "PNG" and CF_DIBV5 / CF_DIB.
-    pub png: Option<Vec<u8>>,
-    pub dib: Option<Vec<u8>>,
-}
+pub use super::data_clipboard::Snapshot;
 
 fn registered(name: PCWSTR) -> u32 {
     unsafe { RegisterClipboardFormatW(name) }

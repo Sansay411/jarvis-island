@@ -14,8 +14,10 @@ use crate::error::{AppError, AppResult};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+#[cfg(windows)]
 fn find_tool(name: &str) -> Option<PathBuf> {
     let exe = format!("{name}.exe");
     if let Some(path) = std::env::var_os("PATH") {
@@ -48,9 +50,29 @@ fn find_tool(name: &str) -> Option<PathBuf> {
     None
 }
 
+#[cfg(target_os = "macos")]
+fn find_in_dirs(name: &str, dirs: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    dirs.into_iter().map(|dir| dir.join(name)).find(|p| {
+        p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn find_tool(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    find_in_dirs(name, std::env::split_paths(&path).chain([
+        PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin"),
+    ]))
+}
+
 pub fn ffmpeg() -> AppResult<PathBuf> {
     find_tool("ffmpeg").ok_or_else(|| {
-        AppError::unsupported("Для аудио и видео нужен FFmpeg. Установите его командой «winget install Gyan.FFmpeg» и повторите.")
+        #[cfg(windows)]
+        let message = "Для аудио и видео нужен FFmpeg. Установите его командой «winget install Gyan.FFmpeg» и повторите.";
+        #[cfg(target_os = "macos")]
+        let message = "Для аудио и видео нужен FFmpeg. Установите его командой «brew install ffmpeg» и повторите.";
+        AppError::unsupported(message)
     })
 }
 
@@ -291,6 +313,23 @@ pub fn srt_time(s: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finds_plain_executable_names_and_rejects_non_executables() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("jarvis-ffmpeg-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let tool = dir.join("ffmpeg");
+        std::fs::write(&tool, b"").unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(find_in_dirs("ffmpeg", [dir.clone()]).is_none());
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(find_in_dirs("ffmpeg", [dir.join("missing"), dir.clone()]), Some(tool));
+        assert!(find_in_dirs("ffprobe", [dir.clone()]).is_none());
+        assert!(find_in_dirs("ffmpeg", []).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn containers_and_compatibility() {

@@ -26,29 +26,9 @@ struct Element(IUIAutomationElement);
 // COM-initialised blocking-pool threads.
 unsafe impl Send for Element {}
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ElementInfo {
-    pub id: usize,
-    pub role: &'static str,
-    pub name: String,
-    pub value: Option<String>,
-    pub rect: Rect,
-    pub enabled: bool,
-    pub focused: bool,
-    pub actions: Vec<&'static str>,
-}
+pub use super::data_uia::ElementInfo;
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Snapshot {
-    pub snapshot_id: u64,
-    pub hwnd: i64,
-    pub window_title: String,
-    pub elements: Vec<ElementInfo>,
-    pub total_found: usize,
-    pub elapsed_ms: u64,
-}
+pub use super::data_uia::Snapshot;
 
 struct Stored {
     id: u64,
@@ -303,14 +283,7 @@ pub fn element_name(snapshot_id: u64, id: usize) -> Option<String> {
     (s.id == snapshot_id).then(|| s.infos.get(id).map(|i| i.name.clone())).flatten()
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActOutcome {
-    pub action: String,
-    pub element: String,
-    /// State read back after the action, where the pattern exposes one.
-    pub after: Option<String>,
-}
+pub use super::data_uia::ActOutcome;
 
 pub fn act(snapshot_id: u64, id: usize, action: &str, value: Option<&str>) -> AppResult<ActOutcome> {
     let (el, info) = {

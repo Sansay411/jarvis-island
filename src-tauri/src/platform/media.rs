@@ -58,50 +58,11 @@ pub fn set_cached(state: MediaState) {
     remember(&state);
 }
 
-#[derive(Debug, Clone, Serialize, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct MediaState {
-    pub available: bool,
-    /// AppUserModelID of the source app (e.g. `Spotify.exe`, `MSEdge`).
-    pub source_app: String,
-    pub title: String,
-    pub artist: String,
-    pub album: String,
-    /// playing | paused | stopped | changing | opened | closed
-    pub status: String,
-    pub position_ms: Option<i64>,
-    pub duration_ms: Option<i64>,
-    /// Unix ms at which `position_ms` was sampled by the source app.
-    pub position_sampled_at: Option<i64>,
-    pub can_toggle: bool,
-    pub can_next: bool,
-    pub can_previous: bool,
-    /// Stable key for the current track; changes when artwork must reload.
-    pub track_key: String,
-    /// For a browser source: the site that plays, read from the browser's
-    /// window title (`youtube`, `yandex`, `spotify`, `soundcloud`, `vk`,
-    /// `twitch`), or empty when unknown.
-    pub site: String,
-}
+pub use super::data_media::MediaState;
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ArtworkEvent {
-    pub track_key: String,
-    /// `data:` URL of a ≤160 px JPEG, or None when the app provides no art.
-    pub data_url: Option<String>,
-}
+pub use super::data_media::ArtworkEvent;
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum MediaAction {
-    PlayPause,
-    Play,
-    Pause,
-    Next,
-    Previous,
-    Stop,
-}
+pub use super::data_media::MediaAction;
 
 /// WinRT DateTime ticks (100 ns since 1601) → Unix ms.
 fn winrt_to_unix_ms(ticks: i64) -> i64 {
@@ -286,15 +247,7 @@ fn send_media_key(vk: VIRTUAL_KEY) {
     unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ControlOutcome {
-    pub state: MediaState,
-    /// "session" when GSMTC accepted the command, "media_key" for the fallback.
-    pub method: &'static str,
-    /// Whether the resulting state confirms the action (e.g. status flipped).
-    pub verified: bool,
-}
+pub use super::data_media::ControlOutcome;
 
 /// The same track again from (near) its beginning.
 fn restarted(before: &MediaState, after: &MediaState) -> bool {

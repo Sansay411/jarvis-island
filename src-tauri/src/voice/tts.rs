@@ -21,8 +21,11 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+#[cfg(windows)]
 use windows::core::HSTRING;
+#[cfg(windows)]
 use windows::Media::SpeechSynthesis::{SpeechAppendedSilence, SpeechPunctuationSilence, SpeechSynthesizer};
+#[cfg(windows)]
 use windows::Storage::Streams::DataReader;
 
 use super::audio::Resampler;
@@ -330,6 +333,7 @@ pub struct TtsVoice {
     pub language: String,
 }
 
+#[cfg(windows)]
 fn platform(e: windows::core::Error) -> AppError {
     AppError::platform(format!("Синтез речи: {}", e.message()))
 }
@@ -653,6 +657,7 @@ impl Speaker {
 }
 
 /// Voices installed in Windows, Russian first.
+#[cfg(windows)]
 pub fn windows_voices() -> AppResult<Vec<TtsVoice>> {
     crate::platform::com::ensure_mta();
     let mut out: Vec<TtsVoice> = SpeechSynthesizer::AllVoices()
@@ -670,11 +675,13 @@ pub fn windows_voices() -> AppResult<Vec<TtsVoice>> {
     Ok(out)
 }
 
+#[cfg(windows)]
 pub struct WindowsSpeaker {
     synth: SpeechSynthesizer,
     pub voice: String,
 }
 
+#[cfg(windows)]
 impl WindowsSpeaker {
     /// `voice_id` empty → the first Russian voice, else the system default.
     pub fn new(voice_id: &str, rate: f64) -> AppResult<WindowsSpeaker> {
@@ -917,3 +924,6 @@ mod tests {
         assert_eq!(trim_leading_silence(&s, 16_000).len(), 480 + 100);
     }
 }
+
+#[cfg(target_os = "macos")]
+pub use super::tts_macos::{windows_voices, WindowsSpeaker};
