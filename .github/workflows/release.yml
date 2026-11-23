@@ -41,8 +41,8 @@ jobs:
       - name: Drop sherpa-onnx build output whose libraries the cache pruned
         shell: bash
         run: |
-          if [ ! -d src-tauri/target/sherpa-onnx-prebuilt ]; then
-            rm -rf src-tauri/target/*/build/sherpa-onnx-sys-* src-tauri/target/*/*/build/sherpa-onnx-sys-*
+          if ! find src-tauri/target/sherpa-onnx-prebuilt \( -name 'libsherpa-onnx-c-api.a' -o -name 'sherpa-onnx-c-api.lib' \) 2>/dev/null | grep -q .; then
+            rm -rf src-tauri/target/sherpa-onnx-prebuilt src-tauri/target/*/build/sherpa-onnx-sys-* src-tauri/target/*/*/build/sherpa-onnx-sys-*
           fi
 
       - run: npm ci
@@ -104,8 +104,8 @@ jobs:
       - name: Drop sherpa-onnx build output whose libraries the cache pruned
         shell: bash
         run: |
-          if [ ! -d src-tauri/target/sherpa-onnx-prebuilt ]; then
-            rm -rf src-tauri/target/*/build/sherpa-onnx-sys-* src-tauri/target/*/*/build/sherpa-onnx-sys-*
+          if ! find src-tauri/target/sherpa-onnx-prebuilt \( -name 'libsherpa-onnx-c-api.a' -o -name 'sherpa-onnx-c-api.lib' \) 2>/dev/null | grep -q .; then
+            rm -rf src-tauri/target/sherpa-onnx-prebuilt src-tauri/target/*/build/sherpa-onnx-sys-* src-tauri/target/*/*/build/sherpa-onnx-sys-*
           fi
 
       - run: npm ci
