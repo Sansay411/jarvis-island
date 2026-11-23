@@ -29,6 +29,13 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Drop sherpa-onnx build output whose libraries the cache pruned
+        shell: bash
+        run: |
+          if [ ! -d src-tauri/target/sherpa-onnx-prebuilt ]; then
+            rm -rf src-tauri/target/*/build/sherpa-onnx-sys-* src-tauri/target/*/*/build/sherpa-onnx-sys-*
+          fi
+
       - run: npm ci
 
       - run: npm test
