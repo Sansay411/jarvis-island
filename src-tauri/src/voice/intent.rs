@@ -16,6 +16,11 @@
 //! it is built like words to JARVIS (a request, a question to «ты», an answer
 //! to its own question, an exact device command), never while a song or a film
 //! plays, and even then the model hears it with a note and may stay silent.
+//!
+//! The name alone does not make a phrase a task either: «…а Джарвис у меня
+//! вчера опять завис, прикинь» is a story about JARVIS, not to him. Named
+//! words built like talk — no request, no question — go to the model as
+//! `Unsure`, and silence is a fine answer to them.
 
 use std::time::Duration;
 
@@ -55,6 +60,11 @@ pub enum Intent {
     /// note that they may be the room's and may answer with silence. `cut`:
     /// they came over a running task or a spoken answer.
     Ambient { text: String, cut: bool },
+    /// With the name (or right after JARVIS asked for the command), but built
+    /// like talk rather than a request or a question: someone telling a story
+    /// about JARVIS, the TV. The model hears them with a note and may stay
+    /// silent, and then JARVIS folds without a sound.
+    Unsure(String),
     /// Not for JARVIS.
     Ignore,
 }
@@ -265,6 +275,37 @@ fn looks_addressed(text: &str, asked: bool) -> bool {
     asked && all.len() <= 8
 }
 
+/// Words that come with the name and read like a request or a question to
+/// JARVIS (or an answer to his own question), not a story about him: a verb
+/// that asks, a question, «мне нужно…», a device command, or a terse
+/// «Джарвис, погода». Four or more words of statement are talk.
+fn reads_like_a_task(text: &str, asked: bool) -> bool {
+    if text.trim_end().ends_with('?') || crate::agent::fast::command(text).is_some() || crate::agent::fast::device_command(text) {
+        return true;
+    }
+    let all = plain_words(text);
+    // «Короче, мы вчера…»: a filler of speech, not «say it shorter».
+    const TALK_FILLERS: &[&str] = &["короче", "кстати", "вообще", "значит", "типа", "просто", "вот"];
+    let skip = |w: &str| {
+        FILLER_LEADS.contains(&w) || SOFT_STARTS.contains(&w) || TALK_FILLERS.contains(&w) || LEADS.contains(&w) || wake::is_name(w) || wake::SHORT.contains(&w)
+    };
+    let w: Vec<&str> = all.iter().map(String::as_str).skip_while(|w| skip(w)).collect();
+    let Some(&first) = w.first() else { return true };
+    if w.len() <= 3 || (asked && w.len() <= 8) {
+        return true;
+    }
+    if VERBS.contains(&first) || HOLD_WORDS.contains(&first) || STEER_STARTS.contains(&first) {
+        return true;
+    }
+    // «Сколько сейчас времени в Москве» is a question to JARVIS; «что он там
+    // опять нашёл» is about somebody else.
+    const THEY: &[&str] = &["он", "она", "они", "его", "её", "ее", "их", "ему", "ей", "им", "нему", "ней", "них"];
+    if QUESTIONS.contains(&first) && !w.iter().any(|x| THEY.contains(x)) {
+        return true;
+    }
+    w.iter().any(|x| ASKS.contains(x) || VERBS.contains(x))
+}
+
 /// An unnamed phrase while JARVIS is idle (just after an answer, or after
 /// «Слушаю» timed out).
 fn follow_up(text: &str, ctx: &Context) -> Intent {
@@ -323,15 +364,21 @@ pub fn classify(text: &str, ctx: &Context) -> Intent {
     if ends_with_stop(text) {
         return Intent::Stop;
     }
+    // Idle, a phrase with the name that reads like talk is not taken on
+    // trust: the model may judge it someone else's. Over a running task or a
+    // reply the name is the user cutting in, and that is never doubted.
+    let named = |words: &str| {
+        if !ctx.busy && !reads_like_a_task(words, ctx.asked) { Intent::Unsure(words.to_string()) } else { take(words) }
+    };
     match addressed {
         Some(a) if a.only_name => return Intent::Call,
-        Some(_) => return dismissal(text).map_or_else(|| take(text), Intent::Dismiss),
+        Some(_) => return dismissal(text).map_or_else(|| named(text), Intent::Dismiss),
         None => {}
     }
     // The name after a few words of chatter: the command starts there.
     let within = if ctx.busy { NAME_WITHIN_BUSY } else { NAME_WITHIN_IDLE };
     if let Some(command) = wake::from_name(text, within) {
-        return take(command);
+        return named(command);
     }
     if !ctx.busy {
         return follow_up(text, ctx);
@@ -385,7 +432,16 @@ const VERBS: &[&str] = &[
     "напиши", "прочитай", "прочти", "переведи", "посчитай", "проверь", "переключи", "поставь", "установи", "сверни",
     "разверни", "создай", "сохрани", "удали", "убери", "добавь", "верни", "отправь", "нажми", "перейди", "зайди",
     "выбери", "скопируй", "вставь", "помоги", "поменяй", "смени", "измени", "исправь", "переделай", "уменьши", "увеличи",
-    "напомни", "запиши", "ответь", "продолжи", "остановись", "пауза",
+    "напомни", "запиши", "ответь", "продолжи", "остановись", "пауза", "спроси", "позвони", "набери", "дай", "глянь",
+    "посмотри", "подскажи", "посоветуй", "придумай", "нарисуй", "сравни", "опиши", "запомни", "забудь", "отмени",
+    "сыграй", "спой", "почитай", "озвучь", "убавь", "прибавь", "приглуши", "перешли", "переименуй", "перемести",
+    "засеки", "заведи", "разбуди", "выведи", "узнай", "погугли", "загугли", "почисти", "очисти", "обнови",
+];
+
+/// Words that turn any phrase into a request: «мне нужно…», «можешь…».
+const ASKS: &[&str] = &[
+    "пожалуйста", "можешь", "можете", "сможешь", "можно", "надо", "нужно", "хочу", "хотел", "хотела", "хотим", "давай",
+    "давайте", "помоги", "подскажи", "напомни", "интересно", "скажи",
 ];
 
 /// Question words; a question needs a few more words to be the user's.
@@ -468,6 +524,9 @@ mod tests {
     }
     fn rep(t: &str) -> Intent {
         Intent::Replace(t.to_string())
+    }
+    fn unsure(t: &str) -> Intent {
+        Intent::Unsure(t.to_string())
     }
 
     #[test]
@@ -758,6 +817,45 @@ mod tests {
         // A thank-you that goes on with a request is a request.
         assert_eq!(classify("Спасибо, Джарвис, а теперь открой почту", &idle()), req("Джарвис, а теперь открой почту"));
         assert_eq!(classify("Всё хорошо?", &idle()), Intent::Ignore);
+    }
+
+    #[test]
+    fn named_talk_that_is_no_request_goes_to_the_model_which_may_stay_silent() {
+        // Stories about JARVIS, the TV saying his name: the name is there,
+        // the request is not.
+        for t in [
+            "Джарвис у меня вчера опять завис, прикинь.",
+            "Джарвис, короче, мы вчера с пацанами ходили в кино.",
+            "Он сказал сначала... А Джарвис потом всё равно это сделал по-своему.",
+        ] {
+            let want = match classify(t, &idle()) {
+                Intent::Unsure(w) => Intent::Unsure(w),
+                other => other,
+            };
+            assert!(matches!(want, Intent::Unsure(_)), "{t}: {want:?}");
+        }
+        assert_eq!(classify("Джарвис у меня вчера опять завис, прикинь.", &idle()), unsure("Джарвис у меня вчера опять завис, прикинь."));
+        // Requests and questions with the name are taken as they are.
+        for t in [
+            "Джарвис, сделай погромче.",
+            "Джарвис, какая завтра погода",
+            "Джарвис, мне нужно написать письмо маме.",
+            "Джарвис, можешь открыть загрузки",
+            "Джарвис, погода.",
+            "Джарвис, ты тут?",
+            "Джарвис, спроси у Алисы погоду",
+            "Джарвис, а теперь открой почту",
+        ] {
+            assert_eq!(classify(t, &idle()), req(t), "{t}");
+        }
+        // Over a task or a reply the name is the user cutting in: never doubted.
+        let t = "Джарвис у меня вчера опять завис, прикинь.";
+        assert_eq!(classify(t, &working()), rep(t));
+        assert_eq!(classify(t, &speaking()), rep(t));
+        // Right after «Слушаю» the same holds for unnamed words.
+        let invited = Context { invited: true, ..idle() };
+        assert_eq!(classify("Открой загрузки.", &invited), req("Открой загрузки."));
+        assert_eq!(classify("Ну и что он там у себя опять нашёл вообще.", &invited), unsure("Ну и что он там у себя опять нашёл вообще."));
     }
 
     #[test]

@@ -57,7 +57,8 @@ Voice conversation
 - The request was spoken; the text comes from speech recognition and may contain misheard words — infer the intent («Джарвиз», «Джарби» are your name).
 - Your reply is spoken by a speech synthesizer, so write it the way a person says it in a live conversation: natural spoken Russian, varied sentence length, 1–3 sentences for chat, a short confirmation after an action. Let punctuation carry the intonation — question marks, exclamations, commas, «…» for a pause, a dash for emphasis. An occasional «хм», «ну что ж», «о!» is fine; don't overuse them.
 - Write everything exactly as it must be pronounced: numbers, dates, times, percentages and units in words with the right case («двадцать восемь процентов», «в половине третьего», «пятого мая»); foreign names in Russian letters as people say them («Ви Эс Код», «Ютуб», «Телеграм», «Гитхаб», «Виндоус»); no digits, symbols (%, №, +, /, &), emoji, Markdown, lists, code, file paths or links. Write «ё» where it belongs.
-- If the result is long (code, a list of files), it stays visible in the chat — say briefly that it is there."#;
+- If the result is long (code, a list of files), it stays visible in the chat — say briefly that it is there.
+- Once you have answered, the microphone stops listening until the user calls you by name again. So end with a question only when you truly need the answer to finish the request — never with an offer like «Что-нибудь ещё?»."#;
 
 /// The stable part: the same for every step and turn until settings,
 /// memories or tools change, so the provider's prefix cache serves it (and
@@ -85,8 +86,8 @@ pub fn system_prompt(settings: &Settings, memories: &[Memory], available_tools: 
 
 /// What changes from request to request: gathered once per turn and
 /// attached to the user's request, after everything the cache can reuse.
-/// `ambient`: the phrase was heard without the name (voice).
-pub fn turn_context(settings: &Settings, history: &ForegroundHistory, ambient: bool) -> String {
+/// `heard`: how sure the voice pipeline is that the phrase was for JARVIS.
+pub fn turn_context(settings: &Settings, history: &ForegroundHistory, heard: super::Heard) -> String {
     let mut ctx = String::new();
     ctx.push_str(&format!("- Local time: {}\n", local_time_line(Local::now().naive_local())));
     if let Some(p) = crate::geo::here_cached() {
@@ -119,11 +120,16 @@ pub fn turn_context(settings: &Settings, history: &ForegroundHistory, ambient: b
     if let Some(line) = player_line(&crate::platform::media::cached()) {
         ctx.push_str(&line);
     }
-    if ambient {
-        ctx.push_str(&format!(
+    match heard {
+        super::Heard::Addressed => {}
+        super::Heard::Unnamed => ctx.push_str(&format!(
             "- This phrase was heard WITHOUT your name: it may be someone else in the room, a video or a song. Answer only if it clearly continues your conversation with the user (a reply to your question, a follow-up, a request to you). Otherwise do nothing: reply with exactly {} — no tools, no other words.\n",
             super::SILENT
-        ));
+        )),
+        super::Heard::Unsure => ctx.push_str(&format!(
+            "- This phrase came with your name (or right after you said «Слушаю»), but it reads like talk, not a request or a question to you: it may be someone telling a story about you, a phone call or the TV. If it is clearly not meant for you, do nothing: reply with exactly {} — no tools, no other words. If it may well be for you, answer as usual.\n",
+            super::SILENT
+        )),
     }
     format!("[Контекст запроса]\n{ctx}")
 }
