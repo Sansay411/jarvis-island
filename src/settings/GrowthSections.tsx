@@ -134,6 +134,9 @@ export function CalendarSection({ draft, set, notify }: Props) {
             <input type="time" value={p.workEnd} onChange={(e) => put({ workEnd: e.target.value })} aria-label="Конец" />
           </span>
         </Row>
+        <Row label="Напоминать на острове за, мин" hint="Остров откроется с событием и кнопкой «Фокус», а в компактном виде покажет обратный отсчёт. 0 — не напоминать.">
+          <input type="number" min={0} max={60} value={p.islandRemind} onChange={(e) => put({ islandRemind: num(e.target.value, 0, 60) })} />
+        </Row>
         <Row label="Окно календаря" hint="Как в Google: неделя, день, месяц, перетаскивание и растягивание событий. Клавиши T, D, W, M, C.">
           <button className="btn" onClick={() => void invoke("planner_open", { date: null })}>
             Открыть планировщик

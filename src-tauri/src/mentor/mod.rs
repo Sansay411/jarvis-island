@@ -210,6 +210,9 @@ pub struct Intervention {
     pub closed: bool,
     pub if_then: String,
     pub at: String,
+    /// Open straight on this screen (feed, games, workout, breath, step).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -563,14 +566,16 @@ impl Mentor {
         Ok(())
     }
 
-    pub fn voluntary(&self) -> AppResult<()> {
+    pub fn voluntary(&self, screen: Option<String>) -> AppResult<()> {
         let s = self.store.settings().mentor;
+        let screen = screen.filter(|x| matches!(x.as_str(), "feed" | "games" | "workout" | "breath" | "step"));
         self.open_reset(Intervention {
             id: uuid::Uuid::new_v4().to_string(),
             reason: "voluntary".into(),
             why: String::new(),
             if_then: s.if_then,
             at: Utc::now().to_rfc3339(),
+            screen,
             ..Default::default()
         })
     }
@@ -713,6 +718,7 @@ impl Mentor {
             Ok(())
         })?;
         self.log("card", &track, if correct { "верно" } else { "ошибка" }, 0.0, xp.min(60), 0, json!({ "card": id }))?;
+        self.emit_state();
         Ok(())
     }
 
@@ -1004,6 +1010,18 @@ mod tests {
         assert_eq!(due, day_str(today() + Duration::days(1)));
         let st = m.state().unwrap();
         assert_eq!(st.today_xp, 3);
+    }
+
+    #[test]
+    fn reset_opens_on_a_known_screen_only() {
+        let m = Mentor::new(None, Arc::new(Store::in_memory().unwrap())).unwrap();
+        m.voluntary(Some("workout".into())).unwrap();
+        let iv = m.pending().unwrap();
+        assert_eq!((iv.reason.as_str(), iv.screen.as_deref()), ("voluntary", Some("workout")));
+        m.voluntary(Some("settings".into())).unwrap();
+        assert_eq!(m.pending().unwrap().screen, None);
+        m.voluntary(None).unwrap();
+        assert_eq!(m.pending().unwrap().screen, None);
     }
 
     #[test]

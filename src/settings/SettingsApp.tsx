@@ -68,7 +68,7 @@ export interface Settings {
   launchAtStartup: boolean;
   reduceMotion: boolean;
   updates: { autoCheck: boolean };
-  planner: { workStart: string; workEnd: string; dayStartHour: number; googleClientId: string; googleCalendarId: string };
+  planner: { workStart: string; workEnd: string; dayStartHour: number; googleClientId: string; googleCalendarId: string; islandRemind: number };
   mentor: {
     guard: boolean;
     shortMinutes: number;
@@ -183,7 +183,7 @@ const FALLBACK_SETTINGS_VIEW: SettingsView = {
     launchAtStartup: true,
     reduceMotion: false,
     updates: { autoCheck: true },
-    planner: { workStart: "09:00", workEnd: "18:00", dayStartHour: 8, googleClientId: "", googleCalendarId: "primary" },
+    planner: { workStart: "09:00", workEnd: "18:00", dayStartHour: 8, googleClientId: "", googleCalendarId: "primary", islandRemind: 10 },
     mentor: {
       guard: true,
       shortMinutes: 10,

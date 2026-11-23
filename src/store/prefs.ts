@@ -10,6 +10,8 @@ export interface Prefs {
   workspaceShortcut: string;
   fullControl: boolean;
   autoSpeakReplies: boolean;
+  /** Minutes before a calendar event the island shows it; 0 = off. */
+  islandRemind: number;
   setFullControl: (enabled: boolean) => Promise<boolean>;
   setAutoSpeakReplies: (enabled: boolean) => Promise<boolean>;
 }
@@ -19,6 +21,7 @@ export const usePrefs = create<Prefs>((set) => ({
   workspaceShortcut: "Ctrl+Alt+J",
   fullControl: false,
   autoSpeakReplies: false,
+  islandRemind: 10,
 
   setFullControl: async (enabled: boolean) => {
     set({ fullControl: enabled });
@@ -60,6 +63,7 @@ async function load() {
         shortcuts?: { workspace?: string };
         agent?: { fullControl?: boolean };
         voice?: { autoSpeakReplies?: boolean };
+        planner?: { islandRemind?: number };
       };
     }>("settings_get");
     if (v?.settings) {
@@ -68,6 +72,7 @@ async function load() {
         workspaceShortcut: v.settings.shortcuts?.workspace ?? "Ctrl+Alt+J",
         fullControl: !!v.settings.agent?.fullControl,
         autoSpeakReplies: !!v.settings.voice?.autoSpeakReplies,
+        islandRemind: v.settings.planner?.islandRemind ?? 10,
       });
     }
   } catch {

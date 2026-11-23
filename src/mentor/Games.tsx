@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { mentorIpc } from "../store/mentor";
+import { ART } from "./art";
 
 export type GameId = "sprint" | "words";
 export const GAME_TITLE: Record<GameId, string> = { sprint: "Спринт счёта", words: "Слова на скорость" };
@@ -18,9 +19,7 @@ export function GamePicker({ onPick }: { onPick: (g: GameId) => void }) {
     <div className="rs-games">
       {(["sprint", "words"] as GameId[]).map((g) => (
         <button key={g} type="button" className="rs-tile" onClick={() => onPick(g)}>
-          <span className={`rs-tile-mark is-${g}`} aria-hidden="true">
-            {g === "sprint" ? "7×8" : "Aa"}
-          </span>
+          <img className="rs-tile-art" src={ART[g]} alt="" draggable={false} />
           <b>{GAME_TITLE[g]}</b>
           <span className="rs-tile-meta">60 секунд · рекорд {best[g]}</span>
           <span className="rs-tile-text">{g === "sprint" ? "Примеры в уме на время. Каждый верный — очко." : "Слово — перевод. Чем быстрее, тем больше слов."}</span>

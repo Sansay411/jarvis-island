@@ -41,6 +41,9 @@ import { useBluetooth } from "../store/bluetooth";
 import { UpdateCard } from "./views/UpdateCard";
 import { useUpdates } from "../store/updates";
 import { useMentor } from "../store/mentor";
+import { useAgenda } from "../store/agenda";
+import { EventCard } from "./views/EventCard";
+import { MomentCard } from "./views/MomentCard";
 import "./island.css";
 
 const SHAPE_SPRING = { stiffness: 460, damping: 34, mass: 0.65 };
@@ -289,7 +292,7 @@ function voiceMood(state: VoiceState, agentMood: EyeMood | null): EyeMood {
 function moodFor(mode: IslandMode, agentMood: EyeMood | null, hovered: boolean, ttsSpeaking: boolean): EyeMood {
   if (ttsSpeaking) return "speaking";
   if (agentMood) return agentMood;
-  if (mode === "drop" || mode === "files" || mode === "notice" || mode === "clips" || mode === "weather" || mode === "hello") return "attentive";
+  if (mode === "drop" || mode === "files" || mode === "notice" || mode === "clips" || mode === "weather" || mode === "hello" || mode === "event" || mode === "moment") return "attentive";
   if (mode === "peek" || mode === "workspace" || hovered) return "attentive";
   return "idle";
 }
@@ -323,6 +326,10 @@ export function Island() {
   const ttsSpeaking = useTts((s) => s.speaking);
   const missionActive = useMissionActive();
   const watching = useMentor((s) => s.watching !== null);
+  const momentCard = useMentor((s) => s.moment !== null);
+  const xpGain = useMentor((s) => s.gain !== null);
+  const eventCard = useAgenda((s) => s.card !== null);
+  const eventSoon = useAgenda((s) => s.soon !== null);
 
   const { emote: currentEmote, seq: emoteSeq } = useEmote();
   const runningTool = useAgent((s) => {
@@ -369,6 +376,8 @@ export function Island() {
   const weatherCard = useWeather((s) => s.card !== null);
   const helloCard = useBluetooth((s) => s.hello !== null);
   const updateCard = useUpdates((s) => s.card && s.status?.available != null);
+  // A calendar reminder holds under the pointer so its buttons can be used;
+  // a growth moment gives way to «Рост» as soon as the pointer comes.
   const mode: IslandMode =
     base === "drop"
       ? "drop"
@@ -380,9 +389,22 @@ export function Island() {
             ? "voice"
             : alerting
               ? "notice"
-              : (helloCard || updateCard) && base === "compact"
-                ? "hello"
-                : base;
+              : eventCard && (base === "compact" || base === "peek")
+                ? "event"
+                : (helloCard || updateCard) && base === "compact"
+                  ? "hello"
+                  : momentCard && base === "compact"
+                    ? "moment"
+                    : base;
+
+  useEffect(() => {
+    if (!st.hovered || !useMentor.getState().moment) return;
+    useMentor.getState().dismissMoment();
+    useIsland.getState().setDeck("growth");
+  }, [st.hovered]);
+  useEffect(() => {
+    if (mode !== "peek" && useIsland.getState().growthCard) useIsland.getState().set({ growthCard: false });
+  }, [mode]);
 
   const [workspaceWarm, setWorkspaceWarm] = useState(false);
   useEffect(() => {
@@ -409,12 +431,13 @@ export function Island() {
       dimsFor(mode, {
         notch: notchGeometry,
         hasMedia: withMedia,
-        hasActivity: jobRows > 0 || !!timer || stopwatch || missionActive || watching,
+        hasActivity: jobRows > 0 || !!timer || stopwatch || missionActive || watching || xpGain || eventSoon,
         hasFocus: focus.active,
         thinking: agentThinking,
         ttsSpeaking,
         missionActive: mode === "peek" && missionActive,
         peekDeck: st.peekDeck,
+        growthCard: st.growthCard,
         focusBanner: mode === "peek" && showFocusBanner,
         jobRows,
         clockRows,
@@ -433,6 +456,7 @@ export function Island() {
       voiceClock,
       st.topCovered,
       st.peekDeck,
+      st.growthCard,
       showFocusBanner,
       focus.active,
       ttsSpeaking,
@@ -444,6 +468,8 @@ export function Island() {
       stopwatch,
       agentThinking,
       watching,
+      xpGain,
+      eventSoon,
     ],
   );
 
@@ -556,6 +582,8 @@ export function Island() {
                 {mode === "weather" && <WeatherView />}
                 {mode === "clips" && <ClipsView />}
                 {mode === "hello" && (helloCard ? <HeadsetHello /> : <UpdateCard />)}
+                {mode === "event" && <EventCard />}
+                {mode === "moment" && <MomentCard />}
               </motion.div>
             )}
           </AnimatePresence>

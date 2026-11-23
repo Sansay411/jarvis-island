@@ -326,6 +326,14 @@ impl Hub {
         }
     }
 
+    /// Focus minutes and done tasks are XP: the island and the planner show
+    /// the new level, streak and day at once.
+    fn growth_changed(&self) {
+        if let Some(mentor) = self.app.as_ref().and_then(|app| app.try_state::<Arc<crate::mentor::Mentor>>()) {
+            mentor.emit_state();
+        }
+    }
+
     // ==================== 1. TASKS & AGENDA ====================
 
     pub fn tasks_list(&self) -> AppResult<Vec<TaskItem>> {
@@ -457,6 +465,7 @@ impl Hub {
         if let Ok(all) = self.tasks_list() {
             self.emit(EVT_TASKS, &all);
         }
+        self.growth_changed();
         Ok(updated)
     }
 
@@ -629,6 +638,7 @@ impl Hub {
                 }
             }
         }
+        self.growth_changed();
         Ok(())
     }
 

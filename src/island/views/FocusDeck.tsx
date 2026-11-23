@@ -13,6 +13,8 @@ import { Icon } from "../../ui/Icon";
 import { emote } from "../../store/emote";
 import { islandInputHandlers } from "../../store/island";
 import { useHub } from "../../store/hub";
+import { focusBlock, useAgenda } from "../../store/agenda";
+import { useTick } from "../../store/stopwatch";
 import type { TaskItem } from "../../lib/types";
 
 const PRESETS = FOCUS_PRESETS;
@@ -189,6 +191,9 @@ export function FocusDeck() {
 
   const [presetMin, setPresetMin] = useState<number>(25);
   const [burstKey, setBurstKey] = useState(0);
+  const events = useAgenda((s) => s.events);
+  useTick(30_000, !focus.active);
+  const block = focus.active ? null : focusBlock(events, new Date());
   const [customTitle, setCustomTitle] = useState<string>("");
   const [newTaskText, setNewTaskText] = useState<string>("");
 
@@ -253,6 +258,21 @@ export function FocusDeck() {
             {focus.active && (
               <button type="button" className="focus-cancel-link" onClick={() => void focusCancel()}>
                 Отменить
+              </button>
+            )}
+            {block && (
+              <button
+                type="button"
+                className={`focus-cal-chip${block.started ? " is-live" : ""}`}
+                title={`Фокус на ${block.focusMin} мин: «${block.event.title}»`}
+                onClick={() => {
+                  emote("determined");
+                  void focusStart(block.event.title, block.focusMin, null);
+                }}
+              >
+                <Icon name="calendar" size={11} />
+                <span>{block.event.title}</span>
+                <em>{block.started ? `до ${block.event.end.slice(11, 16)}` : `в ${block.event.start.slice(11, 16)}`}</em>
               </button>
             )}
           </div>

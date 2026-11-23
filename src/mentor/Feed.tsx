@@ -5,8 +5,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { mentorIpc, type FeedCard } from "../store/mentor";
+import { Icon, type IconName } from "../ui/Icon";
 
 const TRACK: Record<string, string> = { code: "Код", english: "English", body: "Тело", projects: "Проекты" };
+const TRACK_ICON: Record<string, IconName> = { code: "code", english: "book", body: "heart", projects: "rocket" };
 
 export interface FeedResult {
   xp: number;
@@ -117,8 +119,14 @@ export function Feed({ onDone }: { onDone: (r: FeedResult) => void }) {
           ))}
         </div>
         <div className="rs-feed-meta">
-          {combo >= 2 && <span className="rs-combo">Серия ×{combo}</span>}
+          {combo >= 2 && (
+            <span className="rs-combo">
+              <Icon name="flame" size={13} />
+              Серия ×{combo}
+            </span>
+          )}
           <span className="rs-xp">
+            <Icon name="spark" size={15} />
             {xp} XP
             {gain && (
               <b key={gain.k} className="rs-gain">
@@ -131,9 +139,22 @@ export function Feed({ onDone }: { onDone: (r: FeedResult) => void }) {
 
       <article key={card.id} className={`rs-card${card.rare ? " is-rare" : ""}`}>
         <div className="rs-card-tags">
-          <span className={`rs-tag is-${card.track}`}>{TRACK[card.track] ?? card.track}</span>
-          {card.review && <span className="rs-tag is-review">Повтор</span>}
-          {card.rare && <span className="rs-tag is-rare">Редкая · ×3 XP</span>}
+          <span className={`rs-tag is-${card.track}`}>
+            <Icon name={TRACK_ICON[card.track] ?? "spark"} size={13} />
+            {TRACK[card.track] ?? card.track}
+          </span>
+          {card.review && (
+            <span className="rs-tag is-review">
+              <Icon name="restart" size={13} />
+              Повтор
+            </span>
+          )}
+          {card.rare && (
+            <span className="rs-tag is-rare">
+              <Icon name="spark" size={13} />
+              Редкая · ×3 XP
+            </span>
+          )}
         </div>
 
         {card.kind === "word" && (

@@ -14,6 +14,8 @@ import { daysRu, mentorIpc, minutesRu, startMentorFeed, useMentor, type Interven
 import { Feed, type FeedResult } from "./Feed";
 import { Game, GamePicker, GAME_TITLE, type GameId } from "./Games";
 import { Breath, Workout } from "./Body";
+import { ART } from "./art";
+import { Icon, type IconName } from "../ui/Icon";
 import "./reset.css";
 
 type Mood = "bored" | "tired" | "avoid" | "rest" | null;
@@ -28,12 +30,18 @@ type Screen =
   | { id: "started"; title: string; minutes: number }
   | { id: "done"; reward: Reward; extraXp: number; kind: string; note: string };
 
-const MOODS: Array<{ id: Exclude<Mood, null>; label: string }> = [
-  { id: "bored", label: "Скучно" },
-  { id: "tired", label: "Устал" },
-  { id: "avoid", label: "Не хочу браться за задачу" },
-  { id: "rest", label: "Просто отдыхаю" },
+const MOODS: Array<{ id: Exclude<Mood, null>; label: string; icon: IconName }> = [
+  { id: "bored", label: "Скучно", icon: "meh" },
+  { id: "tired", label: "Устал", icon: "battery" },
+  { id: "avoid", label: "Не хочу браться за задачу", icon: "mountain" },
+  { id: "rest", label: "Просто отдыхаю", icon: "cup" },
 ];
+
+const STEP_KIND: Record<string, { label: string; icon: IconName }> = {
+  repo: { label: "Код", icon: "code" },
+  event: { label: "Календарь", icon: "calendar" },
+  task: { label: "Задача", icon: "check" },
+};
 
 const RECOMMEND: Record<Exclude<Mood, null>, { tile: string; line: string }> = {
   bored: { tile: "feed", line: "Скуке нужна новизна. Лента даст её за три минуты — и что-то останется в голове." },
@@ -54,7 +62,11 @@ export default function ResetApp() {
 
   useEffect(() => {
     void startMentorFeed();
-    void mentorIpc.pending().then((p) => p && setIv(p));
+    void mentorIpc.pending().then((p) => {
+      if (!p) return;
+      setIv(p);
+      if (p.screen) setScreen({ id: p.screen } as Screen);
+    });
     if (!isTauri()) {
       const q = new URLSearchParams(location.search);
       const reason = (q.get("reason") as Intervention["reason"]) ?? "budget";
@@ -74,12 +86,15 @@ export default function ResetApp() {
       });
       const s = q.get("screen") as Screen["id"] | null;
       if (s && s !== "done" && s !== "started" && s !== "game") setScreen({ id: s } as Screen);
-      if (s === "done") setScreen({ id: "done", reward: { xp: 55, earnedSec: 180, level: 3, levelName: "Практик", levelUp: false, streak: 6, best: false, record: 0 }, extraXp: 48, kind: "feed", note: "5 из 6 верно" });
+      if (s === "game") setScreen({ id: "game", game: q.get("game") === "words" ? "words" : "sprint" });
+      const won = q.get("reward");
+      if (s === "done") setScreen({ id: "done", reward: { xp: 55, earnedSec: 180, level: won === "level" ? 4 : 3, levelName: won === "level" ? "Собранный" : "Практик", levelUp: won === "level", streak: 6, best: won === "record", record: 0 }, extraXp: 48, kind: "feed", note: "5 из 6 верно" });
+      if (s === "started") setScreen({ id: "started", title: "jarvis-island: открыть файл и написать заголовок функции", minutes: 10 });
       return;
     }
     const un = listen<Intervention>("mentor:reset", (e) => {
       setIv(e.payload);
-      setScreen({ id: "intro" });
+      setScreen(e.payload.screen ? ({ id: e.payload.screen } as Screen) : { id: "intro" });
       setMood(null);
     });
     return () => void un.then((f) => f());
@@ -158,6 +173,7 @@ export default function ResetApp() {
               <span>Что тянет?</span>
               {MOODS.map((m) => (
                 <button key={m.id} type="button" className={`rs-mood${mood === m.id ? " is-on" : ""}`} onClick={() => setMood(mood === m.id ? null : m.id)}>
+                  <Icon name={m.icon} size={15} />
                   {m.label}
                 </button>
               ))}
@@ -171,7 +187,7 @@ export default function ResetApp() {
                   onClick={() => setScreen({ id: t.id } as Screen)}
                 >
                   {recommended?.tile === t.id && <span className="rs-tile-badge">Сейчас лучше всего</span>}
-                  <span className={`rs-tile-mark is-${t.id}`} aria-hidden="true" />
+                  <img className="rs-tile-art" src={ART[t.id as keyof typeof ART]} alt="" draggable={false} />
                   <b>{t.title}</b>
                   <span className="rs-tile-meta">{t.meta}</span>
                   <span className="rs-tile-text">{t.text}</span>
@@ -180,17 +196,20 @@ export default function ResetApp() {
               ))}
             </div>
             <div className="rs-links">
-              <button type="button" className={`rs-link${recommended?.tile === "breath" ? " is-strong" : ""}`} onClick={() => setScreen({ id: "breath" })}>
+              <button type="button" className={`rs-pill${recommended?.tile === "breath" ? " is-strong" : ""}`} onClick={() => setScreen({ id: "breath" })}>
+                <img src={ART.breath} alt="" draggable={false} />
                 Минута дыхания
+                <span>+1 мин видео</span>
               </button>
               {learnable && (
                 <button
                   type="button"
-                  className="rs-link"
+                  className="rs-pill is-quiet"
                   onClick={() => {
                     void mentorIpc.allow(iv!.title, iv!.url).then(close);
                   }}
                 >
+                  <Icon name="book" size={16} />
                   Это была учёба — вернуть видео
                 </button>
               )}
@@ -231,8 +250,8 @@ export default function ResetApp() {
         {screen.id === "step" && <StepScreen onStarted={(title, minutes) => setScreen({ id: "started", title, minutes })} />}
         {screen.id === "started" && (
           <section className="rs-screen rs-center rs-done">
-            <div className="rs-hero is-small">
-              <img src={heroUrl} alt="" draggable={false} />
+            <div className="rs-hero is-small is-art">
+              <img src={ART.step} alt="" draggable={false} />
             </div>
             <h1>Фокус пошёл</h1>
             <p className="lead">
@@ -242,15 +261,26 @@ export default function ResetApp() {
         )}
         {screen.id === "done" && (
           <section className="rs-screen rs-center rs-done">
-            <div className="rs-hero is-small">
-              <img src={heroUrl} alt="" draggable={false} />
+            <div className={`rs-hero is-small${screen.reward.levelUp || screen.reward.best ? " is-art" : ""}`}>
+              <img src={screen.reward.levelUp ? ART.level : screen.reward.best ? ART.trophy : heroUrl} alt="" draggable={false} />
             </div>
             <h1>{screen.reward.levelUp ? `Новый уровень: ${screen.reward.levelName}` : screen.reward.best ? "Новый рекорд!" : "Готово"}</h1>
             {screen.note && <p className="lead lead-tight">{screen.note}</p>}
             <div className="rs-rewards">
-              <span className="rs-reward is-xp">+{screen.reward.xp + screen.extraXp} XP</span>
-              {screen.reward.earnedSec > 0 && <span className="rs-reward">+{minutesRu(Math.round(screen.reward.earnedSec / 60))} видео</span>}
-              {screen.reward.streak > 0 && <span className="rs-reward">Серия {daysRu(screen.reward.streak)}</span>}
+              <span className="rs-reward is-xp">
+                <Icon name="spark" size={17} />+{screen.reward.xp + screen.extraXp} XP
+              </span>
+              {screen.reward.earnedSec > 0 && (
+                <span className="rs-reward">
+                  <Icon name="reels" size={17} />+{minutesRu(Math.round(screen.reward.earnedSec / 60))} видео
+                </span>
+              )}
+              {screen.reward.streak > 0 && (
+                <span className="rs-reward">
+                  <img className="rs-reward-art" src={ART.streak} alt="" draggable={false} />
+                  Серия {daysRu(screen.reward.streak)}
+                </span>
+              )}
             </div>
             {state && (
               <div className="rs-level">
@@ -274,13 +304,21 @@ export default function ResetApp() {
 
       <footer className="foot">
         <span className="version">
-          {state ? (
+          {state && screen.id !== "done" && (
             <>
-              Уровень {state.level} · {state.levelName} · серия {daysRu(state.streak)}
-              {state.todayXp < state.goalXp ? ` · до зачёта дня ${state.goalXp - state.todayXp} XP` : " · день засчитан"}
+              <span>
+                <Icon name="rank" size={15} />
+                Уровень {state.level} · {state.levelName}
+              </span>
+              <span className={state.todayXp >= state.goalXp ? "is-lit" : undefined}>
+                <Icon name="flame" size={15} />
+                Серия {daysRu(state.streak)}
+              </span>
+              <span>
+                <Icon name="spark" size={15} />
+                {state.todayXp < state.goalXp ? `До зачёта дня ${state.goalXp - state.todayXp} XP` : "День засчитан"}
+              </span>
             </>
-          ) : (
-            ""
           )}
         </span>
         <div className="foot-actions">
@@ -333,7 +371,10 @@ function StepScreen({ onStarted }: { onStarted: (title: string, minutes: number)
         {steps === null && <div className="rs-loading">Смотрю календарь, задачи и репозитории…</div>}
         {steps?.map((s, k) => (
           <button key={k} type="button" role="radio" aria-checked={!own.trim() && pick === k} className={`rs-step-item${!own.trim() && pick === k ? " is-on" : ""}`} onClick={() => { setOwn(""); setPick(k); }}>
-            <span className={`rs-step-kind is-${s.kind}`}>{s.kind === "repo" ? "Код" : s.kind === "event" ? "Календарь" : "Задача"}</span>
+            <span className={`rs-step-kind is-${s.kind}`}>
+              <Icon name={(STEP_KIND[s.kind] ?? STEP_KIND.task!).icon} size={15} />
+              {(STEP_KIND[s.kind] ?? STEP_KIND.task!).label}
+            </span>
             <span className="rs-step-text">
               <b>{s.title}</b>
               <small>{s.subtitle}</small>

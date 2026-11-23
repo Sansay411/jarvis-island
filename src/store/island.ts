@@ -28,6 +28,8 @@ interface IslandStore {
   peekDeck: PeekDeck;
   /** Side the last deck change came from (+1 right, -1 left) for the slide. */
   deckDir: 1 | -1 | 0;
+  /** «Рост» shows a card to answer right on the island (a taller deck). */
+  growthCard: boolean;
   /** When Focus is running, hovering first shows the Needt Hover Banner; clicking expands into the full deck. */
   focusBannerDismissed: boolean;
   /** Optional QA override to force showing the Needt Hover Focus Banner. */
@@ -66,6 +68,7 @@ export const useIsland = create<IslandStore>((set) => ({
   topCovered: false,
   peekDeck: "nook",
   deckDir: 0,
+  growthCard: false,
   focusBannerDismissed: false,
   forceFocusBanner: false,
   inputFocused: false,

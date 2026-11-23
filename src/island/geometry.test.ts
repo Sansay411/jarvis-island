@@ -21,12 +21,23 @@ describe("notch geometry", () => {
   });
 
   it("adds a black notch header above expanded content", () => {
-    for (const mode of ["peek", "workspace", "voice", "drop", "files", "clips", "weather", "notice"] as const) {
+    for (const mode of ["peek", "workspace", "voice", "drop", "files", "clips", "weather", "notice", "event", "moment"] as const) {
       const base = dimsFor(mode, ctx);
       const expanded = dimsFor(mode, { ...ctx, notch });
       expect(expanded.h).toBe(base.h + 32);
       expect(expanded.w).toBeGreaterThanOrEqual(200 + NOTCH_WINGS);
     }
+  });
+
+  it("keeps one deck width; a card on «Рост» only makes it taller", () => {
+    const growth = dimsFor("peek", { ...ctx, peekDeck: "growth" });
+    const card = dimsFor("peek", { ...ctx, peekDeck: "growth", growthCard: true });
+    expect(card.w).toBe(growth.w);
+    expect(card.h).toBeGreaterThan(growth.h);
+    // The card flag means nothing on other decks.
+    expect(dimsFor("peek", { ...ctx, peekDeck: "nook", growthCard: true })).toEqual(dimsFor("peek", ctx));
+    // A block about to start or an XP chip widens the compact island like any activity.
+    expect(dimsFor("compact", { ...ctx, hasActivity: true }).w).toBe(228);
   });
 
   it("uses menu-bar height only for notchless macOS compact mode", () => {

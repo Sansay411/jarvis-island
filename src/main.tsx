@@ -41,14 +41,15 @@ if (label === "reset") {
   );
 } else {
   document.body.classList.add("island-window");
-  void Promise.all([import("./island/Island"), import("./store/system"), import("./store/agent"), import("./store/prefs"), import("./store/jobs"), import("./store/voice"), import("./store/files"), import("./store/reminders"), import("./store/stopwatch"), import("./store/emote"), import("./store/clips"), import("./store/mentor")]).then(
-    async ([{ Island }, system, agent, prefs, jobs, voice, files, reminders, stopwatch, emotes, clips, mentor]) => {
+  void Promise.all([import("./island/Island"), import("./store/system"), import("./store/agent"), import("./store/prefs"), import("./store/jobs"), import("./store/voice"), import("./store/files"), import("./store/reminders"), import("./store/stopwatch"), import("./store/emote"), import("./store/clips"), import("./store/mentor"), import("./store/agenda")]).then(
+    async ([{ Island }, system, agent, prefs, jobs, voice, files, reminders, stopwatch, emotes, clips, mentor, agenda]) => {
       root.render(
         <StrictMode>
           <Island />
         </StrictMode>,
       );
-      await Promise.allSettled([prefs.startPrefsFeed(),jobs.startJobsFeed(),voice.startVoiceFeed(),system.startSystemFeeds(),agent.startAgentFeed(),files.startFilesFeed(),reminders.startRemindersFeed(),stopwatch.startStopwatchFeed(),emotes.startEmoteFeed(),clips.startClipsFeed(),mentor.startMentorFeed()]);
+      mentor.watchMoments(() => emotes.emote("star"));
+      await Promise.allSettled([prefs.startPrefsFeed(),jobs.startJobsFeed(),voice.startVoiceFeed(),system.startSystemFeeds(),agent.startAgentFeed(),files.startFilesFeed(),reminders.startRemindersFeed(),stopwatch.startStopwatchFeed(),emotes.startEmoteFeed(),clips.startClipsFeed(),mentor.startMentorFeed(),agenda.startAgendaFeed()]);
     },
   );
 }

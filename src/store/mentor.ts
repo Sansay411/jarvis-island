@@ -64,6 +64,28 @@ export interface Intervention {
   closed: boolean;
   ifThen: string;
   at: string;
+  /** Open straight on one activity (the island's quick actions). */
+  screen?: "feed" | "games" | "workout" | "breath" | "step";
+}
+
+export type ResetScreen = NonNullable<Intervention["screen"]>;
+
+/** A step worth a moment on the island: a new level or a counted day. */
+export type Moment =
+  | { kind: "level"; level: number; name: string; xp: number; at: number }
+  | { kind: "day"; streak: number; best: boolean; xp: number; at: number };
+
+/** What changed between two states: a moment worth a card, and the XP
+ *  gained (a short «+15 XP» in the compact island). */
+export function momentOf(prev: MentorState | null, next: MentorState, at = Date.now()): { moment: Moment | null; gain: number } {
+  if (!prev) return { moment: null, gain: 0 };
+  const gain = Math.max(0, next.xpTotal - prev.xpTotal);
+  if (next.level > prev.level) return { moment: { kind: "level", level: next.level, name: next.levelName, xp: gain, at }, gain };
+  const sameDay = prev.week.at(-1)?.date === next.week.at(-1)?.date;
+  if (sameDay && prev.todayXp < prev.goalXp && next.todayXp >= next.goalXp) {
+    return { moment: { kind: "day", streak: next.streak, best: next.streak > prev.bestStreak, xp: gain, at }, gain };
+  }
+  return { moment: null, gain };
 }
 
 export interface FeedCard {
@@ -128,13 +150,32 @@ interface MentorStore {
   state: MentorState | null;
   pending: Intervention | null;
   watching: Watching | null;
+  /** A new level or a counted day, shown on the island for a few seconds. */
+  moment: Moment | null;
+  /** XP just earned, a short chip in the compact island. */
+  gain: { xp: number; at: number } | null;
   refresh: () => Promise<void>;
+  showMoment: (moment: Moment) => void;
+  dismissMoment: () => void;
+  showGain: (xp: number) => void;
 }
 
-export const useMentor = create<MentorStore>((set) => ({
+export const useMentor = create<MentorStore>((set, get) => ({
   state: isTauri() ? null : SAMPLE_STATE,
   pending: null,
   watching: null,
+  moment: null,
+  gain: null,
+  showMoment: (moment) => {
+    set({ moment });
+    window.setTimeout(() => get().moment === moment && set({ moment: null }), 5200);
+  },
+  dismissMoment: () => set({ moment: null }),
+  showGain: (xp) => {
+    const gain = { xp, at: Date.now() };
+    set({ gain });
+    window.setTimeout(() => get().gain === gain && set({ gain: null }), 3600);
+  },
   refresh: async () => {
     if (!isTauri()) return;
     try {
@@ -154,9 +195,22 @@ export async function startMentorFeed() {
   await listen<Watching | null>("mentor:watching", (e) => useMentor.setState({ watching: e.payload }));
 }
 
+/** The island celebrates growth: every state that brings XP is compared
+ *  with the one before. Only the island window calls this. */
+export function watchMoments(onMoment?: (m: Moment) => void) {
+  return useMentor.subscribe((s, prev) => {
+    if (!s.state || s.state === prev.state) return;
+    const { moment, gain } = momentOf(prev.state, s.state);
+    if (moment) {
+      s.showMoment(moment);
+      onMoment?.(moment);
+    } else if (gain > 0) s.showGain(gain);
+  });
+}
+
 export const mentorIpc = {
   pending: () => (isTauri() ? invoke<Intervention | null>("mentor_pending") : Promise.resolve(null)),
-  openReset: () => (isTauri() ? invoke<void>("mentor_open_reset") : Promise.resolve()),
+  openReset: (screen?: ResetScreen) => (isTauri() ? invoke<void>("mentor_open_reset", { screen: screen ?? null }) : Promise.resolve()),
   feed: (count = 7) => (isTauri() ? invoke<FeedCard[]>("mentor_feed", { count }) : Promise.resolve(SAMPLE_FEED)),
   answer: (id: string, correct: boolean, quick: boolean, xp: number) =>
     isTauri() ? invoke<void>("mentor_answer", { id, correct, quick, xp }) : Promise.resolve(),

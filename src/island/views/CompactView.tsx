@@ -12,6 +12,7 @@ import { useTts } from "../../store/tts";
 import { useAgent } from "../../store/agent";
 import { Icon } from "../../ui/Icon";
 import { isCharging, levelOf, levelTone, primaryAudio, useBluetooth } from "../../store/bluetooth";
+import { useAgenda, type Upcoming } from "../../store/agenda";
 import { kindIcon } from "./SoundDeck";
 
 /** Headphones running low, at rest: the one thing worth a glance. */
@@ -127,7 +128,27 @@ function VideoLeft({ w }: { w: Watching }) {
   return (
     <span className={`compact-video${left < 60 ? " is-low" : ""}`} title={w.strict ?? `${w.label}: осталось ${mm} мин`}>
       <i style={{ ["--p" as string]: `${Math.min(100, (w.usedSec / Math.max(1, w.limitSec)) * 100)}%` }} />
+      <Icon name="reels" size={11} />
       <span>{w.strict ? "закрыто" : `${mm}:${ss}`}</span>
+    </span>
+  );
+}
+
+/** The next calendar block inside the reminder window: «12 мин». */
+function SoonRight({ u }: { u: Upcoming }) {
+  return (
+    <span className="compact-soon" title={`${u.event.title} · ${u.event.start.slice(11, 16)}`}>
+      <Icon name="calendar" size={11} />
+      {u.minutes} мин
+    </span>
+  );
+}
+
+/** XP just earned: «+15 XP» for a few seconds. */
+function GainRight({ xp }: { xp: number }) {
+  return (
+    <span className="compact-xp" title="Опыт за полезное">
+      <Icon name="spark" size={11} />+{xp} XP
     </span>
   );
 }
@@ -146,6 +167,8 @@ export function CompactView() {
   const ttsSpeaking = useTts((s) => s.speaking);
   const stopTts = useTts((s) => s.stop);
   const watching = useMentor((s) => s.watching);
+  const gain = useMentor((s) => s.gain);
+  const soon = useAgenda((s) => s.soon);
 
   if (lip) return <div className="view view-compact" title={voiceError ?? undefined} />;
 
@@ -203,8 +226,12 @@ export function CompactView() {
           <TimerLeft t={timer} />
         ) : stopwatch ? (
           <StopwatchTime />
+        ) : gain ? (
+          <GainRight xp={gain.xp} />
         ) : running.length > 0 || agentActive ? (
           <span className="job-ring" aria-label="Джарвис работает" />
+        ) : soon ? (
+          <SoonRight u={soon} />
         ) : (
           <LowHeadset />
         )}

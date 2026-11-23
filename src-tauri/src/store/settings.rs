@@ -295,6 +295,8 @@ pub struct PlannerSettings {
     pub google_client_id: String,
     /// "primary" or a calendar id.
     pub google_calendar_id: String,
+    /// Minutes before an event the island shows it (with «Начать фокус»); 0 = off.
+    pub island_remind: u32,
 }
 
 impl Default for PlannerSettings {
@@ -305,6 +307,7 @@ impl Default for PlannerSettings {
             day_start_hour: 8,
             google_client_id: String::new(),
             google_calendar_id: "primary".into(),
+            island_remind: 10,
         }
     }
 }

@@ -130,8 +130,17 @@ async fn calendar_manage(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
 async fn growth(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
     let m = ctx.app.state::<Arc<Mentor>>().inner().clone();
     if str_arg(&args, "action") == "reset" {
-        m.voluntary()?;
-        return Ok(ToolOutput::ok("Открыта «Перезагрузка»: лента, игра, разминка, шаг по проекту", json!({ "verified": true })));
+        let screen = Some(str_arg(&args, "screen")).filter(|s| !s.is_empty()).map(str::to_string);
+        let summary = match screen.as_deref() {
+            Some("feed") => "Открыта лента знаний",
+            Some("games") => "Открыта игра на минуту",
+            Some("workout") => "Открыта разминка на три минуты",
+            Some("breath") => "Открыта минута дыхания",
+            Some("step") => "Открыт шаг по проекту: выбрать дело и запустить фокус",
+            _ => "Открыта «Перезагрузка»: лента, игра, разминка, шаг по проекту",
+        };
+        m.voluntary(screen)?;
+        return Ok(ToolOutput::ok(summary, json!({ "verified": true })));
     }
     let s = m.state()?;
     let summary = format!(
@@ -208,8 +217,15 @@ pub fn tools() -> Vec<Tool> {
         Tool {
             name: "growth",
             description: "The mentor: `status` (level, XP, streak, today's short-video minutes used and left, strict mode) or `reset` \
-                (open «Перезагрузка»: card feed, game, workout, project step) when the user wants a healthy break or is stuck.",
-            schema: object(json!({ "action": { "type": "string", "enum": ["status", "reset"] } }), &["action"]),
+                (open «Перезагрузка»: card feed, game, workout, project step) when the user wants a healthy break or is stuck. \
+                `screen` opens one activity straight away: «давай разминку» → workout, «подыши со мной» → breath.",
+            schema: object(
+                json!({
+                    "action": { "type": "string", "enum": ["status", "reset"] },
+                    "screen": { "type": "string", "enum": ["feed", "games", "workout", "breath", "step"] }
+                }),
+                &["action"],
+            ),
             risk: low,
             title: growth_title,
             timeout: Duration::from_secs(10),

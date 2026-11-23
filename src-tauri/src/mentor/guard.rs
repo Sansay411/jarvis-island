@@ -236,6 +236,7 @@ async fn tick(app: &AppHandle, mentor: &Arc<Mentor>, t: &mut Tick) -> AppResult<
         closed,
         if_then: settings.if_then.clone(),
         at: Utc::now().to_rfc3339(),
+        screen: None,
     };
     if let Err(e) = mentor.open_reset(iv) {
         tracing::warn!("reset window: {e}");

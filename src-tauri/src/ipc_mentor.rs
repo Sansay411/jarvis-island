@@ -19,10 +19,11 @@ pub fn mentor_pending(mentor: State<'_, Arc<Mentor>>) -> Option<Intervention> {
     mentor.pending()
 }
 
-/// «Перезагрузка» on request (island, planner, Telegram).
+/// «Перезагрузка» on request (island, planner, Telegram), optionally
+/// straight on one activity.
 #[tauri::command]
-pub async fn mentor_open_reset(mentor: State<'_, Arc<Mentor>>) -> AppResult<()> {
-    mentor.voluntary()
+pub async fn mentor_open_reset(mentor: State<'_, Arc<Mentor>>, screen: Option<String>) -> AppResult<()> {
+    mentor.voluntary(screen)
 }
 
 #[tauri::command]

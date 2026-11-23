@@ -4560,3 +4560,685 @@
 .focus-task-list {
   mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent);
 }
+
+/* ---------- growth and the calendar on the island (2026-11-23, second pass) ----------
+   «Рост» becomes a place to act, not only to look: a ring for the day, the
+   streak and the level, the video minutes and the week, quick actions and a
+   card answered right here. The overview lists the planner's blocks; a
+   block about to start gets its own card; XP and counted days show up for
+   a moment. Monochrome stays: bone for the user's actions, amber for what
+   is live and for growth, outcome colours only for right and wrong. */
+
+/* Compact: the video minutes carry their glyph; a block about to start; XP just earned. */
+.compact-video svg {
+  flex: none;
+  margin-right: -2px;
+}
+.compact-soon,
+.compact-xp {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.compact-soon {
+  color: var(--text-1);
+}
+.compact-soon svg {
+  color: var(--text-2);
+}
+.compact-xp {
+  color: var(--amber-hi);
+  animation: xp-pop 420ms var(--ease-out) both;
+}
+@keyframes xp-pop {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.9);
+  }
+}
+
+/* A block about to start. */
+.view-event .hello-main {
+  gap: 14px;
+}
+.start-ring {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--amber);
+}
+.start-ring-svg {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-90deg);
+  fill: none;
+}
+.start-ring-track {
+  stroke: var(--graphite-3);
+}
+.start-ring-fill {
+  stroke: var(--bone);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 900ms var(--ease-out);
+}
+.start-ring.is-on .start-ring-fill {
+  stroke: var(--amber);
+}
+.start-ring-num {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  color: var(--text-1);
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.start-ring-num small {
+  margin-top: 2px;
+  font-size: 8.5px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.event-text {
+  text-align: left;
+  cursor: pointer;
+}
+.event-text:hover .hello-title {
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.25);
+  text-underline-offset: 3px;
+}
+.event-when {
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.event-when.is-on {
+  color: var(--amber);
+}
+.view-event .hello-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A new level or a counted day. */
+.moment-art {
+  flex: none;
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  animation: moment-in 620ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes moment-in {
+  from {
+    opacity: 0;
+    transform: scale(0.55) rotate(-8deg);
+  }
+}
+.moment-xp {
+  flex: none;
+  height: 26px;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--r-pill);
+  background: rgba(255, 178, 63, 0.14);
+  color: var(--amber-hi);
+  font-size: 12.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Overview: the planner's blocks among tasks. */
+.agenda-row.is-event {
+  position: relative;
+}
+.agenda-mark {
+  flex: none;
+  position: relative;
+  width: 15px;
+  height: 15px;
+}
+.agenda-mark::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 1px;
+  bottom: 1px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--text-3);
+}
+.agenda-row.is-allday .agenda-mark::before {
+  left: 2px;
+  width: 11px;
+  top: 4px;
+  bottom: 4px;
+  border-radius: 3px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-3);
+}
+.agenda-row.is-now {
+  background: linear-gradient(90deg, rgba(255, 178, 63, 0.1) var(--p, 0%), rgba(255, 255, 255, 0.025) var(--p, 0%));
+}
+.agenda-row.is-now .agenda-mark::before {
+  background: var(--amber);
+}
+.agenda-row.is-now .agenda-title {
+  font-weight: 600;
+}
+.agenda-row.is-now .agenda-time {
+  color: var(--amber-hi);
+}
+.agenda-row.is-next .agenda-time {
+  color: var(--text-2);
+}
+.agenda-row.is-past .agenda-title {
+  color: var(--text-3);
+}
+.agenda-row.is-past .agenda-mark::before {
+  background: var(--text-4);
+}
+button.agenda-title {
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+button.agenda-title:hover {
+  color: var(--bone-hi);
+}
+.agenda-go {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-right: -1px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--bone);
+  color: var(--on-bone);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.agenda-go:hover {
+  transform: scale(1.1);
+}
+.agenda-row.is-next .agenda-go {
+  opacity: 0;
+}
+.agenda-row.is-next:hover .agenda-go,
+.agenda-go:focus-visible {
+  opacity: 1;
+}
+
+/* «Рост». */
+.growth-deck {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 6px 22px 14px;
+}
+.growth-top {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1px 1fr;
+  gap: 20px;
+}
+.growth-col.growth-me {
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
+}
+.growth-ring {
+  position: relative;
+  flex: none;
+  width: 84px;
+  height: 84px;
+  display: grid;
+  place-items: center;
+}
+.growth-ring-svg {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-90deg);
+  fill: none;
+}
+.growth-ring-track {
+  stroke: rgba(255, 255, 255, 0.07);
+}
+.growth-ring-fill {
+  stroke: var(--amber);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 800ms var(--ease-out);
+}
+.growth-ring-num {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1;
+}
+.growth-ring-num b {
+  font-size: 25px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+}
+.growth-ring-num small {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--text-3);
+}
+.growth-ring.is-done .growth-ring-num small {
+  color: var(--amber-hi);
+}
+.growth-facts {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.growth-streak {
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-3);
+}
+.growth-streak.is-lit {
+  color: var(--amber);
+}
+.growth-streak b {
+  font-size: 27px;
+  line-height: 1;
+  color: var(--text-1);
+}
+.growth-streak span {
+  font-size: 12.5px;
+  line-height: 1.25;
+}
+.growth-streak small {
+  font-size: 11px;
+}
+.growth-level {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.growth-level-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 560;
+  color: var(--text-1);
+  white-space: nowrap;
+}
+.growth-level-name svg {
+  flex: none;
+  color: var(--text-2);
+}
+.growth-level .growth-bar i {
+  background: var(--bone);
+}
+.growth-level-next {
+  font-size: 11px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.growth-col.growth-video {
+  gap: 7px;
+}
+.growth-video-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.growth-video-head .deck-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.growth-video-head b {
+  font-size: 17px;
+  font-weight: 620;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+.growth-video-head b.is-low {
+  color: var(--danger);
+}
+.growth-budget {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.growth-budget i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--amber);
+  transition: width 600ms var(--ease-out);
+}
+.growth-budget.is-low i {
+  background: var(--danger);
+}
+.growth-budget.is-closed i {
+  background: var(--text-4);
+}
+.growth-budget.is-off i {
+  width: 0 !important;
+}
+.growth-sub {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+button.growth-week {
+  margin-top: 2px;
+  min-height: 42px;
+  max-height: 62px;
+  padding: 0;
+  gap: 6px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+button.growth-week .growth-day i {
+  width: 14px;
+  border-radius: 4px 4px 2px 2px;
+}
+button.growth-week:hover .growth-day i {
+  filter: brightness(1.15);
+}
+.growth-day.is-today em {
+  color: var(--text-1);
+  font-weight: 650;
+}
+.growth-day.is-today i {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+}
+.growth-actions {
+  flex: none;
+  align-items: center;
+}
+.growth-quick {
+  height: 28px;
+  padding: 0 11px 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--r-pill);
+  background: var(--graphite-1);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 560;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.growth-quick:hover {
+  background: var(--graphite-3);
+  color: var(--text-1);
+}
+.growth-actions-gap {
+  flex: 1;
+}
+.deck-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+.growth-actions .deck-btn,
+.growth-card-foot .deck-btn {
+  height: 28px;
+  padding: 0 13px;
+}
+
+/* A card answered on the island. */
+.growth-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 22px 14px;
+}
+.growth-card.is-loading,
+.growth-card.is-empty {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.growth-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 22px;
+}
+.growth-card-track {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.growth-card-track svg {
+  color: var(--text-2);
+}
+.growth-card-track em {
+  font-style: normal;
+  padding-left: 7px;
+  margin-left: 1px;
+  border-left: 1px solid var(--line-strong);
+  color: var(--text-2);
+}
+.growth-card-track em.is-rare {
+  color: var(--amber);
+}
+.growth-card-xp {
+  color: var(--amber-hi);
+  font-size: 11.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  animation: xp-pop 420ms var(--ease-out) both;
+}
+.growth-card-close {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--text-3);
+}
+.growth-card-close:hover {
+  background: var(--graphite-2);
+  color: var(--text-1);
+}
+.growth-card-q {
+  font-size: 14.5px;
+  font-weight: 560;
+  line-height: 1.35;
+  letter-spacing: -0.005em;
+  color: var(--text-1);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.growth-card-q.is-word {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.growth-card-q.is-word b {
+  font-size: 21px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.growth-card-q.is-word span {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.growth-card-q.is-word small {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.growth-card-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.growth-option {
+  height: 32px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 11px 0 8px;
+  border-radius: var(--r-sm);
+  background: var(--graphite-1);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  color: var(--text-1);
+  font-size: 12.5px;
+  text-align: left;
+  transition: background var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.growth-option:hover:not(:disabled) {
+  background: var(--graphite-3);
+}
+.growth-option:disabled {
+  cursor: default;
+}
+.growth-option-key {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  background: var(--graphite-3);
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 650;
+}
+.growth-option-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.growth-option.is-answer {
+  background: rgba(124, 217, 146, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(124, 217, 146, 0.5);
+}
+.growth-option.is-answer .growth-option-key {
+  background: var(--ok);
+  color: var(--on-bone);
+}
+.growth-option.is-miss {
+  background: rgba(255, 107, 90, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 107, 90, 0.5);
+}
+.growth-option.is-miss .growth-option-key {
+  background: var(--danger);
+  color: var(--on-bone);
+}
+.growth-card-foot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 30px;
+}
+.growth-card-hint {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.growth-card-explain {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.growth-card.is-right .growth-card-explain b {
+  color: var(--ok);
+}
+.growth-card.is-wrong .growth-card-explain b {
+  color: var(--danger);
+}
+
+/* Focus: the calendar block on now, one click from a session. */
+.focus-cal-chip {
+  margin-left: auto;
+  max-width: 250px;
+  height: 20px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: var(--r-pill);
+  background: var(--graphite-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text-2);
+  font-size: 10.5px;
+  font-weight: 560;
+  letter-spacing: 0;
+  text-transform: none;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.focus-cal-chip:hover {
+  background: var(--graphite-3);
+  color: var(--text-1);
+}
+.focus-cal-chip.is-live svg {
+  color: var(--amber);
+}
+.focus-cal-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.focus-cal-chip em {
+  flex: none;
+  font-style: normal;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact-xp,
+  .growth-card-xp,
+  .moment-art {
+    animation: none;
+  }
+}

@@ -24,6 +24,8 @@ import { useWeather, type Weather } from "./store/weather";
 import { primeShelfThumbs } from "./island/shelfThumbs";
 import { useBluetooth } from "./store/bluetooth";
 import { useMentor } from "./store/mentor";
+import { remember, upcoming, useAgenda, type CalEvent } from "./store/agenda";
+import { isoDateTime } from "./planner/dates";
 import type { BtDevice } from "./lib/types";
 
 const SAMPLE_WEATHER: Weather = {
@@ -84,7 +86,16 @@ type PresetId =
   | "hello"
   | "pinned"
   | "growth"
-  | "watching";
+  | "watching"
+  | "nook-events"
+  | "event-soon"
+  | "event-now"
+  | "compact-soon"
+  | "gain"
+  | "moment-day"
+  | "moment-level"
+  | "growth-card"
+  | "focus-cal";
 
 function makeCoverArtDataUrl(hue: "ocean" | "crimson" | "gold"): string {
   const c = document.createElement("canvas");
@@ -118,6 +129,42 @@ function makeCoverArtDataUrl(hue: "ocean" | "crimson" | "gold"): string {
   ctx.ellipse(58, 122, 30, 34, 0, Math.PI, 0);
   ctx.fill();
   return c.toDataURL("image/png");
+}
+
+/** Calendar blocks around «now» so the overview shows past, now and next. */
+function buildSampleEvents(variant: "day" | "soon" | "now"): CalEvent[] {
+  const base = new Date();
+  base.setSeconds(0, 0);
+  const at = (min: number) => isoDateTime(new Date(base.getTime() + min * 60_000));
+  const today = localDateIso(base);
+  const tomorrow = localDateIso(new Date(base.getTime() + 86_400_000));
+  let n = 1;
+  const ev = (start: string, end: string, title: string, category: string, extra: Partial<CalEvent> = {}): CalEvent => ({
+    id: `qa-ev-${n++}`,
+    title,
+    notes: "",
+    location: "",
+    start,
+    end,
+    allDay: start.length === 10,
+    color: "",
+    category,
+    done: false,
+    seriesId: null,
+    googleId: null,
+    recurring: false,
+    updatedAt: base.toISOString(),
+    ...extra,
+  });
+  if (variant === "soon") return [ev(at(6), at(66), "Встреча с заказчиком", "work", { location: "Zoom" })];
+  if (variant === "now") return [ev(at(-1), at(89), "Глубокая работа: jarvis-island", "project")];
+  return [
+    ev(today, tomorrow, "Неделя без коротких видео", "study"),
+    ev(at(-190), at(-170), "Стендап", "work", { done: true }),
+    ev(at(-35), at(25), "Глубокая работа: jarvis-island", "project"),
+    ev(at(40), at(85), "Созвон по архитектуре TTS", "work", { location: "Zoom" }),
+    ev(at(180), at(240), "Зал: ноги", "sport"),
+  ];
 }
 
 function buildSampleTasks(): TaskItem[] {
@@ -380,6 +427,15 @@ const PRESETS: Array<{ id: PresetId; label: string }> = [
   { id: "pinned", label: "15. Закреплённый остров" },
   { id: "growth", label: "16. Рост (наставник)" },
   { id: "watching", label: "17. Компакт: минуты TikTok" },
+  { id: "nook-events", label: "18. Обзор: события календаря" },
+  { id: "event-soon", label: "19. Событие через 6 мин" },
+  { id: "event-now", label: "19b. Событие начинается" },
+  { id: "compact-soon", label: "19c. Компакт: событие скоро" },
+  { id: "gain", label: "20. Компакт: +XP" },
+  { id: "moment-day", label: "21. День засчитан" },
+  { id: "moment-level", label: "21b. Новый уровень" },
+  { id: "growth-card", label: "22. Рост: карточка на острове" },
+  { id: "focus-cal", label: "23. Фокус: блок из календаря" },
 ];
 
 const SOURCES: Array<{ id: string; label: string; app: string; track: string; artist: string; hue: "ocean" | "crimson" | "gold" }> = [
@@ -497,6 +553,9 @@ function QaHarness() {
     useBluetooth.setState({ devices: buildBtDevices(id === "sound-single" ? "single" : id === "sound-low" ? "low" : id === "sound-empty" ? "away" : "pods"), hello: null });
     useIsland.setState({ pinned: id === "pinned" });
     if (id !== "watching") useMentor.setState({ watching: null });
+    useMentor.setState({ moment: null, gain: null });
+    useIsland.setState({ growthCard: false });
+    useAgenda.setState({ events: id === "focus-cal" || id === "nook-events" ? buildSampleEvents("day") : [], card: null, soon: null });
 
     // Seed baseline Hub data for realistic inspection.
     useHub.setState({
@@ -578,6 +637,54 @@ function QaHarness() {
         useIsland.setState({ hovered: true, peekDeck: "growth", dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: true });
         break;
       }
+
+      case "nook-events":
+        seedMedia(srcIndex, true);
+        useHub.setState({ focus: EMPTY_FOCUS, tasks: buildSampleTasks().slice(0, 2) });
+        useIsland.setState({ hovered: true, peekDeck: "nook", dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: true });
+        break;
+
+      case "event-soon":
+      case "event-now":
+      case "compact-soon": {
+        useSystem.setState({ media: null, artwork: null });
+        useHub.setState({ focus: EMPTY_FOCUS });
+        const events = buildSampleEvents(id === "event-now" ? "now" : "soon");
+        const u = upcoming(events, new Date(), 10);
+        if (u) remember(u);
+        useAgenda.setState({ events, card: id === "compact-soon" ? null : u, soon: u && !u.started ? u : null });
+        useIsland.setState({ hovered: false, dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: false });
+        break;
+      }
+
+      case "gain":
+        useSystem.setState({ media: null, artwork: null });
+        useHub.setState({ focus: EMPTY_FOCUS });
+        useMentor.setState({ gain: { xp: 15, at: Date.now() } });
+        useIsland.setState({ hovered: false, dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: false });
+        break;
+
+      case "moment-day":
+      case "moment-level":
+        useSystem.setState({ media: null, artwork: null });
+        useHub.setState({ focus: EMPTY_FOCUS });
+        useMentor.setState({
+          moment: id === "moment-day" ? { kind: "day", streak: 6, best: false, xp: 15, at: Date.now() } : { kind: "level", level: 4, name: "Собранный", xp: 55, at: Date.now() },
+        });
+        useIsland.setState({ hovered: false, dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: false });
+        break;
+
+      case "growth-card":
+        useSystem.setState({ media: null, artwork: null });
+        useHub.setState({ focus: EMPTY_FOCUS });
+        useIsland.setState({ hovered: true, peekDeck: "growth", growthCard: true, dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: true });
+        break;
+
+      case "focus-cal":
+        useSystem.setState({ media: null, artwork: null });
+        useHub.setState({ focus: EMPTY_FOCUS });
+        useIsland.setState({ hovered: true, peekDeck: "focus", dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: true });
+        break;
 
       case "watching":
         useSystem.setState({ media: null, artwork: null });

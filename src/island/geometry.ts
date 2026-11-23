@@ -16,7 +16,7 @@ export function shoulderFor(h: number): number {
   return Math.min(SHOULDER, Math.max(4, h * 0.55));
 }
 
-export type IslandMode = "compact" | "peek" | "workspace" | "voice" | "drop" | "files" | "notice" | "clips" | "weather" | "hello";
+export type IslandMode = "compact" | "peek" | "workspace" | "voice" | "drop" | "files" | "notice" | "clips" | "weather" | "hello" | "event" | "moment";
 export type PeekDeck = "nook" | "focus" | "growth" | "tray" | "activity" | "sound";
 
 export interface Dims {
@@ -55,6 +55,8 @@ export interface DimsContext {
   ttsSpeaking?: boolean;
   missionActive?: boolean;
   peekDeck?: PeekDeck;
+  /** «Рост» shows a card to answer right on the island. */
+  growthCard?: boolean;
   focusBanner?: boolean;
   /** Running background jobs shown as rows in the peek view (max 2). */
   jobRows: number;
@@ -106,7 +108,7 @@ function baseDimsFor(mode: IslandMode, ctx: DimsContext): Dims {
         case "focus":
           return { w: W, h: 318 + extraH };
         case "growth":
-          return { w: W, h: 222 + extraH };
+          return { w: W, h: (ctx.growthCard ? 254 : 226) + extraH };
         case "tray":
           return { w: W, h: 200 + extraH };
         case "activity":
@@ -126,6 +128,10 @@ function baseDimsFor(mode: IslandMode, ctx: DimsContext): Dims {
       return { w: 428, h: 128 };
     case "hello":
       return { w: 456, h: 104 };
+    case "event":
+      return { w: 548, h: 108 };
+    case "moment":
+      return { w: 432, h: 104 };
     case "weather":
       return { w: 580, h: 196 };
     case "files":

@@ -11,11 +11,28 @@ npx vite build                        # production frontend bundle (dist/ is git
 ```
 
 Visual QA without the native app: `npx vite --port 1420`, then open
-`/qa/notch-showcase.html` (every island state) and
+`/qa/notch-showcase.html` (every island state; `?preset=growth`,
+`growth-card`, `nook-events`, `event-soon`, `event-now`, `compact-soon`,
+`gain`, `moment-day`, `moment-level`, `focus-cal` for the growth and
+calendar states) and
 `/qa/workspace-showcase.html?scene=workspace-active|workspace-empty|settings-voice|settings-behaviour`,
 `/qa/planner.html?view=day|4day|week|month&plan=1` (the Google-style planner
-with a sample week) and `/qa/reset.html?reason=budget|strict|voluntary&screen=feed|games|workout|breath|step|done&plan=1`
-(«Перезагрузка»).
+with a sample week) and `/qa/reset.html?reason=budget|strict|voluntary&screen=feed|games|workout|breath|step|done|started&plan=1`
+(«Перезагрузка»; `&reward=level|record` for the other «Готово» screens).
+
+## Island growth and calendar
+
+* `store/agenda.ts` mirrors the planner's events for the island (a week back
+  to four weeks ahead, reloaded on `planner:changed`) and decides the
+  reminder card and the compact count-down (`planner.islandRemind` minutes,
+  shown once per block and phase, remembered in `localStorage`). Its pure
+  helpers (`dayRows`, `upcoming`, `focusBlock`) have tests.
+* Growth moments come from comparing two `mentor:state` payloads
+  (`momentOf`); the backend re-emits the state after card answers, finished
+  focus sessions and done tasks (`hub.rs` → `growth_changed`).
+* The 3D icons in `src/mentor/art/` are 256 px WebP cut from Codex renders
+  (512 px masters, same clay style as `installer/ui/hero.png`); keep new ones
+  in that style and size.
 
 ## Gotchas
 

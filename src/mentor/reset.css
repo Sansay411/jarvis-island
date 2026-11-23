@@ -201,7 +201,10 @@ body.reset-window {
 }
 .rs-mood {
   height: 32px;
-  padding: 0 14px;
+  padding: 0 14px 0 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   border-radius: 999px;
   background: #fff;
   box-shadow: inset 0 0 0 1px var(--line);
@@ -213,10 +216,17 @@ body.reset-window {
 .rs-mood:hover {
   box-shadow: inset 0 0 0 1px rgba(22, 22, 26, 0.2);
 }
+.rs-mood svg {
+  color: var(--ink-3);
+  transition: color 140ms ease;
+}
 .rs-mood.is-on {
   background: var(--ink);
   color: #fff;
   box-shadow: none;
+}
+.rs-mood.is-on svg {
+  color: var(--amber);
 }
 
 .rs-tiles {
@@ -249,7 +259,7 @@ body.reset-window {
 .rs-tile-badge {
   position: absolute;
   top: -10px;
-  right: 12px;
+  left: 12px;
   padding: 2px 9px;
   border-radius: 999px;
   background: var(--amber);
@@ -257,56 +267,31 @@ body.reset-window {
   font-size: 11.5px;
   font-weight: 640;
 }
-.rs-tile-mark {
-  width: 30px;
-  height: 30px;
-  margin-bottom: 4px;
-  border-radius: 11px;
-  display: grid;
-  place-items: center;
-  background: #0d0e12;
-  color: var(--amber);
-  font-size: 13px;
-  font-weight: 700;
-  position: relative;
-}
-.rs-tile-mark::after {
-  content: "";
+/* The 3D icon leans out of the tile's corner. */
+.rs-tile-art {
   position: absolute;
-  inset: 0;
-  margin: auto;
-  background: var(--amber);
+  top: -17px;
+  right: -4px;
+  width: 60px;
+  height: 60px;
+  object-fit: contain;
+  transform: rotate(7deg);
+  filter: drop-shadow(0 8px 12px rgba(226, 134, 28, 0.18));
+  transition: transform 280ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  pointer-events: none;
 }
-.rs-tile-mark.is-feed::after {
-  width: 14px;
-  height: 18px;
-  border-radius: 3px;
-  box-shadow: 4px -4px 0 -1px rgba(255, 178, 63, 0.45);
+.rs-tile > b {
+  padding-right: 44px;
 }
-.rs-tile-mark.is-games::after {
-  width: 18px;
-  height: 18px;
-  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+.rs-intro .rs-hero,
+.rs-intro .rs-hero img {
+  height: 64px;
 }
-.rs-tile-mark.is-workout::after {
-  width: 20px;
-  height: 6px;
-  border-radius: 3px;
-  box-shadow: -6px 0 0 -1px var(--amber), 6px 0 0 -1px var(--amber);
-}
-.rs-tile-mark.is-step::after {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  box-shadow: inset 0 0 0 4px var(--amber);
-  background: transparent;
-}
-.rs-tile-mark.is-sprint::after,
-.rs-tile-mark.is-words::after {
-  display: none;
+.rs-tile:hover .rs-tile-art {
+  transform: translateY(-4px) rotate(0deg) scale(1.08);
 }
 .rs-tile b {
-  font-size: 17px;
+  font-size: 16.5px;
   font-weight: 640;
   letter-spacing: -0.015em;
 }
@@ -328,9 +313,47 @@ body.reset-window {
   color: var(--amber-ink);
 }
 .rs-links {
-  margin-top: 10px;
+  margin-top: 12px;
   display: flex;
-  gap: 22px;
+  gap: 10px;
+}
+.rs-pill {
+  height: 38px;
+  padding: 0 15px 0 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(22, 22, 26, 0.06), 0 4px 14px rgba(22, 22, 26, 0.05);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease;
+}
+.rs-pill:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(22, 22, 26, 0.06), 0 10px 22px rgba(22, 22, 26, 0.08);
+}
+.rs-pill img {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+}
+.rs-pill span {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--amber-ink);
+}
+.rs-pill.is-strong {
+  box-shadow: 0 0 0 2px var(--amber), 0 10px 22px rgba(226, 134, 28, 0.16);
+}
+.rs-pill.is-quiet {
+  padding-left: 13px;
+  color: var(--ink-2);
+}
+.rs-pill.is-quiet svg {
+  color: var(--ink-3);
 }
 .rs-link {
   font-size: 14px;
@@ -339,11 +362,6 @@ body.reset-window {
 }
 .rs-link:hover {
   text-decoration: underline;
-}
-.rs-link.is-strong {
-  padding: 4px 12px;
-  border-radius: 999px;
-  background: rgba(255, 178, 63, 0.16);
 }
 
 /* feed */
@@ -389,7 +407,10 @@ body.reset-window {
   gap: 10px;
 }
 .rs-combo {
-  padding: 2px 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px 2px 7px;
   border-radius: 999px;
   background: var(--ink);
   color: var(--amber);
@@ -398,8 +419,14 @@ body.reset-window {
 }
 .rs-xp {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 15px;
   font-weight: 640;
+}
+.rs-xp svg {
+  color: var(--amber-ink);
 }
 .rs-gain {
   position: absolute;
@@ -450,7 +477,10 @@ body.reset-window {
   margin-bottom: 12px;
 }
 .rs-tag {
-  padding: 2px 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px 2px 7px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 640;
@@ -885,10 +915,20 @@ body.reset-window {
 }
 .rs-step-kind {
   flex: none;
-  width: 86px;
+  width: 108px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   font-size: 12px;
   font-weight: 640;
   color: var(--ink-3);
+}
+.rs-step-kind svg {
+  flex: none;
+  color: var(--ink-2);
+}
+.rs-step-item.is-on .rs-step-kind svg {
+  color: var(--amber-ink);
 }
 .rs-step-text {
   display: flex;
@@ -942,6 +982,9 @@ body.reset-window {
   gap: 10px;
 }
 .rs-reward {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   padding: 8px 16px;
   border-radius: 999px;
   background: #fff;
@@ -960,6 +1003,21 @@ body.reset-window {
   background: var(--amber);
   color: var(--on-amber);
   box-shadow: 0 6px 18px rgba(226, 134, 28, 0.28);
+}
+.rs-reward svg {
+  color: var(--amber-ink);
+}
+.rs-reward.is-xp svg {
+  color: var(--on-amber);
+}
+.rs-reward-art {
+  width: 24px;
+  height: 24px;
+  margin: -4px 0 -4px -6px;
+  object-fit: contain;
+}
+.rs-hero.is-art img {
+  filter: drop-shadow(0 16px 26px rgba(226, 134, 28, 0.22));
 }
 @keyframes rs-pop {
   from {
@@ -1007,8 +1065,25 @@ body.reset-window {
   border-top: 1px solid var(--line);
 }
 .reset .version {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  overflow: hidden;
+  white-space: nowrap;
   color: var(--ink-3);
   font-size: 12.5px;
+}
+.reset .version > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.reset .version svg {
+  color: var(--ink-3);
+}
+.reset .version .is-lit svg {
+  color: var(--amber-ink);
 }
 .reset .foot-actions {
   display: flex;

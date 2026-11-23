@@ -6,10 +6,19 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { isTauri } from "../lib/ipc";
-import { daysRu, mentorIpc, minutesRu, startMentorFeed, useMentor } from "../store/mentor";
+import { daysRu, mentorIpc, minutesRu, startMentorFeed, useMentor, type ResetScreen } from "../store/mentor";
 import { usePlanner } from "../store/planner";
+import { Icon } from "../ui/Icon";
+import { ART } from "../mentor/art";
 
 const WD = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"];
+
+const QUICK: Array<{ screen: ResetScreen; label: string }> = [
+  { screen: "feed", label: "Лента" },
+  { screen: "workout", label: "Разминка" },
+  { screen: "breath", label: "Дыхание" },
+  { screen: "step", label: "Шаг" },
+];
 
 export function MentorPanel({ now }: { now: Date }) {
   const st = useMentor((s) => s.state);
@@ -55,7 +64,8 @@ export function MentorPanel({ now }: { now: Date }) {
 
       <div className="pl-m-card">
         <div className="pl-m-row">
-          <b>
+          <b className="pl-m-title">
+            <Icon name="rank" size={16} />
             Уровень {st.level} · {st.levelName}
           </b>
           <span>
@@ -66,13 +76,21 @@ export function MentorPanel({ now }: { now: Date }) {
           <i style={{ width: `${levelPct}%` }} />
         </div>
         <div className="pl-m-stats">
-          <div>
-            <b>{daysRu(st.streak)}</b>
-            <span>серия · рекорд {st.bestStreak}</span>
+          <div className={`pl-m-stat${st.todayXp >= st.goalXp ? " is-lit" : ""}`}>
+            <img className="pl-m-art" src={ART.streak} alt="" draggable={false} />
+            <span>
+              <b>{daysRu(st.streak)}</b>
+              <small>рекорд {st.bestStreak}</small>
+            </span>
           </div>
-          <div>
-            <b>{st.todayXp} XP</b>
-            <span>{st.todayXp >= st.goalXp ? "день засчитан" : `ещё ${st.goalXp - st.todayXp} до зачёта`}</span>
+          <div className="pl-m-stat">
+            <span className="pl-m-icon">
+              <Icon name="spark" size={17} />
+            </span>
+            <span>
+              <b>{st.todayXp} XP</b>
+              <small>{st.todayXp >= st.goalXp ? "день засчитан" : `до зачёта ${st.goalXp - st.todayXp}`}</small>
+            </span>
           </div>
         </div>
         <div className="pl-m-bar is-day">
@@ -82,7 +100,10 @@ export function MentorPanel({ now }: { now: Date }) {
 
       <div className="pl-m-card">
         <div className="pl-m-row">
-          <b>Короткие видео</b>
+          <b className="pl-m-title">
+            <Icon name="reels" size={16} />
+            Короткие видео
+          </b>
           <span>{st.guard ? (st.strict ? "закрыты" : `осталось ${minutesRu(Math.ceil(shortLeft / 60))}`) : "без контроля"}</span>
         </div>
         <div className="pl-m-bar is-video">
@@ -96,7 +117,16 @@ export function MentorPanel({ now }: { now: Date }) {
               : "Карточки, разминка и фокус добавляют минуты."}
           {st.closesToday > 0 ? ` Закрыто сегодня: ${st.closesToday}.` : ""}
         </p>
+        <div className="pl-m-quick" role="group" aria-label="Три минуты пользы">
+          {QUICK.map((q) => (
+            <button key={q.screen} type="button" className="pl-m-q" onClick={() => void mentorIpc.openReset(q.screen)}>
+              <img src={ART[q.screen]} alt="" draggable={false} />
+              <span>{q.label}</span>
+            </button>
+          ))}
+        </div>
         <button type="button" className="pl-m-btn" onClick={() => void mentorIpc.openReset()}>
+          <Icon name="restart" size={15} />
           Перезагрузка · 3 минуты
         </button>
       </div>
@@ -104,7 +134,10 @@ export function MentorPanel({ now }: { now: Date }) {
       {st.week.length > 0 && (
         <div className="pl-m-card">
           <div className="pl-m-row">
-            <b>Неделя</b>
+            <b className="pl-m-title">
+              <Icon name="calendar" size={16} />
+              Неделя
+            </b>
             <span>{st.week.filter((d) => d.growth).length} из 7 дней роста</span>
           </div>
           <div className="pl-m-week">
@@ -125,7 +158,10 @@ export function MentorPanel({ now }: { now: Date }) {
 
       <div className="pl-m-card">
         <div className="pl-m-row">
-          <b>Если потянет в ленту, то я…</b>
+          <b className="pl-m-title">
+            <Icon name="bolt" size={16} />
+            Если потянет в ленту, то я…
+          </b>
         </div>
         <input
           className="pl-field"
@@ -141,7 +177,10 @@ export function MentorPanel({ now }: { now: Date }) {
       {(evening || review) && (
         <div className="pl-m-card">
           <div className="pl-m-row">
-            <b>Итог дня</b>
+            <b className="pl-m-title">
+              <Icon name="book" size={16} />
+              Итог дня
+            </b>
             {!review && (
               <button type="button" className="pl-btn-text is-sm" onClick={() => setReview(true)}>
                 Начать
