@@ -245,6 +245,8 @@ struct Pipeline {
     ev_tx: mpsc::UnboundedSender<Ev>,
     synth_tx: mpsc::UnboundedSender<(u64, String)>,
     model_path: PathBuf,
+    /// Finished requests also go to SpeechKit through Jarvis Cloud.
+    cloud_stt: bool,
     transcribing: usize,
     turn_seq: u64,
     turn_active: bool,
@@ -794,6 +796,7 @@ impl VoiceManager {
             ev_tx: ev_tx.clone(),
             synth_tx,
             model_path,
+            cloud_stt: cfg.cloud_stt,
             transcribing: 0,
             turn_seq: 0,
             turn_active: false,
@@ -892,9 +895,12 @@ impl VoiceManager {
                             let path = pl.model_path.clone();
                             let tx = ev_tx.clone();
                             let dormant = !pl.awake;
+                            let cloud = pl.cloud_stt && !dormant;
                             let seq = pl.utterance_seq;
                             tokio::task::spawn_blocking(move || {
-                                let res = if dormant && utterance.len() > DORMANT_FULL_DECODE {
+                                let res = if cloud {
+                                    crate::cloud::transcribe_request(&utterance, || engine.transcribe(&path, &utterance))
+                                } else if dormant && utterance.len() > DORMANT_FULL_DECODE {
                                     // Only a call by name matters here: decode the
                                     // opening, and the rest only if it is one.
                                     match engine.transcribe(&path, &utterance[..DORMANT_HEAD]) {

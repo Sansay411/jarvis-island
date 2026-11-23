@@ -70,6 +70,30 @@ with a sample week) and `/qa/reset.html?reason=budget|strict|voluntary&screen=fe
 * `telegram/` long-polls inside the app; one bound chat (`/start CODE` from
   Settings). Never log Bot API URLs: the token is in them.
 
+## Jarvis Cloud (`cloud/`)
+
+* A Cloudflare Worker (`jarvis-cloud`, https://jarvis-cloud.credo-x5.workers.dev)
+  with a D1 database of daily counters. It holds `DEEPSEEK_KEY`, `YANDEX_KEY`
+  (SpeechKit, Kazakhstan installation) and `TOKEN_SECRET` as Worker secrets:
+  never put them in the repo, the app or logs. Change one with
+  `cd cloud && npx wrangler secret put NAME`; limits and prices are `vars` in
+  `cloud/wrangler.jsonc` (deploy: `npx wrangler deploy`, migrations:
+  `npx wrangler d1 migrations apply jarvis-cloud --remote`).
+* Routes: `POST /v1/register` → device token `j1.<uuid>.<hmac>`;
+  `/v1/chat/completions` and `/v1/tools/{search,fetch}` (DeepSeek, model forced
+  to `deepseek-flash`, output capped), `/v1/tts` (SpeechKit v3 body, streamed),
+  `/v1/stt` (raw 16 kHz LINEAR16 ≤ 30 s → `{text}` through the async v3 API:
+  Kazakhstan has no sync REST recognition). Caps answer 429 with
+  `error.code = "jarvis_limit"`; the app shows that message instead of retrying.
+* App side: `src-tauri/src/cloud.rs` (token in the credential store as
+  `JARVIS/cloud-token`, STT race with GigaAM), preset `jarvis-cloud` (the
+  default), DeepSeek without an own key falls back to it, Yandex voices without
+  a key go through it. Pure Worker helpers are tested by the root `npx vitest run`
+  (`cloud/test`); `cd cloud && npm ci && npm run typecheck` checks the Worker.
+* SpeechKit recognition needs the role `ai.speechkit-stt.user` on the service
+  account (synthesis: `ai.speechkit-tts.user`); without it `/v1/stt` answers 503
+  and the app stays on GigaAM for 10 minutes at a time.
+
 ## Release
 
 * `installer/` is a separate crate with two windows sharing `src/lib.rs`:

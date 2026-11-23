@@ -79,7 +79,7 @@ pub fn settings_get(app: AppHandle, state: State<'_, AppState>) -> SettingsView 
         has_voice_key: secrets::exists(secrets::VOICE_API_KEY),
         has_azure_key: crate::voice::azure::configured(),
         has_elevenlabs_key: crate::voice::elevenlabs::configured(),
-        has_yandex_key: crate::voice::yandex::configured(),
+        has_yandex_key: crate::voice::yandex::key().is_some(),
         log_path: log_dir,
         data_path: app.path().app_local_data_dir().ok().map(|p| p.display().to_string()),
     }

@@ -1,12 +1,19 @@
 # Конфиденциальность
 
-Джарвис работает на вашем компьютере. У проекта нет своего сервера, аккаунтов,
-телеметрии и аналитики: разработчик не получает от программы ничего.
+Джарвис работает на вашем компьютере. У проекта нет аккаунтов, телеметрии и
+аналитики. Единственный сервер проекта — **Jarvis Cloud** (Cloudflare Worker,
+код в папке `cloud/` этого репозитория). Через него идут запросы к модели и
+облачной речи, пока вы не указали свой ключ. Он ничего не сохраняет из
+содержимого: в базе лежат только дневные счётчики (сколько запросов, озвучек и
+секунд распознавания на случайный номер устройства и сколько новых устройств с
+IP-адреса за день).
 
 ## Что остаётся на компьютере
 
-* **Речь.** Имя «Джарвис» и ваши фразы распознаются локально (Silero VAD и
-  GigaAM). Голос по умолчанию тоже локальный (sherpa-onnx).
+* **Речь до обращения.** Имя «Джарвис» распознаётся локально (Silero VAD и
+  GigaAM); пока вы не позвали Джарвиса, звук никуда не уходит. Законченная
+  просьба в разговоре распознаётся ещё и Yandex SpeechKit через Jarvis Cloud
+  (выключается в «Настройки → Голос → Распознавание Яндекса»).
 * **Настройки, история, журнал действий, кэш озвучки и модели** — в
   `%LOCALAPPDATA%\dev.jarvis.desktop` (на macOS — в папке приложения в
   `~/Library`).
@@ -26,9 +33,11 @@
 
 | Когда | Куда | Что |
 |---|---|---|
+| Вы просите что-то у Джарвиса без своего ключа (по умолчанию) | Jarvis Cloud → DeepSeek | То же, что ниже для провайдера; сервер пересылает запрос и считает его в дневном лимите |
+| Вы говорите просьбу голосом, «Распознавание Яндекса» включено | Jarvis Cloud → Yandex SpeechKit (Казахстан) | Звук законченной просьбы, до 30 секунд |
 | Вы просите что-то у Джарвиса, и в настройках есть ключ модели | Провайдер, которого вы выбрали: DeepSeek, Qwen (Alibaba Cloud Model Studio) или свой OpenAI-совместимый адрес | Текст просьбы и разговора, местное время, город (если он уже известен), заголовки активного и недавних окон. Снимок экрана — когда для вашей просьбы нужно посмотреть на экран |
 | Выбран голосовой режим Realtime | Alibaba Cloud DashScope | Звук с микрофона во время разговора |
-| Выбран облачный голос | Microsoft Azure Speech, ElevenLabs или Yandex SpeechKit | Текст ответа для озвучки |
+| Выбран облачный голос | Microsoft Azure Speech, ElevenLabs или Yandex SpeechKit (без своего ключа — через Jarvis Cloud) | Текст ответа для озвучки |
 | Вы спрашиваете погоду или «что рядом» | ipwho.is, Open-Meteo | IP-адрес (по нему определяется город), координаты города |
 | Вы просите что-то про GitHub | api.github.com | Запрос к вашему профилю и репозиториям |
 | Вы включаете голос впервые | GitHub Releases проекта sherpa-onnx | Скачиваются голосовые модели |
@@ -37,12 +46,12 @@
 | Карточки для ленты знаний (если есть ключ модели) | Ваш провайдер модели | Тема (программирование или английский) и список уже известных карточек — без ваших данных |
 | Проверка обновлений (раз в шесть часов; выключается в «Настройки → Основное → Обновления») | github.com | Запрос файла `latest.json` этого репозитория |
 
-Без ключа модели запросы к ИИ не отправляются. Ключ уходит только на тот
-адрес, для которого он сохранён. Сайты, которые вы просите открыть,
+Без своего ключа запросы к ИИ идут через Jarvis Cloud. Ключ уходит только на
+тот адрес, для которого он сохранён. Сайты, которые вы просите открыть,
 открываются в вашем браузере.
 
 На то, что вы отправляете выбранным сервисам, распространяются их собственные
-правила конфиденциальности: DeepSeek, Alibaba Cloud, Microsoft, ElevenLabs,
+правила конфиденциальности: Cloudflare (Jarvis Cloud), DeepSeek, Alibaba Cloud, Microsoft, ElevenLabs,
 Yandex Cloud, ipwho.is, Open-Meteo, GitHub.
 
 ## Как удалить всё
@@ -55,14 +64,20 @@ Yandex Cloud, ipwho.is, Open-Meteo, GitHub.
 
 ## Privacy (English)
 
-Jarvis runs on your computer. The project has no server, accounts, telemetry
-or analytics; the developer receives nothing from the program.
+Jarvis runs on your computer. The project has no accounts, telemetry or
+analytics. Its only server is Jarvis Cloud (a Cloudflare Worker, source in
+`cloud/`), which forwards model and speech requests while the user has no key
+of their own and stores nothing but daily usage counters per random device id
+(and new devices per IP address per day).
 
 This program will not transfer any information to other networked systems
 unless specifically requested by the user or the person installing or
-operating it. Speech recognition and the default voice run locally. Requests
-go only to the services the user configures: the AI provider for which the
-user saved an API key (the request text, conversation, local time, city if
+operating it. The wake word is recognised locally; nothing is sent until the
+user addresses Jarvis. Without an own key, requests go through Jarvis Cloud to
+DeepSeek and Yandex SpeechKit (the audio of a finished spoken request, up to
+30 s, when «Распознавание Яндекса» is on). Otherwise requests go only to the
+services the user configures: the AI provider for which the user saved an API
+key (the request text, conversation, local time, city if
 known, titles of the active and recent windows, and a screenshot when the task
 needs one), optional cloud voices (reply text), the optional realtime voice
 mode (microphone audio), and, when asked, weather (ipwho.is, Open-Meteo) and

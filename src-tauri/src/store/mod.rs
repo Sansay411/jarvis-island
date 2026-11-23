@@ -391,7 +391,8 @@ mod tests {
         s.kv_set("llm_key_origin", "https://llm.alem.ai").unwrap();
         let cfg = s.settings();
         assert_eq!(cfg.provider.model, "deepseek-flash");
-        assert_eq!(cfg.provider.effective_base_url(), "https://api.deepseek.com/v1");
+        // Moved to the default: Jarvis Cloud, which needs no key at all.
+        assert_eq!(cfg.provider.effective_base_url(), crate::cloud::API);
         assert_eq!(cfg.persona.user_name, "Павел");
         assert!(cfg.voice.wake_word);
         assert_eq!(s.kv_get("llm_key_origin").as_deref(), Some("https://llm.alem.ai"));

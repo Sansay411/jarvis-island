@@ -3,7 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Known OpenAI-compatible endpoints. DeepSeek Flash is the default agent.
+/// Known OpenAI-compatible endpoints. Jarvis Cloud (DeepSeek Flash with
+/// the project's key, no setup) is the default agent.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderPreset {
@@ -17,6 +18,14 @@ pub struct ProviderPreset {
 }
 
 pub const PRESETS: &[ProviderPreset] = &[
+    ProviderPreset {
+        id: "jarvis-cloud",
+        label: "Jarvis Cloud — бесплатно, без ключа",
+        base_url: crate::cloud::API,
+        default_model: "deepseek-flash",
+        needs_key: false,
+        dashscope: false,
+    },
     ProviderPreset {
         id: "deepseek",
         label: "DeepSeek V4.1 Flash",
@@ -148,6 +157,9 @@ pub struct VoiceSettings {
     pub output_device: String,
     /// Make playing apps quieter while JARVIS listens and talks.
     pub duck_media: bool,
+    /// Recognise finished requests with Yandex SpeechKit through Jarvis
+    /// Cloud as well; the local model stays for the name and as a fallback.
+    pub cloud_stt: bool,
 }
 
 impl Default for VoiceSettings {
@@ -168,6 +180,7 @@ impl Default for VoiceSettings {
             input_device: String::new(),
             output_device: String::new(),
             duck_media: true,
+            cloud_stt: true,
         }
     }
 }

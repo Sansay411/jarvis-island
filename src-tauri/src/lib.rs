@@ -13,6 +13,7 @@
 pub mod agent;
 pub mod ai;
 pub mod bluetooth;
+pub mod cloud;
 pub mod clips;
 pub mod error;
 pub mod filekit;

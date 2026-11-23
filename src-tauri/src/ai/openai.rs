@@ -178,21 +178,54 @@ fn retryable(e: &AppError) -> bool {
 
 impl OpenAiCompatible {
     pub fn supports_web(&self) -> bool {
-        super::origin_of(&self.base_url) == "https://api.deepseek.com"
+        super::origin_of(&self.base_url) == "https://api.deepseek.com" || self.is_cloud()
+    }
+
+    /// Jarvis Cloud: authorised by the device token instead of a key.
+    pub fn is_cloud(&self) -> bool {
+        crate::cloud::is_cloud(&self.base_url)
+    }
+
+    async fn bearer(&self) -> AppResult<Option<String>> {
+        match &self.api_key {
+            Some(k) => Ok(Some(k.clone())),
+            None if self.is_cloud() => crate::cloud::token().await.map(Some),
+            None => Ok(None),
+        }
     }
 
     pub async fn deepseek_tool(&self, name: &str, args: Value, cancel: &CancellationToken) -> AppResult<Value> {
         if !self.supports_web() || !matches!(name, "search" | "fetch") {
             return Err(AppError::Unsupported("Поиск и чтение сайтов доступны с официальным API DeepSeek.".into()));
         }
-        let key = self.api_key.as_deref().ok_or_else(|| AppError::invalid("Добавьте API-ключ DeepSeek"))?;
+        let key = self.bearer().await?.ok_or_else(|| AppError::invalid("Добавьте API-ключ DeepSeek"))?;
+        let url = if self.is_cloud() {
+            format!("{}/tools/{name}", crate::cloud::API)
+        } else {
+            format!("https://api.deepseek.com/v1/tools/{name}")
+        };
         for attempt in 0..3 {
             let response = tokio::select! {
                 _ = cancel.cancelled() => return Err(AppError::Cancelled),
-                r = self.client.post(format!("https://api.deepseek.com/v1/tools/{name}"))
-                    .bearer_auth(key).json(&args).timeout(Duration::from_secs(25)).send() => r?,
+                r = self.client.post(&url)
+                    .bearer_auth(&key).json(&args).timeout(Duration::from_secs(25)).send() => r?,
             };
             let status = response.status();
+            if self.is_cloud() && matches!(status.as_u16(), 401 | 429) {
+                if status.as_u16() == 401 {
+                    crate::cloud::forget_token();
+                    return Err(AppError::Provider("Jarvis Cloud не принял токен устройства, повторите запрос.".into()));
+                }
+                let body = response.text().await.unwrap_or_default();
+                if let Some(m) = crate::cloud::limit_message(&body) {
+                    return Err(AppError::Provider(m));
+                }
+                if attempt < 2 {
+                    tokio::time::sleep(Duration::from_secs(1 + attempt)).await;
+                    continue;
+                }
+                return Err(AppError::RateLimited(5));
+            }
             if matches!(status.as_u16(), 408 | 429 | 500..=599) && attempt < 2 {
                 let delay = response.headers().get(reqwest::header::RETRY_AFTER)
                     .and_then(|s| s.to_str().ok()).and_then(|s| s.parse::<u64>().ok())
@@ -336,7 +369,7 @@ impl OpenAiCompatible {
     ) -> AppResult<Completion> {
         let started = Instant::now();
         let mut req = self.client.post(format!("{}/chat/completions", self.base_url)).json(body);
-        if let Some(key) = &self.api_key {
+        if let Some(key) = self.bearer().await? {
             req = req.bearer_auth(key);
         }
         let resp = tokio::select! {
@@ -352,7 +385,18 @@ impl OpenAiCompatible {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.trim().parse::<u64>().ok())
                 .unwrap_or(20);
+            // A daily cap of Jarvis Cloud is not worth waiting for.
+            if self.is_cloud() {
+                let body = tokio::time::timeout(Duration::from_secs(10), resp.text()).await.ok().and_then(Result::ok).unwrap_or_default();
+                if let Some(m) = crate::cloud::limit_message(&body) {
+                    return Err(AppError::Provider(m));
+                }
+            }
             return Err(AppError::RateLimited(secs.clamp(1, 120)));
+        }
+        if status.as_u16() == 401 && self.is_cloud() {
+            crate::cloud::forget_token();
+            return Err(AppError::Provider("Jarvis Cloud временно не принял токен устройства, получаю новый".into()));
         }
         if !status.is_success() {
             // The error body is only for the message: read at most 64 KB and

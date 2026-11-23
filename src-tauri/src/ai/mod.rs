@@ -40,6 +40,17 @@ pub fn client_from_settings(s: &Settings, store: &Store) -> AppResult<OpenAiComp
         let key = secrets::get(secrets::LLM_API_KEY)?.filter(|k| !k.trim().is_empty());
         let origin = origin_of(&base_url);
         match (key, store.kv_get(KEY_ORIGIN).filter(|o| !o.is_empty())) {
+            // DeepSeek without an own key (installs from before Jarvis
+            // Cloud): the same model through the free tier.
+            (None, _) if preset.id == "deepseek" && s.provider.base_url.trim().is_empty() => {
+                return Ok(OpenAiCompatible::new(
+                    crate::cloud::API.into(),
+                    None,
+                    settings::preset("jarvis-cloud").default_model.into(),
+                    false,
+                    s.provider.temperature,
+                ))
+            }
             (None, _) => return Err(AppError::invalid("Добавьте API-ключ провайдера в настройках")),
             (Some(k), Some(owner)) if owner == origin => Some(k),
             (Some(_), Some(owner)) => {

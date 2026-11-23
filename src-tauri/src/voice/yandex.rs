@@ -3,6 +3,8 @@
 //! correct stress and intonation; ≈1 ₸ per request of up to 250 characters
 //! (the KZ starter grant covers tens of thousands of replies). Only the reply
 //! text leaves the PC; without a network the local voice speaks instead.
+//! Without an own key the same voices come through Jarvis Cloud
+//! (`POST {cloud}/v1/tts` with the device token, same body and stream).
 //!
 //! API: POST https://tts.api.ml.yandexcloud.kz/tts/v3/utteranceSynthesis
 //! (Kazakhstan installation — only v3 works there; accounts of the Russian
@@ -55,8 +57,9 @@ pub fn key() -> Option<String> {
     secrets::get(secrets::YANDEX_SPEECH_KEY).ok().flatten().map(|k| k.trim().to_string()).filter(|k| !k.is_empty())
 }
 
+/// Own key or Jarvis Cloud: the voices are always offered.
 pub fn configured() -> bool {
-    key().is_some()
+    true
 }
 
 /// Until when SpeechKit is not asked (bad key, no role, rate limit).
@@ -117,14 +120,15 @@ pub struct YandexVoice {
     pub name: String,
     voice: String,
     role: Option<String>,
-    key: String,
+    /// None: through Jarvis Cloud.
+    key: Option<String>,
     speed: f64,
     http: reqwest::blocking::Client,
 }
 
 impl YandexVoice {
     pub fn new(id: &str, rate: f64) -> AppResult<YandexVoice> {
-        let key = key().ok_or_else(|| AppError::invalid("Для голоса Яндекса нужен API-ключ SpeechKit — Настройки → Голос"))?;
+        let key = key();
         let (voice, role) = split(id).ok_or_else(|| AppError::invalid("Неверный голос Яндекса"))?;
         let http = reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(4))
@@ -140,7 +144,7 @@ impl YandexVoice {
     /// Open the TLS connection ahead of the first phrase (no request is billed).
     fn warm(&self) {
         let http = self.http.clone();
-        let host = HOSTS[*HOST.lock()];
+        let host = if self.key.is_some() { HOSTS[*HOST.lock()] } else { crate::cloud::BASE };
         std::thread::spawn(move || {
             let _ = http.head(host).send();
         });
@@ -160,14 +164,15 @@ impl YandexVoice {
         let mut last_err = None;
         // The answering host first; on a refused key or no connection try the
         // other installation once (a key of the Russian cloud, for example).
-        for i in [first, 1 - first] {
-            let res = match self
-                .http
-                .post(format!("{}/tts/v3/utteranceSynthesis", HOSTS[i]))
-                .header("Authorization", format!("Api-Key {}", self.key))
-                .json(&body)
-                .send()
-            {
+        let targets: Vec<(Option<usize>, String, String)> = match &self.key {
+            Some(key) => [first, 1 - first]
+                .into_iter()
+                .map(|i| (Some(i), format!("{}/tts/v3/utteranceSynthesis", HOSTS[i]), format!("Api-Key {key}")))
+                .collect(),
+            None => vec![(None, format!("{}/v1/tts", crate::cloud::BASE), format!("Bearer {}", crate::cloud::token_blocking()?))],
+        };
+        for (i, url, auth) in targets {
+            let res = match self.http.post(&url).header("Authorization", auth).json(&body).send() {
                 Ok(r) => r,
                 Err(e) => {
                     last_err = Some(AppError::platform(format!("Голос Яндекса недоступен: {e}")));
@@ -177,10 +182,27 @@ impl YandexVoice {
             let status = res.status();
             if !status.is_success() {
                 let detail = res.text().unwrap_or_default();
-                if WARNED.set(()).is_ok() {
-                    tracing::warn!(status = status.as_u16(), host = HOSTS[i], %detail, "Yandex SpeechKit refused");
-                }
                 let code = status.as_u16();
+                let Some(i) = i else {
+                    // Jarvis Cloud: a cap or a refusal means the local voice for a while.
+                    tracing::warn!(status = code, "Jarvis Cloud voice refused");
+                    let pause = match code {
+                        401 => {
+                            crate::cloud::forget_token();
+                            30
+                        }
+                        429 if crate::cloud::limit_message(&detail).is_some() => 1800,
+                        429 => 60,
+                        _ => 600,
+                    };
+                    *REFUSED_UNTIL.lock() = Some(std::time::Instant::now() + Duration::from_secs(pause));
+                    return Err(AppError::platform(
+                        crate::cloud::limit_message(&detail).unwrap_or_else(|| "Голос Яндекса через Jarvis Cloud недоступен — говорю локальным голосом".into()),
+                    ));
+                };
+                if WARNED.set(()).is_ok() {
+                    tracing::warn!(status = code, host = HOSTS[i], %detail, "Yandex SpeechKit refused");
+                }
                 last_err = Some(AppError::platform(match code {
                     401 => "Ключ Яндекса не подошёл".to_string(),
                     403 => "У сервисного аккаунта Яндекса нет роли ai.speechkit-tts.user".to_string(),
@@ -195,7 +217,9 @@ impl YandexVoice {
                 }
                 return Err(last_err.unwrap());
             }
-            *HOST.lock() = i;
+            if let Some(i) = i {
+                *HOST.lock() = i;
+            }
             let mut pending: Vec<i16> = Vec::with_capacity(2400);
             for msg in serde_json::Deserializer::from_reader(res).into_iter::<serde_json::Value>() {
                 let msg = msg.map_err(|e| AppError::platform(format!("Голос Яндекса: {e}")))?;

@@ -25,6 +25,8 @@ pub const GOOGLE_CLIENT_SECRET: &str = "JARVIS/google-client-secret";
 pub const GOOGLE_REFRESH_TOKEN: &str = "JARVIS/google-refresh-token";
 /// Telegram bot token from @BotFather.
 pub const TELEGRAM_BOT_TOKEN: &str = "JARVIS/telegram-bot-token";
+/// Jarvis Cloud device token (signed by the service, not a provider key).
+pub const CLOUD_TOKEN: &str = "JARVIS/cloud-token";
 
 pub fn set(target: &str, secret: &str) -> AppResult<()> {
     let target_w = HSTRING::from(target);

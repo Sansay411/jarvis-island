@@ -59,6 +59,7 @@ export interface Settings {
     inputDevice: string;
     outputDevice: string;
     duckMedia: boolean;
+    cloudStt: boolean;
   };
   persona: { userName: string; address: "ty" | "vy"; style: "witty" | "warm" | "concise" };
   shortcuts: { workspace: string; voice: string; clipboard: string };
@@ -169,6 +170,7 @@ const FALLBACK_SETTINGS_VIEW: SettingsView = {
       inputDevice: "",
       outputDevice: "",
       duckMedia: true,
+      cloudStt: true,
     },
     persona: { userName: "Александр", address: "ty", style: "witty" },
     shortcuts: { workspace: "Ctrl+Alt+J", voice: "Ctrl+Alt+K", clipboard: "Ctrl+Alt+V" },
@@ -441,7 +443,7 @@ function YandexVoice({
   return (
     <>
       <p className="note">
-        Яндекс SpeechKit: родные русские голоса с правильными ударениями, около 1 ₸ за фразу. Нужен API-ключ сервисного аккаунта с ролью ai.speechkit-tts.user. Наружу уходит только текст ответа; без интернета говорит локальный голос.
+        Яндекс SpeechKit: родные русские голоса с правильными ударениями. Без ключа работают бесплатно через Jarvis Cloud, с дневным лимитом на устройство. Свой ключ (сервисный аккаунт с ролью ai.speechkit-tts.user) снимает лимит. Наружу уходит только текст ответа; без интернета говорит локальный голос.
       </p>
       <KeyField
         kind="yandex"
@@ -1363,19 +1365,27 @@ export default function SettingsApp({
               </Group>
 
                 <>
-                  {sttModels.length > 0 && (
-                    <Group title="Распознавание речи">
-                      {sttModels.map((m) => (
-                        <Row
-                          key={m.id}
-                          label={m.label}
-                          hint="Нужна для голосового режима, работает без интернета."
-                        >
-                          <DownloadControl model={m} progress={progress} onDownload={() => void download(m.id)} />
-                        </Row>
-                      ))}
-                    </Group>
-                  )}
+                  <Group title="Распознавание речи">
+                    <Row
+                      label="Распознавание Яндекса"
+                      hint="Готовая просьба уходит ещё и в SpeechKit через Jarvis Cloud, это бесплатно. Имя «Джарвис» слушает модель на компьютере, и она же отвечает, если сети нет."
+                    >
+                      <Switch
+                        label="Распознавание Яндекса"
+                        checked={draft.voice.cloudStt}
+                        onChange={(v) => set((s) => ({ ...s, voice: { ...s.voice, cloudStt: v } }))}
+                      />
+                    </Row>
+                    {sttModels.map((m) => (
+                      <Row
+                        key={m.id}
+                        label={m.label}
+                        hint="Нужна для голосового режима, работает без интернета."
+                      >
+                        <DownloadControl model={m} progress={progress} onDownload={() => void download(m.id)} />
+                      </Row>
+                    ))}
+                  </Group>
 
                   <Group title="Голоса без интернета">
                     <div className="voices" role="radiogroup" aria-label="Голос Джарвиса">
@@ -1520,7 +1530,9 @@ export default function SettingsApp({
               <Row
                 label="Модель"
                 hint={
-                  preset.id === "deepseek"
+                  preset.id === "jarvis-cloud"
+                    ? "DeepSeek V4.1 Flash через Jarvis Cloud: без ключа, с дневным лимитом на устройство."
+                    : preset.id === "deepseek"
                     ? "V4.1 Flash: быстрые ответы, понимание экрана и поиск в интернете."
                     : preset.dashscope
                       ? "qwen3.8-flash: быстрее, qwen3.8-max: сильнее."

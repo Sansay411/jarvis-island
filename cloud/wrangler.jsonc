@@ -1,0 +1,38 @@
+// Jarvis Cloud. Secrets (never in this file): DEEPSEEK_KEY, YANDEX_KEY,
+// TOKEN_SECRET — `npx wrangler secret put NAME`.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "jarvis-cloud",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "jarvis-cloud",
+      "database_id": "8faaefe6-e7ab-40d4-a535-ddb39d475d77",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "secrets": { "required": ["DEEPSEEK_KEY", "YANDEX_KEY", "TOKEN_SECRET"] },
+  "vars": {
+    // Per device and UTC day.
+    "LIMIT_CHAT": "300",
+    "LIMIT_TTS": "300",
+    "LIMIT_STT_SECONDS": "1200",
+    // New devices per IP and day.
+    "LIMIT_REGISTRATIONS": "5",
+    // The whole service per day.
+    "BUDGET_USD": "3",
+    "BUDGET_TENGE": "1500",
+    // DeepSeek peak prices, USD per 1M tokens; a web tool call.
+    "PRICE_IN_MISS": "0.3",
+    "PRICE_IN_HIT": "0.006",
+    "PRICE_OUT": "1.2",
+    "PRICE_TOOL": "0.005",
+    // SpeechKit, tenge: a synthesis of up to 250 chars; 15 s of recognition.
+    "PRICE_TTS": "1",
+    "PRICE_STT_15S": "1.5"
+  }
+}
