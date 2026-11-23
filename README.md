@@ -105,7 +105,9 @@ DeepSeek по умолчанию. Также OpenAI, OpenRouter, Model Studio, O
 Если не хочется устанавливать, в релизе есть **`jarvis-portable.exe`**. Это один файл, его можно запускать откуда угодно. Ему нужен WebView2, в Windows 11 он уже есть. Portable-версия не обновляется сама.
 
 > [!NOTE]
-> Windows SmartScreen может предупредить о неизвестном издателе: сборка не подписана сертификатом. Нажмите «Подробнее», затем «Выполнить в любом случае».
+> Windows SmartScreen может предупредить о неизвестном издателе: сборка пока не подписана сертификатом (подпись подключается, см. [Code signing policy](#code-signing-policy)). Нажмите «Подробнее», затем «Выполнить в любом случае».
+
+**Удаление:** «Параметры → Приложения → Jarvis → Удалить». Откроется окно в том же стиле, что и установщик. Голосовые модели и кэш удаляются по умолчанию, а настройки, история и ключи API — только если отметить их галочкой: иначе после переустановки всё вернётся как было.
 
 ## Первый запуск
 
@@ -161,6 +163,10 @@ jarvis.exe --command new-conversation
 * **Ключ модели уходит только на тот адрес,** для которого он сохранён.
 * **Инструменты MCP проходят те же проверки.** Разрушительные подтверждаются каждый раз, даже в режиме полного управления.
 * **Все рискованные действия записываются** в журнал `audit_log` в `%LOCALAPPDATA%\dev.jarvis.desktop\jarvis.db`.
+
+## Конфиденциальность
+
+У Джарвиса нет своего сервера, аккаунтов и телеметрии. Речь распознаётся на компьютере, а в сеть уходит только то, что вы включили: запросы к выбранному вами провайдеру модели, облачные голоса, погода по просьбе и проверка обновлений на GitHub. Подробно, что и куда, — в [PRIVACY.md](PRIVACY.md).
 
 ## Сборка из исходников
 
@@ -225,6 +231,15 @@ cargo run --example tts_bench
 ## Участие
 
 Баг-репорты, идеи и пулреквесты приветствуются. Если что-то сломалось, приложите кусок журнала `jarvis.log` и опишите, что вы просили сделать.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+* Signed are only Windows builds made by this repository's [release workflow](.github/workflows/release.yml) on GitHub-hosted runners from a version tag. Every release is approved by hand.
+* Committers and reviewers: [Sansay411](https://github.com/Sansay411)
+* Approvers: [Sansay411](https://github.com/Sansay411)
+* Privacy policy: [PRIVACY.md](PRIVACY.md). This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
 
 ## Лицензия
 

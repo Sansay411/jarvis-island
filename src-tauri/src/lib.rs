@@ -302,15 +302,6 @@ pub fn run() {
                 let _ = platform::blocking(move || platform::in_background(|| apps.ensure_fresh(Duration::from_secs(600)))).await;
             });
 
-            // Know the city early: the first «какая погода» and every turn's
-            // context then need no wait for the network.
-            tauri::async_runtime::spawn(async {
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                if let Err(e) = platform::blocking(crate::geo::here).await {
-                    tracing::info!("location not known yet: {e}");
-                }
-            });
-
             if let Err(e) = sync_autostart(app.handle(), settings.launch_at_startup) {
                 tracing::warn!("autostart not synced: {e}");
             }

@@ -1,7 +1,8 @@
 //! Where the user is and what the weather is there.
 //!
 //! Location: the city of the PC's public IP (ipwho.is, no key) — city-level,
-//! which is what weather and «что рядом» need. Cached for an hour.
+//! which is what weather and «что рядом» need. Cached for an hour. Looked
+//! up only when the user asks for one of those, never in the background.
 //! Weather: Open-Meteo (no key): current conditions, the next hours and
 //! today/tomorrow. A named place is found with Open-Meteo geocoding.
 
