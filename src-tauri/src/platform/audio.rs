@@ -2,12 +2,11 @@
 //! per-application session volume (ISimpleAudioVolume). Every setter reads
 //! the value back so callers can report the verified state.
 
-use serde::Serialize;
 use windows::core::{Interface, GUID};
 use windows::Win32::Foundation::PROPERTYKEY;
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
-    eConsole, eRender, IAudioSessionControl2, IAudioSessionManager2, IMMDevice,
+    eConsole, eRender, AudioSessionStateActive, IAudioSessionControl2, IAudioSessionManager2, IMMDevice,
     IMMDeviceEnumerator, ISimpleAudioVolume, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL, STGM_READ};
@@ -20,6 +19,8 @@ pub use super::data_audio::AudioState;
 pub use super::data_audio::OutputDevice;
 
 pub use super::data_audio::AppAudioSession;
+
+pub use super::data_audio::{ducked_level, still_ducked, Ducked};
 
 /// PKEY_Device_FriendlyName (functiondiscoverykeys_devpkey.h); declared here to
 /// avoid pulling the whole FunctionDiscovery feature into the build.
@@ -195,6 +196,60 @@ pub fn set_app_volume(process: &str, percent: u8) -> AppResult<Vec<AppAudioSessi
             n.strip_suffix(".exe").unwrap_or(&n) == wanted
         })
         .collect())
+}
+
+/// Make every app that is playing sound right now (but JARVIS itself)
+/// quieter by `factor`, the way a phone does for a call: music under the
+/// voice is what the microphone hears instead of the command.
+pub fn duck(factor: f32) -> AppResult<Vec<Ducked>> {
+    let own = std::process::id();
+    let dev = default_device()?;
+    let mut out = Vec::new();
+    unsafe {
+        let mgr = dev.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None)?;
+        let en = mgr.GetSessionEnumerator()?;
+        for i in 0..en.GetCount()? {
+            let ctl = en.GetSession(i)?;
+            if ctl.GetState().ok() != Some(AudioSessionStateActive) {
+                continue;
+            }
+            let Ok(ctl2) = ctl.cast::<IAudioSessionControl2>() else { continue };
+            let pid = ctl2.GetProcessId().unwrap_or(0);
+            if pid == 0 || pid == own || ctl2.IsSystemSoundsSession().is_ok() {
+                continue;
+            }
+            let Ok(simple) = ctl.cast::<ISimpleAudioVolume>() else { continue };
+            let original = simple.GetMasterVolume()?;
+            let ducked = ducked_level(original, factor);
+            if original <= 0.01 || simple.GetMute()?.as_bool() {
+                continue;
+            }
+            simple.SetMasterVolume(ducked, &GUID::zeroed())?;
+            out.push(Ducked { pid, process: process_name(pid).unwrap_or_default(), original, ducked });
+        }
+    }
+    Ok(out)
+}
+
+/// Put ducked apps back. `by_name`: match by process name, not pid — after a
+/// crash the apps (and their pids) may have restarted, and Windows remembers
+/// an app's level, so the ducked one would stay for good.
+pub fn unduck(list: &[Ducked], by_name: bool) -> AppResult<()> {
+    if list.is_empty() {
+        return Ok(());
+    }
+    for (pid, simple) in sessions()? {
+        let name = if by_name { process_name(pid).unwrap_or_default().to_lowercase() } else { String::new() };
+        let Some(d) = list.iter().find(|d| if by_name { !name.is_empty() && d.process.to_lowercase() == name } else { d.pid == pid }) else {
+            continue;
+        };
+        unsafe {
+            if still_ducked(simple.GetMasterVolume()?, d) {
+                simple.SetMasterVolume(d.original, &GUID::zeroed())?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -2,13 +2,50 @@
 use crate::ai::types::ToolCall;
 use serde_json::{json, Value};
 
-pub fn answer(tool:&str,summary:&str,data:&Value)->String {
+pub fn answer(tool:&str,args:&str,summary:&str,data:&Value)->String {
     if tool=="reminder_cancel" { return "Таймер отменён".into(); }
     if tool=="system_volume" {
         if data.get("muted").and_then(Value::as_bool)==Some(true) {return "Звук выключен".into();}
         if let Some(volume)=data.get("volume").and_then(Value::as_u64) {return format!("Громкость {volume}%");}
     }
+    if tool=="media_control" {
+        let action = serde_json::from_str::<Value>(args).ok().and_then(|a| a.get("action").and_then(Value::as_str).map(str::to_string)).unwrap_or_default();
+        return media_answer(&action, data);
+    }
     summary.into()
+}
+
+/// «Играет «Self Aware» — Moonshine»: what the player does now, said the way
+/// a person would. The tool's own summary is written for the model.
+fn media_answer(action: &str, data: &Value) -> String {
+    let state = data.get("state").unwrap_or(data);
+    let text = |k: &str| state.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let (title, artist) = (text("title"), text("artist"));
+    let title: String = if title.chars().count() > 70 { format!("{}…", title.chars().take(70).collect::<String>()) } else { title };
+    let track = match (title.is_empty(), artist.is_empty()) {
+        (true, _) => None,
+        (false, true) => Some(format!("«{title}»")),
+        (false, false) => Some(format!("«{title}» — {artist}")),
+    };
+    let available = state.get("available").and_then(Value::as_bool).unwrap_or(false);
+    match (action, track) {
+        ("pause" | "stop", _) => "Пауза.".into(),
+        ("status", _) if !available => "Сейчас ничего не играет.".into(),
+        ("status", Some(t)) if text("status") == "paused" => format!("На паузе {t}."),
+        ("play" | "play_pause" | "status", Some(t)) => format!("Играет {t}."),
+        ("play" | "play_pause" | "status", None) => "Играет.".into(),
+        ("next" | "previous", Some(t)) => format!("{t}."),
+        ("next", None) => "Следующий трек.".into(),
+        ("previous", None) => "Предыдущий трек.".into(),
+        _ => "Готово.".into(),
+    }
+}
+
+/// A media command that did not go through, in one short sentence. The model
+/// has nothing to add: it would only open a music site nobody asked for.
+pub fn media_failure(data: &Value) -> String {
+    let available = data.get("state").and_then(|s| s.get("available")).and_then(Value::as_bool).unwrap_or(false);
+    if available { "Плеер не отреагировал.".into() } else { "Плеер не открыт — запусти музыку в своём плеере.".into() }
 }
 
 /// What a whole utterance asks for when no model is needed.
@@ -109,13 +146,91 @@ fn settings_page(s: &str) -> Option<&'static str> {
 }
 
 pub fn command(text: &str) -> Option<Fast> {
+    command_with(text, crate::platform::media::has_player())
+}
+
+/// `has_player`: a player is open, so a bare «дальше» or «назад» is about it.
+fn command_with(text: &str, has_player: bool) -> Option<Fast> {
     let question = text.trim().ends_with('?');
     let owned = bare(text);
     let s = owned.as_str();
     if let Some(reply) = small_talk(s) {
         return Some(Fast::Say(reply));
     }
+    if let Some(action) = media(s, has_player).filter(|_| !question) {
+        return Some(Fast::Call(call("media_control", json!({ "action": action }))));
+    }
+    if media_status(s) {
+        return Some(Fast::Call(call("media_control", json!({ "action": "status" }))));
+    }
     tool_command(s, question).map(Fast::Call)
+}
+
+/// The player action a whole utterance asks for, if that is all it asks
+/// («Джарвис, дальше», «поставь на паузу», «верни музыку»). The voice gate
+/// uses it too: an exact media command is short and unmistakable, unlike the
+/// sentences a song or a film says.
+pub fn media_action(text: &str) -> Option<&'static str> {
+    if text.trim().ends_with('?') {
+        return None;
+    }
+    media(bare(text).as_str(), crate::platform::media::has_player())
+}
+
+/// An exact device command (player, volume, brightness): it runs locally, so
+/// the voice gate may take it without the name right after a reply.
+pub fn device_command(text: &str) -> bool {
+    match command(text) {
+        Some(Fast::Call(c)) => matches!(c.name.as_str(), "media_control" | "system_volume" | "display_brightness"),
+        _ => false,
+    }
+}
+
+/// Words that ask for the next or the previous track only while a player is
+/// open: with nothing playing, «дальше» more likely means «go on».
+const NEEDS_PLAYER: &[&str] = &[
+    "дальше", "давай дальше", "дальше давай", "назад", "следующий", "следующая", "следующую", "следующее", "предыдущий",
+    "предыдущая", "предыдущую", "предыдущее", "переключи", "пропусти",
+];
+
+fn media(s: &str, has_player: bool) -> Option<&'static str> {
+    let s = s.trim_end_matches([' ', ',', '.', '!']);
+    if NEEDS_PLAYER.contains(&s) && !has_player {
+        return None;
+    }
+    Some(match s {
+        "играй" | "играй дальше" | "играй музыку" | "музыку играй" | "продолжай играть" | "пусть играет" | "включи музыку"
+        | "включи музыку обратно" | "включи обратно" | "включай музыку" | "включи музычку" | "верни музыку" | "верни музыку обратно"
+        | "давай музыку" | "музыку давай" | "музыку" | "музыка" | "плей" | "play" | "воспроизведи" | "продолжи воспроизведение"
+        | "возобнови" | "возобнови музыку" | "возобнови воспроизведение" | "продолжи музыку" | "продолжай музыку" | "сними с паузы"
+        | "сними паузу" | "убери паузу" | "сними музыку с паузы" | "сними видео с паузы" | "продолжи видео" => "play",
+        "пауза" | "на паузу" | "паузу" | "поставь на паузу" | "поставь паузу" | "поставь музыку на паузу" | "поставь видео на паузу"
+        | "поставь трек на паузу" | "поставь песню на паузу" | "останови музыку" | "останови видео" | "останови трек"
+        | "останови песню" | "останови воспроизведение" | "выключи музыку" | "выключи песню" | "стоп музыка" | "стоп музыку"
+        | "музыку стоп" | "музыка стоп" | "стоп песня" | "стоп видео" | "хватит музыки" | "приостанови" | "приостанови музыку"
+        | "приостанови воспроизведение" | "тормозни музыку" | "pause" => "pause",
+        "дальше" | "давай дальше" | "дальше давай" | "следующий" | "следующая" | "следующую" | "следующее" | "следующий трек"
+        | "следующая песня" | "следующую песню" | "следующее видео" | "переключи" | "переключи трек" | "переключи песню"
+        | "другую песню" | "другой трек" | "скип" | "скипни" | "пропусти" | "пропусти трек" | "пропусти песню" | "некст" | "next"
+        | "трек дальше" | "песню дальше" | "включи следующую" | "включи следующий" | "включи следующую песню"
+        | "включи следующий трек" => "next",
+        "назад" | "трек назад" | "песню назад" | "предыдущий" | "предыдущая" | "предыдущую" | "предыдущее" | "предыдущий трек"
+        | "предыдущая песня" | "предыдущую песню" | "предыдущее видео" | "прошлый трек" | "прошлую песню" | "прошлая песня"
+        | "верни предыдущий" | "верни предыдущую" | "верни прошлую" | "верни прошлый трек" | "верни предыдущий трек"
+        | "верни предыдущую песню" | "верни прошлую песню" | "включи предыдущую" | "включи предыдущий"
+        | "включи предыдущую песню" | "включи предыдущий трек" | "previous" => "previous",
+        _ => return None,
+    })
+}
+
+/// «Что играет?», «что это за песня?»: read the player; a question is fine.
+fn media_status(s: &str) -> bool {
+    matches!(
+        s,
+        "что играет" | "что сейчас играет" | "что за песня" | "что это за песня" | "что за трек" | "что это за трек" | "что это играет"
+            | "как называется песня" | "как называется трек" | "как называется эта песня" | "кто поет" | "кто это поет"
+            | "кто исполняет" | "какая песня играет" | "какой трек играет" | "какая это песня" | "какая сейчас песня"
+    )
 }
 
 fn tool_command(s: &str, question: bool) -> Option<ToolCall> {
@@ -140,6 +255,11 @@ fn tool_command(s: &str, question: bool) -> Option<ToolCall> {
     let read_only = match s {
         "какая громкость" | "какая сейчас громкость" | "покажи громкость" | "проверь громкость" => Some(("system_volume",json!({"action":"get"}))),
         "какая яркость" | "покажи яркость" => Some(("display_brightness",json!({}))),
+        "сколько заряда у наушников" | "сколько заряда в наушниках" | "сколько заряда на наушниках" | "какой заряд у наушников"
+        | "какой заряд наушников" | "заряд наушников" | "сколько процентов у наушников" | "сколько процентов на наушниках"
+        | "сколько процентов в наушниках" | "батарея наушников" | "сколько зарядки у наушников" | "сколько зарядки в наушниках"
+        | "проверь заряд наушников" | "покажи заряд наушников" | "сколько заряда у эйрподсов" | "заряд эйрподсов"
+        | "сколько заряда у airpods" | "заряд airpods" => Some(("bluetooth_battery", json!({}))),
         _ => None,
     };
     if let Some((name, args)) = read_only { return Some(call(name, args)); }
@@ -150,15 +270,11 @@ fn tool_command(s: &str, question: bool) -> Option<ToolCall> {
         "включи звук" => Some(("system_volume", json!({"action":"unmute"}))),
         "сделай потише" | "потише" | "сделай тише" | "тише" | "еще тише" | "звук тише" | "убавь звук" | "убавь громкость" => Some(("system_volume",json!({"action":"change","delta":-10}))),
         "сделай погромче" | "погромче" | "сделай громче" | "громче" | "еще громче" | "звук громче" | "прибавь звук" | "прибавь громкость" => Some(("system_volume",json!({"action":"change","delta":10}))),
-        "пауза" | "поставь на паузу" | "поставь музыку на паузу" | "останови музыку" | "выключи музыку" | "стоп музыка" | "останови видео" | "поставь видео на паузу" => Some(("media_control", json!({"action":"pause"}))),
         "громкость на максимум" | "максимальная громкость" | "громкость на полную" | "сделай на полную" => Some(("system_volume", json!({"action":"set","percent":100}))),
         "сделай намного тише" | "намного тише" | "сильно тише" => Some(("system_volume", json!({"action":"change","delta":-25}))),
         "сделай намного громче" | "намного громче" | "сильно громче" => Some(("system_volume", json!({"action":"change","delta":25}))),
         "сделай чуть тише" | "сделай чуть потише" | "сделай немного потише" | "чуть тише" | "чуть потише" | "немного тише" | "немного потише" => Some(("system_volume",json!({"action":"change","delta":-5}))),
         "сделай чуть громче" | "сделай чуть погромче" | "сделай немного погромче" | "чуть громче" | "чуть погромче" | "немного громче" | "немного погромче" => Some(("system_volume",json!({"action":"change","delta":5}))),
-        "продолжи воспроизведение" | "включи музыку" | "продолжи музыку" | "играй дальше" | "сними с паузы" | "сними паузу" => Some(("media_control", json!({"action":"play"}))),
-        "следующий трек" | "следующая песня" | "переключи трек" | "следующую песню" => Some(("media_control", json!({"action":"next"}))),
-        "предыдущий трек" | "предыдущая песня" | "предыдущую песню" => Some(("media_control", json!({"action":"previous"}))),
         "открой калькулятор" => Some(("app_launch", json!({"query":"Калькулятор"}))),
         "открой блокнот" => Some(("app_launch", json!({"query":"Блокнот"}))),
         _ => None,
@@ -269,9 +385,65 @@ mod tests {
 
     #[test]
     fn fast_volume_answer_speaks_verified_value_without_reading_hardware_name() {
-        assert_eq!(answer("system_volume","Громкость 24% (Realtek Audio)",&json!({"volume":24,"muted":false})),"Громкость 24%");
-        assert_eq!(answer("system_volume","Звук выключен (Realtek Audio)",&json!({"volume":24,"muted":true})),"Звук выключен");
-        assert_eq!(answer("app_launch","Калькулятор открыт",&json!({})),"Калькулятор открыт");
+        assert_eq!(answer("system_volume","{}","Громкость 24% (Realtek Audio)",&json!({"volume":24,"muted":false})),"Громкость 24%");
+        assert_eq!(answer("system_volume","{}","Звук выключен (Realtek Audio)",&json!({"volume":24,"muted":true})),"Звук выключен");
+        assert_eq!(answer("app_launch","{}","Калькулятор открыт",&json!({})),"Калькулятор открыт");
+    }
+
+    #[test]
+    fn media_answers_name_the_track_like_a_person() {
+        let st = |title: &str, artist: &str, status: &str| json!({"state":{"available":true,"title":title,"artist":artist,"status":status}});
+        let a = |action: &str, data: &Value| answer("media_control", &json!({"action":action}).to_string(), "Следующий трек: …", data);
+        assert_eq!(a("next", &st("Self Aware", "Moonshine", "playing")), "«Self Aware» — Moonshine.");
+        assert_eq!(a("play", &st("Про любовь", "Земфира", "playing")), "Играет «Про любовь» — Земфира.");
+        assert_eq!(a("pause", &st("Про любовь", "Земфира", "paused")), "Пауза.");
+        assert_eq!(a("status", &st("Про любовь", "", "paused")), "На паузе «Про любовь».");
+        assert_eq!(a("status", &json!({"state":{"available":false}})), "Сейчас ничего не играет.");
+        assert_eq!(a("previous", &st("", "", "playing")), "Предыдущий трек.");
+        assert_eq!(media_failure(&json!({"state":{"available":false}})), "Плеер не открыт — запусти музыку в своём плеере.");
+    }
+
+    fn media_of(text: &str, has_player: bool) -> Option<String> {
+        match command_with(text, has_player) {
+            Some(Fast::Call(c)) if c.name == "media_control" => {
+                serde_json::from_str::<Value>(&c.arguments).unwrap()["action"].as_str().map(str::to_string)
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn every_way_to_say_play_pause_next_back_is_a_local_media_command() {
+        for (text, action) in [
+            ("Джарвис, играй.", "play"), ("Играй дальше", "play"), ("Верни музыку", "play"), ("Включи музыку обратно.", "play"),
+            ("Музыку!", "play"), ("Сними с паузы", "play"), ("Жарвис, продолжи музыку, пожалуйста", "play"),
+            ("Пауза.", "pause"), ("Джарвис, пауза!", "pause"), ("Поставь на паузу", "pause"), ("Стоп музыка", "pause"),
+            ("Джарвис, стоп музыка.", "pause"), ("Выключи музыку", "pause"), ("Останови видео", "pause"),
+            ("Жарвис. Дальше.", "next"), ("Дальше", "next"), ("Следующий трек", "next"), ("Переключи песню", "next"),
+            ("Скипни", "next"), ("Ярвис, следующую", "next"), ("Пропусти трек", "next"),
+            ("Назад", "previous"), ("Джарвис, назад.", "previous"), ("Предыдущий трек", "previous"), ("Верни прошлую песню", "previous"),
+            ("Что сейчас играет?", "status"), ("Джарвис, что это за песня?", "status"), ("Кто поёт?", "status"),
+        ] {
+            assert_eq!(media_of(text, true).as_deref(), Some(action), "{text}");
+        }
+    }
+
+    #[test]
+    fn bare_next_and_back_need_an_open_player_and_media_needs_the_whole_utterance() {
+        // Nothing open: «дальше» more likely means «go on», «назад» — «back».
+        for text in ["Дальше", "Назад", "Следующий"] {
+            assert_eq!(media_of(text, false), None, "{text}");
+        }
+        // Unambiguous forms still work without a known player (the tool then says so).
+        assert_eq!(media_of("Следующий трек", false).as_deref(), Some("next"));
+        assert_eq!(media_of("Пауза", false).as_deref(), Some("pause"));
+        // A question about an action, a negation or more words: the model decides.
+        for text in [
+            "Дальше?", "Не ставь на паузу", "Пауза и открой браузер", "Включи музыку на ютубе", "Назад в браузере",
+            "Дальше рассказывай", "Включи музыку погромче", "Играй что-нибудь весёлое", "Что дальше?", "Музыку Земфиры",
+        ] {
+            assert_eq!(media_of(text, true), None, "{text}");
+        }
     }
 
     #[test]

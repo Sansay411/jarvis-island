@@ -6,6 +6,8 @@ import { errorMessage, ipc, isTauri, on } from "../lib/ipc";
 import type { AudioState, DisplayBrightness, MediaState } from "../lib/types";
 import { startHubFeed } from "./hub";
 import { startTtsFeed } from "./tts";
+import { startBluetoothFeed } from "./bluetooth";
+import { startUpdatesFeed } from "./updates";
 
 interface SystemStore {
   media: MediaState | null;
@@ -177,6 +179,8 @@ useSystem.subscribe((state) => {
 export async function startSystemFeeds() {
   void startHubFeed();
   void startTtsFeed();
+  void startBluetoothFeed();
+  void startUpdatesFeed();
   if (!isTauri()) return;
 
   const s = useSystem.setState;

@@ -99,7 +99,7 @@ function Composer({ visible }: { visible: boolean }) {
           ref={ref}
           rows={1}
           value={text}
-          placeholder="Спросите или поручите задачу Джарвису…"
+          placeholder="Вопрос или задача для Джарвиса…"
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKey}
           spellCheck

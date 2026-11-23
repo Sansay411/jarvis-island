@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use windows::Foundation::TypedEventHandler;
 use windows::Media::Control::{
@@ -27,6 +26,11 @@ use crate::error::{AppError, AppResult};
 
 pub const EVT_MEDIA: &str = "media:changed";
 pub const EVT_ARTWORK: &str = "media:artwork";
+
+use super::data_media::remember;
+pub use super::data_media::{cached, has_player, is_playing};
+#[cfg(test)]
+pub use super::data_media::set_cached;
 
 pub use super::data_media::MediaState;
 
@@ -156,10 +160,12 @@ fn browser_site(aumid: &str, title: &str) -> String {
 
 pub fn snapshot() -> AppResult<MediaState> {
     let mgr = manager()?;
-    match current_session(&mgr) {
-        Some(s) => Ok(session_state(&s)?.0),
-        None => Ok(MediaState::default()),
-    }
+    let state = match current_session(&mgr) {
+        Some(s) => session_state(&s)?.0,
+        None => MediaState::default(),
+    };
+    remember(&state);
+    Ok(state)
 }
 
 /// Read, downscale (≤160 px) and encode the thumbnail as a JPEG data URL.
@@ -217,6 +223,14 @@ fn send_media_key(vk: VIRTUAL_KEY) {
 
 pub use super::data_media::ControlOutcome;
 
+/// The same track again from (near) its beginning.
+fn restarted(before: &MediaState, after: &MediaState) -> bool {
+    match (before.position_ms, after.position_ms) {
+        (Some(b), Some(a)) => b > 2_500 && a + 1_500 < b,
+        _ => false,
+    }
+}
+
 pub fn control(action: MediaAction) -> AppResult<ControlOutcome> {
     let mgr = manager()?;
     let Some(session) = current_session(&mgr) else {
@@ -254,11 +268,15 @@ pub fn control(action: MediaAction) -> AppResult<ControlOutcome> {
         let verified = match action {
             MediaAction::PlayPause => after.status != before.status,
             MediaAction::Play => after.status == "playing",
-            MediaAction::Pause => after.status == "paused",
+            MediaAction::Pause => after.status == "paused" || after.status == "stopped",
             MediaAction::Stop => after.status == "stopped" || after.status == "closed",
-            MediaAction::Next | MediaAction::Previous => after.track_key != before.track_key,
+            MediaAction::Next => after.track_key != before.track_key,
+            // «Назад» a few seconds into a track starts it over in most
+            // players: the same track, the position back near zero.
+            MediaAction::Previous => after.track_key != before.track_key || restarted(&before, &after),
         };
         if verified || Instant::now() > deadline {
+            remember(&after);
             return Ok(ControlOutcome { state: after, method: "session", verified });
         }
     }
@@ -390,6 +408,7 @@ impl MediaWatcher {
                         None => (MediaState::default(), None),
                     };
                     if last_state.as_ref() != Some(&state) {
+                        remember(&state);
                         let _ = app.emit(EVT_MEDIA, &state);
                     }
                     // Artwork is only re-read when the track identity changes;
@@ -451,6 +470,25 @@ impl MediaWatcher {
             }
             Err(e) => tracing::warn!("subscribing to media session failed: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(track: &str, pos: Option<i64>) -> MediaState {
+        MediaState { available: true, track_key: track.into(), position_ms: pos, status: "playing".into(), ..Default::default() }
+    }
+
+    #[test]
+    fn previous_that_restarts_the_track_counts_as_done() {
+        assert!(restarted(&at("a", Some(42_000)), &at("a", Some(300))));
+        // Already at the start, or no timeline: nothing to compare.
+        assert!(!restarted(&at("a", Some(1_200)), &at("a", Some(200))));
+        assert!(!restarted(&at("a", None), &at("a", None)));
+        // Still playing on: not restarted.
+        assert!(!restarted(&at("a", Some(42_000)), &at("a", Some(42_300))));
     }
 }
 

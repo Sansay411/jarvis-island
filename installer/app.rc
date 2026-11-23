@@ -1,0 +1,25 @@
+#pragma code_page(65001)
+#include <winver.h>
+
+1 ICON "installer.ico"
+1 24 "app.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 0,2,0,0
+PRODUCTVERSION 0,2,0,0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "041904B0"
+    BEGIN
+      VALUE "CompanyName", "Jarvis"
+      VALUE "FileDescription", "Установка Джарвиса"
+      VALUE "ProductName", "Jarvis"
+      VALUE "OriginalFilename", "jarvis-setup.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x419, 1200
+  END
+END

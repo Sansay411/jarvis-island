@@ -93,7 +93,9 @@ pub fn manager() -> AppResult<SessionManager> {
     Ok(SessionManager)
 }
 pub fn snapshot() -> AppResult<MediaState> {
-    Ok(state(track()?))
+    let state = state(track()?);
+    remember(&state);
+    Ok(state)
 }
 
 fn art_url(url: &str) -> Option<String> {

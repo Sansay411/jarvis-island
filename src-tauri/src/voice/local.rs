@@ -25,7 +25,7 @@ use super::models;
 use super::stt::{self, Recognizer, Transcript};
 use super::vad::{Vad, VadEvent};
 use super::{Ctl, LevelEvent, TranscriptEvent, VoiceManager, VoiceState, EVT_LEVEL, EVT_TRANSCRIPT};
-use crate::agent::Agent;
+use crate::agent::{Agent, Heard};
 use crate::error::{AppError, AppResult};
 use crate::store::settings::VoiceSettings;
 
@@ -80,7 +80,47 @@ const STABLE_FOR: Duration = Duration::from_millis(1300);
 /// for the name (when that is on). Counted from the end of JARVIS's own
 /// work and speech — the room's voices do not keep it open: with a film
 /// on, every line of dialogue used to be a command for the next minute.
-const SLEEP_AFTER: Duration = Duration::from_secs(25);
+/// 25 s still let a song and a talk at home be answered phrase after
+/// phrase (2026-11-20/21): a follow-up comes within seconds or not at all.
+const SLEEP_AFTER: Duration = Duration::from_secs(12);
+
+/// After «Слушаю» (or a click, or the shortcut) the next words are the
+/// command, whatever they are — for this long.
+const INVITE_FOR: Duration = Duration::from_secs(10);
+
+/// After the user's own media command, «дальше… дальше…» works without the
+/// name for this long, even with the music playing.
+const MEDIA_CHAIN: Duration = Duration::from_secs(10);
+
+/// How loud other apps stay while JARVIS listens and talks (≈ −10 dB).
+const DUCK_TO: f32 = 0.3;
+/// Where the levels to restore are kept until restored: a crash must not
+/// leave the user's music quiet for good (Windows remembers app levels).
+const DUCK_KEY: &str = "voice.ducked";
+
+/// What the full phrase says when the early cue heard the name in its
+/// opening but the final decode has none.
+#[derive(Debug, PartialEq)]
+enum LostName {
+    /// «Джас.»: the mangled name alone — the call itself.
+    Call,
+    /// «Джас. Включи музыку.»: the command after it, the name put back.
+    Command(String),
+    /// «Дарья, привет»: the cue misheard the opening; no call at all.
+    NotACall,
+}
+
+fn after_lost_name(text: &str) -> LostName {
+    let w = super::wake::spans(text);
+    let Some((_, first)) = w.first() else { return LostName::NotACall };
+    if !super::wake::near_name(first) {
+        return LostName::NotACall;
+    }
+    match w.get(1) {
+        None => LostName::Call,
+        Some((at, _)) => LostName::Command(format!("Джарвис, {}", text[*at..].trim())),
+    }
+}
 
 /// What JARVIS says when called by name alone.
 fn acknowledgement(vy: bool) -> String {
@@ -153,6 +193,12 @@ fn same_words(heard: &str, request: &str) -> bool {
     !h.is_empty() && (h == r || r.ends_with(&format!(" {h}")))
 }
 
+/// The answer asks the user something back, so the microphone stays open for
+/// the reply. Anything else closes the exchange.
+fn asks_back(answer: &str) -> bool {
+    answer.trim_end().trim_end_matches(|c: char| c == ')' || c == '»' || c == '"').ends_with('?')
+}
+
 fn short(t: &str, max: usize) -> String {
     let t = t.trim();
     if t.chars().count() <= max { t.to_string() } else { format!("{}…", t.chars().take(max).collect::<String>()) }
@@ -170,8 +216,9 @@ const DORMANT_FULL_DECODE: usize = 16_000 * 4;
 const DORMANT_HEAD: usize = 16_000 * 3;
 
 enum Ev {
-    /// Result, when the phrase ended, whether it continues the previous one.
-    Transcribed(AppResult<Transcript>, Instant, bool),
+    /// Result, when the phrase ended, whether it continues the previous one,
+    /// and which utterance it was.
+    Transcribed(AppResult<Transcript>, Instant, bool, u64),
     Delta(u64, String),
     TurnDone(u64, AppResult<String>),
     /// Part of a phrase, as a streaming voice makes it.
@@ -181,6 +228,8 @@ enum Ev {
     WakePreview(u64, AppResult<Transcript>),
     /// A decode of the utterance so far (awake), for endpointing.
     Progress(u64, AppResult<Transcript>),
+    /// Apps made quieter for the conversation.
+    Ducked(AppResult<Vec<crate::platform::audio::Ducked>>),
 }
 
 struct Pipeline {
@@ -206,7 +255,32 @@ struct Pipeline {
     last_ended: Option<Instant>,
     hearing_continues: bool,
     turn_finished: Option<Instant>,
-    pending_request: Option<String>,
+    /// The next request, and how sure it is to be for JARVIS.
+    pending_request: Option<(String, Heard)>,
+    /// How sure the running turn is to be for JARVIS. When unsure the model
+    /// may answer it with silence; until it says something, nothing is shown
+    /// or said.
+    turn_heard: Heard,
+    ambient_line: Option<String>,
+    /// The next words are the command, whatever they are, until then
+    /// («Слушаю», a click on the island, the shortcut).
+    invite_until: Option<Instant>,
+    /// The utterance whose opening woke JARVIS (early name cue).
+    woke_seq: Option<u64>,
+    /// When the user's last media command was taken.
+    last_media_at: Option<Instant>,
+    /// JARVIS's last answer (did it end with a question?).
+    last_answer: String,
+    /// Go back to waiting for the name once the line now queued is said.
+    sleep_after_reply: bool,
+    /// …and without the closing chime: the exchange ended by itself.
+    quiet_sleep: bool,
+    /// The running turn is a player command: its success is not spoken.
+    quiet_reply: bool,
+    /// Make playing apps quieter during a conversation (Settings → Голос).
+    duck_media: bool,
+    ducking: bool,
+    ducked: Vec<crate::platform::audio::Ducked>,
     splitter: PhraseSplitter,
     reply: String,
     spoken_any: bool,
@@ -297,14 +371,56 @@ impl Pipeline {
             self.awake = true;
             self.vm.set_awake(true);
             tracing::info!("voice: conversation started");
+            self.duck();
         }
         self.last_activity = Instant::now();
     }
 
+    /// Music under the user's voice is what the microphone hears instead of
+    /// the command: turn playing apps down for the conversation.
+    fn duck(&mut self) {
+        if !self.duck_media || self.ducking || !self.ducked.is_empty() || !crate::platform::media::is_playing() {
+            return;
+        }
+        self.ducking = true;
+        let tx = self.ev_tx.clone();
+        tauri::async_runtime::spawn(async move {
+            let res = crate::platform::blocking(|| crate::platform::audio::duck(DUCK_TO)).await;
+            let _ = tx.send(Ev::Ducked(res));
+        });
+    }
+
+    /// Put the apps back as they were (unless the user moved them meanwhile).
+    fn unduck(&mut self) {
+        let list = std::mem::take(&mut self.ducked);
+        if list.is_empty() {
+            return;
+        }
+        let store = self.vm.app.state::<crate::state::AppState>().store.clone();
+        tauri::async_runtime::spawn(async move {
+            match crate::platform::blocking(move || crate::platform::audio::unduck(&list, false)).await {
+                Ok(()) => {
+                    let _ = store.kv_set(DUCK_KEY, "[]");
+                }
+                Err(e) => tracing::warn!("restoring app volumes failed: {e}"),
+            }
+        });
+    }
+
     /// Back to waiting for the name: silence, cancel the running turn.
     fn sleep(&mut self) {
+        self.sleep_as(false);
+    }
+
+    /// `quiet`: no closing chime. The exchange ended by itself — the answer
+    /// was said, or the words were somebody else's — so JARVIS just folds;
+    /// a sound after every answer, or after the room's talk, is noise.
+    fn sleep_as(&mut self, quiet: bool) {
         self.hush();
         self.pending_request = None;
+        self.invite_until = None;
+        self.sleep_after_reply = false;
+        self.ambient_line = None;
         self.utterance_seq += 1;
         if self.turn_active {
             self.cancelled_turn = Some(self.turn_seq);
@@ -312,16 +428,23 @@ impl Pipeline {
         }
         if self.awake {
             self.awake = false;
-            self.audio.play_pcm16(&AudioIo::chime_down());
+            if !quiet {
+                self.audio.play_pcm16(&AudioIo::chime_down());
+            }
             self.vm.set_awake(false);
             tracing::info!("voice: waiting for the name");
         }
+        self.unduck();
     }
 
     /// The conversation is over and nobody listens for the name: keep the
     /// devices warm, hear nothing.
     fn rest(&mut self) {
-        self.sleep();
+        self.rest_as(false);
+    }
+
+    fn rest_as(&mut self, quiet: bool) {
+        self.sleep_as(quiet);
         self.resting_since = Some(Instant::now());
         tracing::info!("voice: resting, microphone kept open without listening");
     }
@@ -329,6 +452,19 @@ impl Pipeline {
     /// The acknowledgement after the bare name is the only thing playing.
     fn ack_only(&self) -> bool {
         self.ack_gen == Some(self.speech_gen) && !self.turn_active
+    }
+
+    /// The user was asked for the command (or opened the conversation
+    /// themselves): whatever they say next is it.
+    fn invite_open(&self) -> bool {
+        !self.turn_active && self.invite_until.is_some_and(|t| Instant::now() < t)
+    }
+
+    /// «Слушаю» (or a greeting back) after the bare name.
+    fn acknowledge(&mut self, text: &str) {
+        self.say(answer_call(text, self.address_vy));
+        self.ack_gen = Some(self.speech_gen);
+        self.invite_until = Some(Instant::now() + INVITE_FOR);
     }
 
     /// Drop everything queued or playing.
@@ -343,15 +479,30 @@ impl Pipeline {
         self.playback_pending = false;
     }
 
-    fn start_turn(&mut self, text: String) {
+    fn start_turn(&mut self, text: String, heard: Heard) {
         self.turn_seq += 1;
         self.ack_gen = None;
+        self.invite_until = None;
+        if !heard.may_be_silent() {
+            self.ambient_line = None;
+        }
         self.turn_active = true;
+        self.turn_heard = heard;
         self.turn_text = text.clone();
         self.splitter = PhraseSplitter::default();
         self.reply.clear();
         self.spoken_any = false;
-        self.filler_at = Some(Instant::now() + FILLER_AFTER);
+        let words = text.rsplit("] ").next().unwrap_or(&text);
+        let action = crate::agent::fast::media_action(words);
+        if action.is_some() {
+            self.last_media_at = Some(Instant::now());
+        }
+        // A player command that works is its own answer (see the agent's
+        // fast path): only a failure or «что играет» is spoken.
+        self.quiet_reply = action.is_some_and(|a| a != "status");
+        // Words that may be the room's get no «одну секунду»: that alone
+        // would be an answer to them.
+        self.filler_at = (!heard.may_be_silent()).then(|| Instant::now() + FILLER_AFTER);
         self.turn_started = Some(Instant::now());
         let seq = self.turn_seq;
         let (dtx, mut drx) = mpsc::unbounded_channel::<String>();
@@ -364,15 +515,27 @@ impl Pipeline {
         let agent = self.vm.app.state::<Arc<Agent>>().inner().clone();
         let done = self.ev_tx.clone();
         tauri::async_runtime::spawn(async move {
-            let res = agent.voice_turn(text, dtx).await;
+            let res = agent.voice_turn(text, dtx, heard).await;
             let _ = done.send(Ev::TurnDone(seq, res));
         });
     }
 
     /// «Стоп», «хватит»: silence, cancel, and end the voice mode — back to
-    /// waiting for the name, or microphone off.
-    fn stop_all(&mut self) {
+    /// waiting for the name, or microphone off. When JARVIS itself is doing
+    /// nothing and the music is what plays — «Джарвис, стоп» from silence, or
+    /// «стоп» right after «включи музыку» — the music is what to stop.
+    /// `opened_by_it`: this very phrase called JARVIS.
+    fn stop_all(&mut self, opened_by_it: bool) {
         let agent = self.vm.app.state::<Arc<Agent>>().inner().clone();
+        let own = agent.is_busy() || self.turn_active || self.audio.is_playing() || self.queued_phrases > 0 || self.held.is_some();
+        let after_media = self.last_media_at.is_some_and(|t| t.elapsed() < MEDIA_CHAIN);
+        if !own && (opened_by_it || after_media) && crate::platform::media::is_playing() {
+            tracing::info!(opened_by_it, after_media, "stop word with nothing of JARVIS's own going on: pausing the music");
+            self.hush();
+            self.start_turn("Пауза.".into(), Heard::Addressed);
+            self.sleep_after_reply = true;
+            return;
+        }
         tracing::info!(busy = agent.is_busy(), "stop word");
         self.hush();
         if agent.is_busy() {
@@ -384,6 +547,26 @@ impl Pipeline {
             self.sleep();
         } else {
             self.rest();
+        }
+    }
+
+    /// «Всё, спасибо», «отбой»: drop what runs, say the goodbye (if any) and
+    /// wait for the name again once it is said.
+    fn dismiss(&mut self, reply: &str) {
+        let agent = self.vm.app.state::<Arc<Agent>>().inner().clone();
+        self.hush();
+        if self.turn_active {
+            self.cancelled_turn = Some(self.turn_seq);
+            agent.cancel();
+        }
+        self.pending_request = None;
+        tracing::info!(silent = reply.is_empty(), "voice: conversation closed by the user");
+        if reply.is_empty() {
+            if self.wake_enabled { self.sleep() } else { self.rest() }
+        } else {
+            self.say(reply.to_string());
+            self.sleep_after_reply = true;
+            self.quiet_sleep = true;
         }
     }
 
@@ -402,20 +585,23 @@ impl Pipeline {
         }
         self.vm.metrics.lock().last_barge_in_ms = Some(t.elapsed().as_millis() as u64);
         self.wake();
-        self.say(answer_call(text, self.address_vy));
-        self.ack_gen = Some(self.speech_gen);
+        self.acknowledge(text);
     }
 
     /// The user spoke up over a running task or a reply: drop it and handle
     /// the new words. A task is cancelled first and the words start the next
     /// turn when it reports back (`Ev::TurnDone`).
-    fn take_over(&mut self, text: String) {
+    fn take_over(&mut self, text: String, heard: Heard) {
         let agent = self.vm.app.state::<Arc<Agent>>().inner().clone();
         let t = Instant::now();
         // The model is told what was cut off, so «нет, короче» or «не эту
         // папку» read as corrections of what it was doing, not new topics.
+        // An exact local command («дальше», «пауза») needs no note: with one
+        // it would miss the local path and wait for the model.
         let speaking = self.held.is_some() || self.audio.is_playing() || self.queued_phrases > 0;
-        let text = if self.turn_active {
+        let text = if crate::agent::fast::command(&text).is_some() {
+            text
+        } else if self.turn_active {
             format!("[Пользователь перебил выполнение просьбы «{}»] {text}", short(&self.turn_text, 120))
         } else if speaking {
             format!("[Пользователь перебил твой голосовой ответ] {text}")
@@ -426,28 +612,35 @@ impl Pipeline {
         self.last_activity = Instant::now();
         self.vm.metrics.lock().last_barge_in_ms = Some(t.elapsed().as_millis() as u64);
         if self.turn_active {
-            tracing::info!("running voice turn replaced by new words");
+            tracing::info!(?heard, "running voice turn replaced by new words");
             self.cancelled_turn = Some(self.turn_seq);
-            self.pending_request = Some(text);
+            self.pending_request = Some((text, heard));
             agent.cancel();
         } else if agent.is_busy() {
-            self.say("Сейчас я выполняю задачу из чата. Скажите ещё раз, когда я закончу.".into());
+            if !heard.may_be_silent() {
+                self.say("Сейчас я выполняю задачу из чата. Скажите ещё раз, когда я закончу.".into());
+            }
         } else {
-            self.start_turn(text);
+            self.start_turn(text, heard);
         }
     }
 
-    fn on_request(&mut self, text: String, continues: bool) {
+    /// `heard`: how sure the words are to be for JARVIS (when unsure the
+    /// model may stay silent); `opened_by_it`: this phrase called JARVIS from
+    /// waiting for the name.
+    fn on_request(&mut self, text: String, continues: bool, heard: Heard, opened_by_it: bool) {
         let agent = self.vm.app.state::<Arc<Agent>>().inner().clone();
         if is_stop(&text) {
-            self.stop_all();
+            self.stop_all(opened_by_it);
             return;
         }
+        // The rest of a thought is as much the user's as its start was.
+        let merged = self.turn_heard.merge(heard);
         if self.turn_active && continues {
             // The user paused mid-thought and went on: one request, not two
             // answers (their speech already hushed any reply).
             tracing::info!("phrase merged into the running voice turn");
-            self.pending_request = Some(format!("{} {}", self.turn_text, text));
+            self.pending_request = Some((format!("{} {}", self.turn_text, text), merged));
             self.cancelled_turn = Some(self.turn_seq);
             agent.cancel();
         } else if continues && !self.turn_active && !self.turn_text.is_empty() && self.turn_finished.is_some_and(|t| t.elapsed() < Duration::from_secs(6)) {
@@ -456,16 +649,18 @@ impl Pipeline {
             tracing::info!("phrase merged with the just-answered one");
             self.hush();
             let whole = format!("{} {}", self.turn_text, text);
-            self.start_turn(whole);
+            self.start_turn(whole, merged);
         } else if self.turn_active {
             // A new request while one runs: the newest words win at once -
             // waiting in a queue behind a long task felt like not being heard.
             tracing::info!("new request replaces the running voice turn");
-            self.take_over(text);
+            self.take_over(text, heard);
         } else if agent.is_busy() {
-            self.say("Сейчас я выполняю задачу из чата. Скажите ещё раз, когда я закончу.".into());
+            if !heard.may_be_silent() {
+                self.say("Сейчас я выполняю задачу из чата. Скажите ещё раз, когда я закончу.".into());
+            }
         } else {
-            self.start_turn(text);
+            self.start_turn(text, heard);
         }
     }
 
@@ -476,7 +671,7 @@ impl Pipeline {
             VoiceState::Hearing
         } else if self.audio.is_playing() {
             VoiceState::Speaking
-        } else if self.transcribing > 0 || self.turn_active || self.queued_phrases > 0 {
+        } else if self.transcribing > 0 || (self.turn_active && self.ambient_line.is_none()) || self.queued_phrases > 0 {
             VoiceState::Thinking
         } else {
             VoiceState::Listening
@@ -534,6 +729,17 @@ impl VoiceManager {
         };
         self.listener_failures.store(0, std::sync::atomic::Ordering::Relaxed);
         self.mic_failures.store(0, std::sync::atomic::Ordering::Relaxed);
+        // Levels a previous run turned down and never put back (it crashed or
+        // was killed): restore them by app name.
+        if let Some(saved) = store.kv_get(DUCK_KEY).and_then(|j| serde_json::from_str::<Vec<crate::platform::audio::Ducked>>(&j).ok()).filter(|l| !l.is_empty()) {
+            tracing::info!(apps = saved.len(), "voice: restoring app volumes left turned down");
+            let st = store.clone();
+            tauri::async_runtime::spawn(async move {
+                if crate::platform::blocking(move || crate::platform::audio::unduck(&saved, true)).await.is_ok() {
+                    let _ = st.kv_set(DUCK_KEY, "[]");
+                }
+            });
+        }
         let initial = if dormant { VoiceState::Dormant } else { VoiceState::Listening };
         self.set_state(initial, None, Some((&audio.input_device, &audio.output_device)));
         tracing::info!(voice = %speaker.speaker.name(), dormant, "local voice session started");
@@ -596,6 +802,18 @@ impl VoiceManager {
             hearing_continues: false,
             turn_finished: None,
             pending_request: None,
+            turn_heard: Heard::Addressed,
+            ambient_line: None,
+            invite_until: None,
+            woke_seq: None,
+            last_media_at: None,
+            last_answer: String::new(),
+            sleep_after_reply: false,
+            quiet_sleep: false,
+            quiet_reply: false,
+            duck_media: cfg.duck_media,
+            ducking: false,
+            ducked: Vec::new(),
             splitter: PhraseSplitter::default(),
             reply: String::new(),
             spoken_any: false,
@@ -674,6 +892,7 @@ impl VoiceManager {
                             let path = pl.model_path.clone();
                             let tx = ev_tx.clone();
                             let dormant = !pl.awake;
+                            let seq = pl.utterance_seq;
                             tokio::task::spawn_blocking(move || {
                                 let res = if dormant && utterance.len() > DORMANT_FULL_DECODE {
                                     // Only a call by name matters here: decode the
@@ -685,7 +904,7 @@ impl VoiceManager {
                                 } else {
                                     engine.transcribe(&path, &utterance)
                                 };
-                                let _ = tx.send(Ev::Transcribed(res, ended, continues));
+                                let _ = tx.send(Ev::Transcribed(res, ended, continues, seq));
                             });
                         }
                         VadEvent::Preview(pcm) if !pl.awake && pl.wake_enabled && pl.preview_job.is_none() => {
@@ -751,8 +970,26 @@ impl VoiceManager {
                             let ended = Instant::now();
                             pl.last_ended = Some(ended);
                             let continues = std::mem::take(&mut pl.hearing_continues);
-                            let _ = ev_tx.send(Ev::Transcribed(Ok(t), ended, continues));
+                            let _ = ev_tx.send(Ev::Transcribed(Ok(t), ended, continues, seq));
                             pl.refresh_state(&vad);
+                        }
+                    }
+                    Ev::Ducked(res) => {
+                        pl.ducking = false;
+                        match res {
+                            Ok(list) if !list.is_empty() => {
+                                tracing::info!(apps = list.len(), "voice: playing apps turned down for the conversation");
+                                if let Ok(json) = serde_json::to_string(&list) {
+                                    let _ = store.kv_set(DUCK_KEY, &json);
+                                }
+                                pl.ducked = list;
+                                // The conversation ended before the apps went down.
+                                if !pl.awake {
+                                    pl.unduck();
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!("turning apps down failed: {e}"),
                         }
                     }
                     Ev::WakePreview(seq,res) => {
@@ -761,13 +998,14 @@ impl VoiceManager {
                             let ms=pl.hearing_since.map(|t|t.elapsed().as_millis() as u64).unwrap_or(0);
                             tracing::info!(ms,"voice: early name detected");
                             self.metrics.lock().last_wake_ms=Some(ms);
+                            pl.woke_seq = Some(seq);
                             pl.wake();
                             // Heard: a short cue now, the answer after the command.
                             pl.audio.play_pcm16(&AudioIo::chime());
                             pl.refresh_state(&vad);
                         }
                     }
-                    Ev::Transcribed(res, ended, continues) => {
+                    Ev::Transcribed(res, ended, continues, seq) => {
                         pl.transcribing = pl.transcribing.saturating_sub(1);
                         match res {
                             Ok(t) => {
@@ -775,8 +1013,12 @@ impl VoiceManager {
                                 let words = t.text.split_whitespace().count();
                                 tracing::info!(ms = t.ms, words, "speech recognised");
                                 let meaningful = stt::is_meaningful(&t.text);
-                                // Words over «Слушаю» (or the wake cue) are the command itself.
-                                let invited = pl.ack_only();
+                                // Words over «Слушаю» (or after a click or the shortcut)
+                                // are the command itself.
+                                let invited = pl.invite_open();
+                                // This utterance's opening woke JARVIS: it is addressed,
+                                // whatever the final decode made of the name.
+                                let woke_here = pl.woke_seq == Some(seq);
                                 let reply_busy = !invited && (pl.audio.is_playing() || pl.queued_phrases > 0);
                                 if invited && meaningful {
                                     pl.hush();
@@ -804,7 +1046,24 @@ impl VoiceManager {
                                     pl.refresh_state(&vad);
                                     continue;
                                 }
-                                if pl.awake && pl.wake_enabled && meaningful && !invited {
+                                // The cue heard the name, the decode lost it («Джас.»).
+                                // Without even a mangled name the cue was wrong: the
+                                // phrase is judged like any unnamed one, and if it is not
+                                // for JARVIS the conversation it opened closes at once.
+                                let mut false_cue = false;
+                                if pl.awake && woke_here && meaningful && super::wake::addressed(&t.text).is_none() && super::wake::from_name(&t.text, 4).is_none() {
+                                    match after_lost_name(&t.text) {
+                                        LostName::Call => {
+                                            pl.emit_transcript("user", &t.text, true);
+                                            pl.call(&t.text);
+                                            pl.refresh_state(&vad);
+                                            continue;
+                                        }
+                                        LostName::Command(named) => t.text = named,
+                                        LostName::NotACall => false_cue = true,
+                                    }
+                                }
+                                if pl.awake && pl.wake_enabled && meaningful {
                                     let ctx = intent::Context {
                                         busy: pl.turn_active || reply_busy,
                                         speaking: reply_busy,
@@ -812,16 +1071,55 @@ impl VoiceManager {
                                         continues,
                                         turn_age: pl.turn_started.map_or(Duration::ZERO, |s| s.elapsed()),
                                         headphones: pl.audio.headphones,
+                                        media_playing: crate::platform::media::is_playing(),
+                                        media_chain: pl.last_media_at.is_some_and(|t| t.elapsed() < MEDIA_CHAIN),
+                                        asked: pl.last_answer.trim_end().ends_with('?') && pl.turn_finished.is_some_and(|t| t.elapsed() < SLEEP_AFTER),
+                                        invited,
                                     };
                                     match intent::classify(&t.text, &ctx) {
                                         Intent::Ignore => {
-                                            tracing::info!(words, turn_active = pl.turn_active, "voice: room speech ignored while busy");
+                                            let busy = pl.turn_active || reply_busy;
+                                            tracing::info!(words, busy, "voice: words not for JARVIS ignored");
+                                            // Others are talking (a whole sentence, not a cough), or
+                                            // the early cue misheard: stop listening without the name
+                                            // until called. Not in the middle of a «дальше… дальше…»
+                                            // run, where the song itself is what the mic hears.
+                                            let chain = pl.last_media_at.is_some_and(|t| t.elapsed() < MEDIA_CHAIN);
+                                            if !busy && !invited && (false_cue || (words >= 3 && !chain)) {
+                                                tracing::info!("voice: the room is talking, back to waiting for the name");
+                                                pl.sleep_as(true);
+                                            }
                                             pl.refresh_state(&vad);
                                             continue;
                                         }
                                         Intent::Stop => {
                                             pl.emit_transcript("user", &t.text, true);
-                                            pl.stop_all();
+                                            pl.stop_all(woke_here);
+                                            pl.refresh_state(&vad);
+                                            continue;
+                                        }
+                                        Intent::Dismiss(reply) => {
+                                            pl.emit_transcript("user", &t.text, true);
+                                            pl.dismiss(reply);
+                                            pl.refresh_state(&vad);
+                                            continue;
+                                        }
+                                        Intent::Ambient { text, cut } => {
+                                            tracing::info!(words, cut, "voice: unnamed words for the model to judge");
+                                            // Shown only once the model answers them.
+                                            pl.ambient_line = Some(text.clone());
+                                            pl.speech_end_at = Some(ended);
+                                            pl.first_audio_pending = true;
+                                            if cut { pl.take_over(text, Heard::Unnamed) } else { pl.on_request(text, continues, Heard::Unnamed, false) }
+                                            pl.refresh_state(&vad);
+                                            continue;
+                                        }
+                                        Intent::Unsure(text) => {
+                                            tracing::info!(words, "voice: named words that read like talk, for the model to judge");
+                                            pl.ambient_line = Some(text.clone());
+                                            pl.speech_end_at = Some(ended);
+                                            pl.first_audio_pending = true;
+                                            pl.on_request(text, continues, Heard::Unsure, woke_here);
                                             pl.refresh_state(&vad);
                                             continue;
                                         }
@@ -836,7 +1134,7 @@ impl VoiceManager {
                                             pl.emit_transcript("user", &text, true);
                                             pl.speech_end_at = Some(ended);
                                             pl.first_audio_pending = true;
-                                            pl.take_over(text);
+                                            pl.take_over(text, Heard::Addressed);
                                             pl.refresh_state(&vad);
                                             continue;
                                         }
@@ -862,25 +1160,57 @@ impl VoiceManager {
                                 } else if super::wake::addressed(&t.text).is_some_and(|a|a.only_name) {
                                     pl.wake();
                                     pl.emit_transcript("user",&t.text,true);
-                                    pl.say(answer_call(&t.text, pl.address_vy));
-                                    pl.ack_gen = Some(pl.speech_gen);
+                                    pl.acknowledge(&t.text);
                                 } else if !pl.awake {
                                     // Waiting for the name: phrases not addressed to JARVIS
                                     // are dropped here — not shown, logged or sent.
                                     match super::wake::addressed(&t.text) {
                                         Some(a) => {
                                             tracing::info!(only_name = a.only_name, "voice: called by name");
-                                            pl.wake();
-                                            pl.emit_transcript("user", &t.text, true);
-                                            if a.only_name {
-                                                let ack = answer_call(&t.text, pl.address_vy);
-                                                pl.say(ack);
-                                                pl.ack_gen = Some(pl.speech_gen);
-                                            } else {
-                                                pl.speech_end_at = Some(ended);
-                                                pl.first_audio_pending = true;
-                                                pl.on_request(t.text, false);
+                                            // Named: the same reading as when awake and idle.
+                                            let intent = intent::classify(&t.text, &intent::Context::default());
+                                            if intent != Intent::Ignore {
+                                                pl.wake();
                                             }
+                                            // Talk with the name in it is shown only once the
+                                            // model answers it.
+                                            if !matches!(intent, Intent::Ignore | Intent::Unsure(_)) {
+                                                pl.emit_transcript("user", &t.text, true);
+                                            }
+                                            match intent {
+                                                Intent::Call => pl.acknowledge(&t.text),
+                                                Intent::Stop => pl.stop_all(true),
+                                                Intent::Dismiss(reply) => pl.dismiss(reply),
+                                                Intent::Ignore => tracing::info!("voice: named, but for another assistant"),
+                                                Intent::Unsure(text) => {
+                                                    tracing::info!(words, "voice: named words that read like talk, for the model to judge");
+                                                    pl.ambient_line = Some(text.clone());
+                                                    pl.speech_end_at = Some(ended);
+                                                    pl.first_audio_pending = true;
+                                                    pl.on_request(text, false, Heard::Unsure, true);
+                                                }
+                                                Intent::Request(text) | Intent::Replace(text) | Intent::Ambient { text, .. } => {
+                                                    pl.speech_end_at = Some(ended);
+                                                    pl.first_audio_pending = true;
+                                                    pl.on_request(text, false, Heard::Addressed, true);
+                                                }
+                                            }
+                                        }
+                                        // Player commands count from anyone, without the name (the
+                                        // user's choice, 2026-11-21): exact player words only,
+                                        // never over JARVIS's own voice or as an echo of it, never
+                                        // into a chat task he is doing. A bare «стоп» pauses the
+                                        // music when JARVIS himself has nothing going on.
+                                        None if !reply_busy
+                                            && intent::player_command(&t.text).is_some()
+                                            && (pl.audio.headphones || !is_echo(&t.text, &pl.recent_said))
+                                            && !pl.vm.app.state::<Arc<Agent>>().is_busy() =>
+                                        {
+                                            let command = intent::player_command(&t.text).unwrap_or_default();
+                                            tracing::info!(words, "voice: player command without the name");
+                                            pl.speech_end_at = Some(ended);
+                                            pl.first_audio_pending = true;
+                                            pl.on_request(command, false, Heard::Addressed, true);
                                         }
                                         // The text stays in the local log only: it shows how
                                         // the recogniser hears the name when a call is missed.
@@ -890,7 +1220,7 @@ impl VoiceManager {
                                     pl.emit_transcript("user", &t.text, true);
                                     pl.speech_end_at = Some(ended);
                                     pl.first_audio_pending = true;
-                                    pl.on_request(t.text, continues);
+                                    pl.on_request(t.text, continues, Heard::Addressed, woke_here);
                                 }
                             }
                             Err(e) => {
@@ -902,6 +1232,9 @@ impl VoiceManager {
                     }
                     Ev::Delta(seq, d) if seq == pl.turn_seq && pl.cancelled_turn != Some(seq) => {
                         pl.filler_at = None;
+                        if let Some(line) = pl.ambient_line.take() {
+                            pl.emit_transcript("user", &line, true);
+                        }
                         pl.reply.push_str(&d);
                         pl.emit_transcript("assistant", &d, false);
                         for phrase in pl.splitter.push(&d) {
@@ -913,29 +1246,59 @@ impl VoiceManager {
                         pl.turn_active = false;
                         pl.filler_at = None;
                         pl.turn_finished = Some(Instant::now());
+                        let heard = std::mem::take(&mut pl.turn_heard);
+                        pl.ambient_line = None;
                         match res {
                             // Cut off by the user just as it finished: say nothing of it.
                             Ok(_) if pl.cancelled_turn == Some(seq) => {}
+                            // The model judged the words somebody else's: nothing was
+                            // said, and JARVIS folds without a sound.
+                            Ok(final_text) if heard.may_be_silent() && final_text.trim() == crate::agent::SILENT => {
+                                tracing::info!(?heard, "voice: the model judged the words not meant for JARVIS");
+                                pl.turn_text.clear();
+                                pl.last_answer.clear();
+                                if pl.pending_request.is_none() {
+                                    pl.sleep_as(true);
+                                }
+                            }
                             Ok(final_text) => {
                                 if let Some(rest) = pl.splitter.finish() {
                                     pl.say(rest);
-                                } else if !pl.spoken_any && !final_text.trim().is_empty() {
+                                } else if !pl.spoken_any && !final_text.trim().is_empty() && !pl.quiet_reply {
                                     pl.say(super::phrases::speakable(&final_text));
                                 }
                                 let shown = if pl.reply.trim().is_empty() { final_text } else { pl.reply.clone() };
                                 pl.emit_transcript("assistant", shown.trim(), true);
+                                pl.last_answer = shown.trim().to_string();
+                                // The request is done: stop listening once the answer is
+                                // said. Staying open for follow-ups made JARVIS answer the
+                                // room after every command. Only a question back keeps
+                                // the microphone open for the reply.
+                                if !asks_back(&pl.last_answer) {
+                                    pl.sleep_after_reply = true;
+                                    pl.quiet_sleep = true;
+                                }
                             }
                             Err(e) => {
                                 let msg = e.to_string();
-                                if pl.pending_request.is_none() && !msg.contains("отмен") && !msg.to_lowercase().contains("cancel") {
+                                // Words that may have been the room's get no error aloud either.
+                                if !heard.may_be_silent() && pl.pending_request.is_none() && !msg.contains("отмен") && !msg.to_lowercase().contains("cancel") {
                                     pl.audio.play_pcm16(&AudioIo::chime_error());
                                     pl.say(format!("Не получилось: {}", super::phrases::speakable(&msg)));
                                 }
+                                if pl.cancelled_turn != Some(seq) {
+                                    pl.sleep_after_reply = true;
+                                    pl.quiet_sleep = true;
+                                }
                             }
                         }
-                        if let Some(next) = pl.pending_request.take() {
+                        if let Some((next, next_heard)) = pl.pending_request.take() {
                             pl.hush();
-                            pl.start_turn(next);
+                            if next_heard.may_be_silent() {
+                                pl.ambient_line = Some(next.rsplit("] ").next().unwrap_or(&next).to_string());
+                            }
+                            pl.sleep_after_reply = false;
+                            pl.start_turn(next, next_heard);
                         }
                         pl.refresh_state(&vad);
                     }
@@ -977,7 +1340,10 @@ impl VoiceManager {
                 }
                 Some(c) = ctl_rx.recv() => {
                     match c {
-                        Ctl::Wake => pl.wake(),
+                        Ctl::Wake => {
+                            pl.wake();
+                            pl.invite_until = Some(Instant::now() + INVITE_FOR);
+                        }
                         Ctl::Sleep => pl.sleep(),
                         Ctl::Rest => pl.rest(),
                         Ctl::Hush => pl.hush(),
@@ -1006,6 +1372,13 @@ impl VoiceManager {
                         tracing::info!(turn=pl.turn_seq,"voice playback drained");
                         pl.playback_pending = false;
                     }
+                    // Not while the user is still talking: words over the end of
+                    // the answer are theirs to finish.
+                    if pl.sleep_after_reply && !pl.turn_active && pl.queued_phrases == 0 && !pl.audio.is_playing() && !vad.is_active() && pl.transcribing == 0 {
+                        pl.sleep_after_reply = false;
+                        let quiet = std::mem::take(&mut pl.quiet_sleep);
+                        if pl.wake_enabled { pl.sleep_as(quiet) } else { pl.rest_as(quiet) }
+                    }
                     if last_mic.elapsed()>Duration::from_secs(5) {
                         break Err(AppError::platform("Звук с микрофона перестал поступать. Переподключаю слушатель."));
                     }
@@ -1030,6 +1403,7 @@ impl VoiceManager {
         if pl.turn_active {
             self.app.state::<Arc<Agent>>().cancel();
         }
+        pl.unduck();
         audio.stop();
         // Keep the model warm for a quick restart, then free the memory.
         let me = Arc::clone(self);
@@ -1069,6 +1443,17 @@ mod tests {
     }
 
     #[test]
+    fn a_name_the_final_decode_mangled_is_still_a_call_and_a_wrong_cue_is_none() {
+        assert_eq!(after_lost_name("Джас."), LostName::Call);
+        assert_eq!(after_lost_name("Джас. Включи музыку."), LostName::Command("Джарвис, Включи музыку.".into()));
+        assert_eq!(after_lost_name("Жаз, дальше"), LostName::Command("Джарвис, дальше".into()));
+        // The cue misheard «Дар…» in «Дарья»: no call.
+        assert_eq!(after_lost_name("Дарья, привет."), LostName::NotACall);
+        assert_eq!(after_lost_name("Включи музыку."), LostName::NotACall);
+        assert_eq!(after_lost_name(""), LostName::NotACall);
+    }
+
+    #[test]
     fn a_second_decode_of_the_running_request_is_recognised() {
         assert!(same_words("Красавчик, от души, брат!", "Красавчик от души брат."));
         assert!(same_words("закрой тикток", "[Пользователь перебил твой голосовой ответ] Закрой ТикТок."));
@@ -1085,6 +1470,16 @@ mod tests {
         assert!(is_stop("Джарвис, хватит!"));
         assert!(!is_stop("Стоп, открой калькулятор"));
         assert!(!is_stop("Открой браузер"));
+    }
+
+    #[test]
+    fn only_a_question_back_keeps_the_microphone_open_after_an_answer() {
+        for a in ["Включил.", "Сделал потише — тридцать процентов.", "Играет «Про любовь» — Земфира", "", "Готово!"] {
+            assert!(!asks_back(a), "{a}");
+        }
+        for a in ["Какую папку открыть?", "Отправить Маше?  ", "Ты про «Ведьму»?»", "Ты про «Ведьму?»"] {
+            assert!(asks_back(a), "{a}");
+        }
     }
 
     #[test]

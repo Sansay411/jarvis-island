@@ -207,12 +207,28 @@ export const useAgent = create<AgentStore>((set, get) => ({
 
 /** Turns the voice pipeline speaks itself (never read aloud a second time). */
 const voiceTurns = new Set<string>();
+/** Unnamed voice phrases waiting for the model's verdict: their words join
+ * the chat only once it answers them. */
+const ambientTurns = new Map<string, string>();
+
+/** The user's words of an ambient turn, once it turns out to be meant for JARVIS. */
+function revealAmbient(turnId: string, items: ChatItem[]): ChatItem[] {
+  const text = ambientTurns.get(turnId);
+  if (text === undefined) return items;
+  ambientTurns.delete(turnId);
+  return [...items, { kind: "user", id: uid(), text, attachments: [] }];
+}
 
 export function applyAgentEvent(ev: AgentEvent) {
   const set = useAgent.setState;
   switch (ev.type) {
     case "turnStarted":
       if (ev.voice) voiceTurns.add(ev.turnId);
+      if (ev.ambient) {
+        // Possibly the room's words: no bubble, no «thinking» until the model answers.
+        ambientTurns.set(ev.turnId, ev.userText);
+        break;
+      }
       set((s) => {
         // Requests started outside the composer (CLI, voice) still appear in the chat.
         const last = [...s.items].reverse().find((it) => it.kind === "user");
@@ -244,6 +260,9 @@ export function applyAgentEvent(ev: AgentEvent) {
       });
       break;
     case "textDelta":
+      if (ambientTurns.has(ev.turnId)) {
+        set((s) => ({ activeTurn: ev.turnId, phase: "thinking", planTurnId: ev.turnId, items: revealAmbient(ev.turnId, s.items) }));
+      }
       set((s) => {
         if (s.waitUntil) s = { ...s, waitUntil: null };
         const last = s.items[s.items.length - 1];
@@ -256,6 +275,9 @@ export function applyAgentEvent(ev: AgentEvent) {
       });
       break;
     case "toolStarted":
+      if (ambientTurns.has(ev.turnId)) {
+        set((s) => ({ activeTurn: ev.turnId, planTurnId: ev.turnId, items: revealAmbient(ev.turnId, s.items) }));
+      }
       set((s) => {
         // Close the current text segment so later text starts below the tool row.
         const items = s.items.map((it) => (it.kind === "assistant" && it.turnId === ev.turnId ? { ...it, streaming: false } : it));
@@ -317,6 +339,13 @@ export function applyAgentEvent(ev: AgentEvent) {
     case "turn_done": {
       const status = ev.status ?? "completed";
       const errText = ev.error ?? null;
+      if (status === "ignored" || ambientTurns.has(ev.turnId)) {
+        // Not meant for JARVIS, or over before a word of an answer: as if
+        // never heard — no bubble, no notice.
+        ambientTurns.delete(ev.turnId);
+        voiceTurns.delete(ev.turnId);
+        break;
+      }
       finishedTurns.push(ev.turnId);
       if (finishedTurns.length > 20) finishedTurns.shift();
       window.clearTimeout(flashTimer);

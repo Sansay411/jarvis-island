@@ -1,6 +1,7 @@
-// The opened island: four decks (Обзор, Фокус, Полка, Стрик) under a brow
-// whose centre column belongs to JARVIS's eyes. The tabs are the only deck
-// switcher (plus Alt+1..4 and a horizontal swipe).
+// The opened island: five decks (Обзор, Фокус, Полка, Стрик, Звук) under a
+// brow whose centre column belongs to JARVIS's eyes. The tabs are the only
+// deck switcher (plus Alt+1..5 and a horizontal swipe). The pin keeps the
+// island open.
 
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { DECK_SPRING, deckFadeVariants, deckVariants } from "../motion";
@@ -21,6 +22,7 @@ import { FocusDeck, FocusHoverBanner } from "./FocusDeck";
 import { TrayDeck } from "./TrayDeck";
 import { ActivityDeck } from "./ActivityDeck";
 import { AgentMissionBar } from "./AgentMissionBar";
+import { HeadsetChip, SoundDeck } from "./SoundDeck";
 import { deg, useWeather } from "../../store/weather";
 import { WeatherGlyph } from "../../ui/WeatherGlyph";
 
@@ -29,6 +31,7 @@ const DECKS: Array<{ id: PeekDeck; label: string; icon: IconName }> = [
   { id: "focus", label: "Фокус", icon: "target" },
   { id: "tray", label: "Полка", icon: "tray" },
   { id: "activity", label: "Стрик", icon: "grid" },
+  { id: "sound", label: "Звук", icon: "headphones" },
 ];
 
 export function PeekView() {
@@ -40,6 +43,8 @@ export function PeekView() {
   const setIsland = useIsland((s) => s.set);
   const setDeck = useIsland((s) => s.setDeck);
   const deckDir = useIsland((s) => s.deckDir);
+  const pinned = useIsland((s) => s.pinned);
+  const togglePinned = useIsland((s) => s.togglePinned);
   const reduced = useReducedMotion();
 
   const focus = useHub((s) => s.focus);
@@ -50,7 +55,7 @@ export function PeekView() {
 
   const showFocusBanner = forceFocusBanner || (focus.active && !focusBannerDismissed);
 
-  // Alt+1..4 switches decks rapidly.
+  // Alt+1..5 switches decks rapidly.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.altKey) return;
@@ -173,6 +178,8 @@ export function PeekView() {
             </button>
           ) : null}
 
+          <HeadsetChip />
+
           <button
             type="button"
             className="icon-btn icon-btn-sm"
@@ -205,6 +212,16 @@ export function PeekView() {
             onClick={() => void ipc.settings.open()}
           >
             <Icon name="settings" size={14} />
+          </button>
+          <button
+            type="button"
+            className={`icon-btn icon-btn-sm pin-btn${pinned ? " is-on" : ""}`}
+            aria-label={pinned ? "Открепить остров" : "Закрепить остров открытым"}
+            aria-pressed={pinned}
+            title={pinned ? "Открепить: остров снова будет закрываться сам" : "Закрепить: остров останется открытым"}
+            onClick={togglePinned}
+          >
+            <Icon name={pinned ? "pinned" : "pin"} size={14} />
           </button>
         </div>
       </div>
@@ -266,6 +283,7 @@ export function PeekView() {
               {peekDeck === "focus" && <FocusDeck />}
               {peekDeck === "tray" && <TrayDeck />}
               {peekDeck === "activity" && <ActivityDeck />}
+              {peekDeck === "sound" && <SoundDeck />}
             </motion.div>
           )}
         </AnimatePresence>

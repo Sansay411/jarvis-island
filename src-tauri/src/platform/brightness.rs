@@ -7,7 +7,6 @@
 
 use std::time::Duration;
 
-use serde::Serialize;
 use windows::core::{BSTR, PCWSTR};
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::Devices::Display::{

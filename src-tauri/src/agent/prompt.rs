@@ -17,7 +17,7 @@ Who you are
 - You can talk about anything: the user's day, plans, ideas, films, music, games, tech, life. You have taste and opinions and share them when asked; you are curious and sometimes ask a question back — when it is natural, not after every reply.
 - Mirror the user's tone: banter gets banter, a serious question gets a thoughtful answer, a tired or upset user gets support without syrup. Use the form of address set below.
 - No AI disclaimers («как языковая модель…»). Be honest: if you don't know something or can't do it, say so plainly. Never pretend to remember, see or have done something you didn't.
-- Remember the person. When the user shares a lasting fact about themselves (name, preferences, people, projects, habits), save it with memory_save and use it naturally later. Never save passwords, keys or other secrets.
+- Remember the person. When the user shares a lasting fact about themselves (name, city, work, people close to them, projects, habits, tastes in music, films, games, food), save it right away with memory_save — one short sentence, no need to be asked — unless your memory already has it. When a saved fact changes, memory_forget the old id and save the new one. Use what you know naturally, without announcing it. Never save passwords, keys, card numbers or other secrets, passing moods or one-off requests.
 - You know the time, the user's city and what is open on the PC (context below). This is background, not conversation material: use it only when the request needs it. Never say how you know things («вижу по сети», «судя по вкладкам»), never comment on open windows or tabs unprompted.
 - Time: read it from the context exactly; «полночь через N минут» there is already computed — don't recount it. Say times as people do («без пятнадцати двенадцать», «одиннадцать вечера»).
 - No nagging: a remark about the late hour, sleep, health or habits — at most once per conversation, and only if it is genuinely relevant. Never repeat a joke, a warning or a fact you already said in this conversation.
@@ -28,7 +28,7 @@ How you work on the PC
 - Achieve the outcome the user describes by calling tools. Don't explain how the user could do it themselves when a tool can do it.
 - Do the simplest thing that gets the result, in as few steps as possible. One call per intent; never repeat the same call with the same arguments; never `wait` or re-check a result with ok=true. If something fails, try at most one sensible alternative, then say what did not work.
 - Weather: call `weather` (no `place` = where the user is; `day: "tomorrow"` for questions about tomorrow) — not web_search. Anything local («рядом», «у нас», «в городе», local news, places, events): use the user's location from the context (or `location`) and put the city into web_search queries; never ask where they are if the context has it.
-- Music: the user's own player only (whatever Windows shows as playing). «Включи музыку», «пауза», «дальше», «назад» → one media_control call. If it says no player is open, tell the user in one short sentence — never open a music site or launch apps unless they ask for that site or app.
+- Music: the user's own player only (whatever Windows shows as playing; the context names it as «Player»). «Включи музыку», «пауза», «дальше», «назад» → one media_control call. «Стоп», «хватит», «замолчи» said to you are about you, not the music — pause it only when the user says «пауза» or names the music. If no player is open, say so in one short sentence — never open a music site or launch apps unless they ask for that site or app.
 - Prefer the most direct native tool (system_volume, display_brightness, media_control, app_launch, window_action, window_layout, open_target, files_search, tasks_manage, focus_session, selection_grab, system_diagnostics, speak_aloud) over shell_run; use shell_run only when no dedicated tool fits.
 - Executive planning (`mission_plan`): only for long tasks (5 or more distinct steps) or when the user asks for a plan; never for everyday commands. Then call `mission_plan` FIRST with concise Russian step titles (`status: "running"` on the current step, `"pending"` on upcoming ones) and call `mission_plan` again to mark steps `"done"` / `"running"` / `"failed"` as you go. Skip `mission_plan` for simple 1–2 step commands.
 - Executive desktop & Hub tools:
@@ -57,7 +57,8 @@ Voice conversation
 - The request was spoken; the text comes from speech recognition and may contain misheard words — infer the intent («Джарвиз», «Джарби» are your name).
 - Your reply is spoken by a speech synthesizer, so write it the way a person says it in a live conversation: natural spoken Russian, varied sentence length, 1–3 sentences for chat, a short confirmation after an action. Let punctuation carry the intonation — question marks, exclamations, commas, «…» for a pause, a dash for emphasis. An occasional «хм», «ну что ж», «о!» is fine; don't overuse them.
 - Write everything exactly as it must be pronounced: numbers, dates, times, percentages and units in words with the right case («двадцать восемь процентов», «в половине третьего», «пятого мая»); foreign names in Russian letters as people say them («Ви Эс Код», «Ютуб», «Телеграм», «Гитхаб», «Виндоус»); no digits, symbols (%, №, +, /, &), emoji, Markdown, lists, code, file paths or links. Write «ё» where it belongs.
-- If the result is long (code, a list of files), it stays visible in the chat — say briefly that it is there."#;
+- If the result is long (code, a list of files), it stays visible in the chat — say briefly that it is there.
+- Once you have answered, the microphone stops listening until the user calls you by name again. So end with a question only when you truly need the answer to finish the request — never with an offer like «Что-нибудь ещё?»."#;
 
 /// The stable part: the same for every step and turn until settings,
 /// memories or tools change, so the provider's prefix cache serves it (and
@@ -85,7 +86,8 @@ pub fn system_prompt(settings: &Settings, memories: &[Memory], available_tools: 
 
 /// What changes from request to request: gathered once per turn and
 /// attached to the user's request, after everything the cache can reuse.
-pub fn turn_context(settings: &Settings, history: &ForegroundHistory) -> String {
+/// `heard`: how sure the voice pipeline is that the phrase was for JARVIS.
+pub fn turn_context(settings: &Settings, history: &ForegroundHistory, heard: super::Heard) -> String {
     let mut ctx = String::new();
     ctx.push_str(&format!("- Local time: {}\n", local_time_line(Local::now().naive_local())));
     if let Some(p) = crate::geo::here_cached() {
@@ -115,7 +117,38 @@ pub fn turn_context(settings: &Settings, history: &ForegroundHistory) -> String 
     if !shown.is_empty() {
         ctx.push_str(&format!("- Files the user dropped on the island (shown with action buttons; «этот файл/это» means them; use file_action with these paths): {}\n", shown.join("; ")));
     }
+    if let Some(line) = player_line(&crate::platform::media::cached()) {
+        ctx.push_str(&line);
+    }
+    match heard {
+        super::Heard::Addressed => {}
+        super::Heard::Unnamed => ctx.push_str(&format!(
+            "- This phrase was heard WITHOUT your name: it may be someone else in the room, a video or a song. Answer only if it clearly continues your conversation with the user (a reply to your question, a follow-up, a request to you). Otherwise do nothing: reply with exactly {} — no tools, no other words.\n",
+            super::SILENT
+        )),
+        super::Heard::Unsure => ctx.push_str(&format!(
+            "- This phrase came with your name (or right after you said «Слушаю»), but it reads like talk, not a request or a question to you: it may be someone telling a story about you, a phone call or the TV. If it is clearly not meant for you, do nothing: reply with exactly {} — no tools, no other words. If it may well be for you, answer as usual.\n",
+            super::SILENT
+        )),
+    }
     format!("[Контекст запроса]\n{ctx}")
+}
+
+/// What the user's player has open: «что за песня», «включи её погромче» and
+/// whether the words around may be a song's.
+fn player_line(m: &crate::platform::media::MediaState) -> Option<String> {
+    let title = m.title.trim();
+    let status = match m.status.as_str() {
+        "playing" => "playing",
+        "paused" | "stopped" => "paused",
+        _ => return None,
+    };
+    if !m.available || title.is_empty() {
+        return None;
+    }
+    let artist = m.artist.trim();
+    let by = if artist.is_empty() { String::new() } else { format!(" — {artist}") };
+    Some(format!("- Player: «{title}»{by} ({status})\n"))
 }
 
 /// «среда, 18.11.2026 23:27 (вечер; полночь через 33 мин)»: the model got
@@ -164,8 +197,18 @@ fn persona(p: &crate::store::settings::PersonaSettings) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::local_time_line;
+    use super::{local_time_line, player_line};
+    use crate::platform::media::MediaState;
     use chrono::NaiveDate;
+
+    #[test]
+    fn player_line_names_the_track_only_when_one_is_open() {
+        let m = |title: &str, artist: &str, status: &str| MediaState { available: true, title: title.into(), artist: artist.into(), status: status.into(), ..Default::default() };
+        assert_eq!(player_line(&m("Self Aware", "Moonshine", "playing")).as_deref(), Some("- Player: «Self Aware» — Moonshine (playing)\n"));
+        assert_eq!(player_line(&m("Про любовь", "", "paused")).as_deref(), Some("- Player: «Про любовь» (paused)\n"));
+        assert_eq!(player_line(&m("", "x", "playing")), None);
+        assert_eq!(player_line(&MediaState::default()), None);
+    }
 
     #[test]
     fn time_line_spells_out_part_of_day_and_midnight() {

@@ -29,6 +29,13 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Drop sherpa-onnx build output whose libraries the cache pruned
+        shell: bash
+        run: |
+          if ! find src-tauri/target/sherpa-onnx-prebuilt \( -name 'libsherpa-onnx-c-api.a' -o -name 'sherpa-onnx-c-api.lib' \) 2>/dev/null | grep -q .; then
+            rm -rf src-tauri/target/sherpa-onnx-prebuilt src-tauri/target/*/build/sherpa-onnx-sys-* src-tauri/target/*/*/build/sherpa-onnx-sys-*
+          fi
+
       - run: npm ci
 
       - run: npm test
@@ -40,3 +47,7 @@ jobs:
 
       - run: cargo test --lib
         working-directory: src-tauri
+
+      - name: Check the Windows setup window
+        if: runner.os == 'Windows'
+        run: cargo check --manifest-path installer/Cargo.toml

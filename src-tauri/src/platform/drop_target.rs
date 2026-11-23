@@ -10,7 +10,6 @@ use std::cell::Cell;
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 
-use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use windows::core::{implement, w};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINTL, RECT, WPARAM};

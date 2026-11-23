@@ -6,15 +6,16 @@ import { AnimatePresence, motion, useMotionValue, useReducedMotion, useSpring, u
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { ipc, isTauri, on } from "../lib/ipc";
-import { resolveMode, useIsland } from "../store/island";
+import { endInlineInput, resolveMode, useIsland } from "../store/island";
 import { hasActiveMedia, useSystem } from "../store/system";
 import { useRunningJobs } from "../store/jobs";
 import { useAgent, useAgentMood } from "../store/agent";
 import { usePrefs } from "../store/prefs";
 import { useHub } from "../store/hub";
 import { useTts } from "../store/tts";
-import { BROW_H, CANVAS_W, bottomRadius, dimsFor, notchPath, shapeRect, shoulderFor, type IslandMode } from "./geometry";
+import { BROW_H, CANVAS_W, bottomRadius, dimsFor, notchLayout, notchPath, shapeRect, shoulderFor, type IslandMode, type NotchGeometry } from "./geometry";
 import { Eyes, type EyeMood } from "./Eyes";
 import { CompactView } from "./views/CompactView";
 import { PeekView } from "./views/PeekView";
@@ -35,6 +36,10 @@ import { activityOf, emote, useEmote } from "../store/emote";
 import { useClockRows } from "./views/ClocksStrip";
 import { inputLevel, outputLevel, toggleVoice, useVoice, type VoiceState } from "../store/voice";
 import { WorkspaceView } from "../workspace/WorkspaceView";
+import { HeadsetHello } from "./views/SoundDeck";
+import { useBluetooth } from "../store/bluetooth";
+import { UpdateCard } from "./views/UpdateCard";
+import { useUpdates } from "../store/updates";
 import "./island.css";
 
 const SHAPE_SPRING = { stiffness: 460, damping: 34, mass: 0.65 };
@@ -65,7 +70,9 @@ function sampleFrames(label: string): () => void {
   return () => cancelAnimationFrame(raf);
 }
 
-function useIslandController() {
+function useIslandController(nativeGeometry: NotchGeometry | null) {
+  const macIsland = useRef(nativeGeometry !== null);
+  useEffect(() => { macIsland.current = nativeGeometry !== null; }, [nativeGeometry]);
   const enterTimer = useRef<number | undefined>(undefined);
   const leaveTimer = useRef<number | undefined>(undefined);
 
@@ -173,6 +180,14 @@ function useIslandController() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         const s = useIsland.getState();
+        if (macIsland.current && s.inputFocused && !s.workspaceOpen && !s.clipsOpen) {
+          e.preventDefault();
+          window.clearTimeout(enterTimer.current);
+          void endInlineInput(() => {
+            if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+          }).catch(console.error);
+          return;
+        }
         if (useFiles.getState().open) closeFiles();
         else if (s.workspaceOpen) set({ workspaceOpen: false });
         else if (s.voiceOpen) {
@@ -273,13 +288,23 @@ function voiceMood(state: VoiceState, agentMood: EyeMood | null): EyeMood {
 function moodFor(mode: IslandMode, agentMood: EyeMood | null, hovered: boolean, ttsSpeaking: boolean): EyeMood {
   if (ttsSpeaking) return "speaking";
   if (agentMood) return agentMood;
-  if (mode === "drop" || mode === "files" || mode === "notice" || mode === "clips" || mode === "weather") return "attentive";
+  if (mode === "drop" || mode === "files" || mode === "notice" || mode === "clips" || mode === "weather" || mode === "hello") return "attentive";
   if (mode === "peek" || mode === "workspace" || hovered) return "attentive";
   return "idle";
 }
 
 export function Island() {
-  useIslandController();
+  const [notchGeometry, setNotchGeometry] = useState<NotchGeometry | null>(null);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let active = true;
+    const update = (value: NotchGeometry | null) => { if (active) setNotchGeometry(value); };
+    const unlisten = listen<NotchGeometry>("island:notch-geometry", (event) => update(event.payload));
+    void invoke<NotchGeometry | null>("island_notch_geometry").then(update).catch(() => {});
+    return () => { active = false; void unlisten.then((off) => off()); };
+  }, []);
+  const notch = notchLayout(notchGeometry);
+  useIslandController(notchGeometry);
   const st = useIsland();
   const media = useSystem((s) => s.media);
   const artworkRgb = useSystem((s) => s.artworkRgb);
@@ -340,6 +365,8 @@ export function Island() {
   const voiceClock = useVoiceClock();
   const base = resolveMode(st);
   const weatherCard = useWeather((s) => s.card !== null);
+  const helloCard = useBluetooth((s) => s.hello !== null);
+  const updateCard = useUpdates((s) => s.card && s.status?.available != null);
   const mode: IslandMode =
     base === "drop"
       ? "drop"
@@ -351,7 +378,9 @@ export function Island() {
             ? "voice"
             : alerting
               ? "notice"
-              : base;
+              : (helloCard || updateCard) && base === "compact"
+                ? "hello"
+                : base;
 
   const [workspaceWarm, setWorkspaceWarm] = useState(false);
   useEffect(() => {
@@ -376,6 +405,7 @@ export function Island() {
   const dims = useMemo(
     () =>
       dimsFor(mode, {
+        notch: notchGeometry,
         hasMedia: withMedia,
         hasActivity: jobRows > 0 || !!timer || stopwatch || missionActive,
         hasFocus: focus.active,
@@ -394,6 +424,7 @@ export function Island() {
       }),
     [
       mode,
+      notchGeometry,
       withMedia,
       jobRows,
       clockRows,
@@ -417,6 +448,7 @@ export function Island() {
 
   const lip = mode === "compact" && st.topCovered;
   const workspaceDims = dimsFor("workspace", {
+    notch: notchGeometry,
     hasMedia: withMedia,
     hasActivity: jobRows > 0,
     jobRows,
@@ -439,23 +471,21 @@ export function Island() {
   }, [mode, refreshControls]);
 
   const r = useTransform(h, (hv) => bottomRadius(hv));
-  const d = useTransform(() => notchPath(w.get(), h.get(), r.get(), shoulderFor(h.get())));
-  const svgW = useTransform(() => w.get() + shoulderFor(h.get()) * 2);
-  const svgLeft = useTransform(h, (hv) => -shoulderFor(hv));
+  const d = useTransform(() => notchPath(w.get(), h.get(), r.get(), notch.hasNotch ? 0 : shoulderFor(h.get())));
+  const svgW = useTransform(() => w.get() + (notch.hasNotch ? 0 : shoulderFor(h.get()) * 2));
+  const svgLeft = useTransform(h, (hv) => notch.hasNotch ? 0 : -shoulderFor(hv));
 
   // State-derived ambient bottom glow (zero generic gradients; strictly real state).
   const ambientGlow = useMemo(() => {
-    // Only two sources of light: JARVIS itself (amber, while it talks or
-    // works) and the cover of what is playing. Decks get no coloured wash.
+    // One source of light: JARVIS itself, a low amber line at the lower
+    // rim while it talks or works. The cover of what plays tints only the
+    // timeline — washing half the deck in it read as a smear (2026-11-21).
     if (lip || mode === "compact") return "none";
     if (ttsSpeaking || mode === "voice" || missionActive) {
-      return "radial-gradient(82% 50% at 50% 106%, rgba(255, 178, 63, 0.2) 0%, rgba(255, 178, 63, 0.05) 52%, transparent 100%)";
-    }
-    if (mode === "peek" && st.peekDeck === "nook" && withMedia && media?.status === "playing" && artworkRgb) {
-      return `radial-gradient(85% 55% at 28% 108%, rgba(${artworkRgb}, 0.24) 0%, rgba(${artworkRgb}, 0.06) 55%, transparent 100%)`;
+      return "radial-gradient(46% 14% at 50% 100%, rgba(255, 178, 63, 0.16) 0%, rgba(255, 178, 63, 0.04) 60%, transparent 100%)";
     }
     return "none";
-  }, [lip, mode, showFocusBanner, st.peekDeck, focus.active, ttsSpeaking, missionActive, withMedia, media?.status, artworkRgb]);
+  }, [lip, mode, ttsSpeaking, missionActive]);
 
   // Gaze follows the pointer while it is over the island.
   const lookX = useSpring(0, { stiffness: 200, damping: 24 });
@@ -467,8 +497,8 @@ export function Island() {
 
   return (
     <div
-      className={`stage${st.visible ? "" : " is-hidden"}${withMedia && media?.status === "playing" ? " is-music" : ""}`}
-      style={{ ["--art" as string]: artworkRgb ?? "236, 235, 230" }}
+      className={`stage${notch.hasNotch ? " has-notch" : ""}${st.visible ? "" : " is-hidden"}${withMedia && media?.status === "playing" ? " is-music" : ""}`}
+      style={{ ["--art" as string]: artworkRgb ?? "236, 235, 230", ["--notch-width" as string]: `${notch.exclusion}px`, ["--compact-height" as string]: `${dims.h}px` }}
     >
       <motion.div
         className="island"
@@ -498,10 +528,10 @@ export function Island() {
               <stop offset="1" stopColor="#040406" />
             </radialGradient>
           </defs>
-          <motion.path d={d} fill="url(#sheen)" stroke="url(#rim)" strokeWidth={1} />
+          <motion.path d={d} fill={notch.hasNotch ? "#000" : "url(#sheen)"} stroke={notch.hasNotch ? "none" : "url(#rim)"} strokeWidth={1} />
         </motion.svg>
 
-        <motion.div className="island-clip" style={{ borderBottomLeftRadius: r, borderBottomRightRadius: r }}>
+        <motion.div className="island-clip" style={{ top: mode === "compact" ? 0 : notch.top, borderBottomLeftRadius: r, borderBottomRightRadius: r }}>
           <div className="island-ambient" style={{ background: ambientGlow }} aria-hidden="true" />
 
           <AnimatePresence initial={false} mode="popLayout">
@@ -509,7 +539,7 @@ export function Island() {
               <motion.div
                 key={mode}
                 className="island-content"
-                style={{ width: dims.w, height: dims.h }}
+                style={{ width: dims.w, height: dims.h - (mode === "compact" ? 0 : notch.top) }}
                 initial={{ opacity: 0, scale: 0.99 }}
                 animate={{ opacity: 1, scale: 1, transition: { duration: reduced ? 0 : 0.14, ease: [0.22, 1, 0.36, 1] } }}
                 exit={{ opacity: 0, transition: { duration: reduced ? 0 : 0.07 } }}
@@ -522,6 +552,7 @@ export function Island() {
                 {mode === "notice" && <NoticeView />}
                 {mode === "weather" && <WeatherView />}
                 {mode === "clips" && <ClipsView />}
+                {mode === "hello" && (helloCard ? <HeadsetHello /> : <UpdateCard />)}
               </motion.div>
             )}
           </AnimatePresence>
@@ -531,7 +562,7 @@ export function Island() {
               className="island-content"
               style={{
                 width: workspaceDims.w,
-                height: workspaceDims.h,
+                height: workspaceDims.h - notch.top,
                 visibility: mode === "workspace" ? "visible" : "hidden",
                 pointerEvents: mode === "workspace" ? "auto" : "none",
               }}
@@ -546,7 +577,7 @@ export function Island() {
           )}
         </motion.div>
 
-        <div className="island-eyes" style={{ height: lip ? dims.h : BROW_H }}>
+        <div className="island-eyes" style={{ height: lip || (mode === "compact" && notch.compactHeight) ? dims.h : BROW_H }}>
           <Eyes
             mood={mode === "voice" ? voiceMood(voiceState, agentMood) : moodFor(mode, agentMood, st.hovered, ttsSpeaking)}
             level={voiceLevel}

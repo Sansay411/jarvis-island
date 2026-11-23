@@ -76,6 +76,52 @@ pub fn set_app_volume(_process: &str, _percent: u8) -> AppResult<Vec<AppAudioSes
     ))
 }
 
+/// macOS has no per-app mixer, but Music and Spotify have a volume of their
+/// own: those are the players made quieter while JARVIS listens and talks.
+const DUCK: &str = r#"
+const running=$.NSWorkspace.sharedWorkspace.runningApplications, out=[];
+for(let i=0;i<running.count;i++) {
+    const id=ObjC.unwrap(running.objectAtIndex(i).bundleIdentifier);
+    if(id!=='com.apple.Music' && id!=='com.spotify.client') continue;
+    try {
+        const app=Application(id);
+        if(String(app.playerState())!=='playing') continue;
+        const original=Number(app.soundVolume());
+        if(!(original>1)) continue;
+        const ducked=Math.round(Math.min(original, Math.max(0, original*a.factor)));
+        app.soundVolume=ducked;
+        out.push({pid:0, process:id, original:original/100, ducked:ducked/100});
+    } catch(e) {}
+}
+return out;
+"#;
+
+const UNDUCK: &str = r#"
+for(const d of a.list) {
+    try {
+        const app=Application(d.process);
+        if(!app.running()) continue;
+        if(Math.abs(Number(app.soundVolume())/100-d.ducked)<0.02) app.soundVolume=Math.round(d.original*100);
+    } catch(e) {}
+}
+return true;
+"#;
+
+pub fn duck(factor: f32) -> AppResult<Vec<Ducked>> {
+    serde_json::from_value(native::jxa(DUCK, serde_json::json!({ "factor": factor }))?)
+        .map_err(|_| AppError::platform("Некорректный ответ медиаплеера macOS"))
+}
+
+/// Put the players back if their level is still the one JARVIS set. They are
+/// found by bundle id, so `by_name` changes nothing here.
+pub fn unduck(list: &[Ducked], _by_name: bool) -> AppResult<()> {
+    if list.is_empty() {
+        return Ok(());
+    }
+    native::jxa(UNDUCK, serde_json::json!({ "list": list }))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

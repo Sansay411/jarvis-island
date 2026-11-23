@@ -17,7 +17,9 @@ pub struct PlanStep {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AgentEvent {
-    TurnStarted { turn_id: String, conversation_id: String, user_text: String, voice: bool },
+    /// `ambient`: a voice phrase heard without the name — the chat shows it
+    /// only once the model answers it (it may finish as `ignored`).
+    TurnStarted { turn_id: String, conversation_id: String, user_text: String, voice: bool, ambient: bool },
     Phase { turn_id: String, phase: &'static str },
     TextDelta { turn_id: String, text: String },
     #[serde(rename = "plan_updated")]

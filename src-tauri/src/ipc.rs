@@ -14,6 +14,19 @@ use crate::state::AppState;
 // ---------- island ----------
 
 #[tauri::command]
+pub fn island_notch_geometry() -> serde_json::Value {
+    #[cfg(target_os = "macos")]
+    {
+        objc2::MainThreadMarker::new()
+            .and_then(platform::island::notch::read)
+            .map(|screen| serde_json::to_value(screen.notch).unwrap_or_default())
+            .unwrap_or(serde_json::Value::Null)
+    }
+    #[cfg(not(target_os = "macos"))]
+    serde_json::Value::Null
+}
+
+#[tauri::command]
 pub fn island_set_shape(state: State<'_, AppState>, shape: ShapeRect) {
     state.island.set_shape(shape);
 }
@@ -31,6 +44,39 @@ pub fn island_end_input(state: State<'_, AppState>, restore: bool) -> AppResult<
 #[tauri::command]
 pub fn island_set_hidden(state: State<'_, AppState>, hidden: bool) {
     state.island.set_user_hidden(hidden);
+}
+
+// ---------- updates ----------
+
+#[tauri::command]
+pub fn update_status(updates: State<'_, crate::updater::Updates>) -> crate::updater::UpdateStatus {
+    updates.status()
+}
+
+#[tauri::command]
+pub async fn update_check(app: tauri::AppHandle) -> AppResult<Option<crate::updater::UpdateInfo>> {
+    use tauri::Manager;
+    app.state::<crate::updater::Updates>().check(&app).await
+}
+
+/// Download, verify and install the new version, then restart.
+#[tauri::command]
+pub async fn update_install(app: tauri::AppHandle) -> AppResult<()> {
+    use tauri::Manager;
+    app.state::<crate::updater::Updates>().install(&app).await
+}
+
+// ---------- bluetooth ----------
+
+#[tauri::command]
+pub fn bluetooth_devices(bt: State<'_, std::sync::Arc<crate::bluetooth::Bluetooth>>) -> Vec<crate::bluetooth::BtView> {
+    bt.snapshot()
+}
+
+/// The island opened the headphones deck: read the batteries again now.
+#[tauri::command]
+pub fn bluetooth_refresh(bt: State<'_, std::sync::Arc<crate::bluetooth::Bluetooth>>) {
+    bt.refresh_soon();
 }
 
 // ---------- audio ----------

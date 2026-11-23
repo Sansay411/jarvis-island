@@ -16,15 +16,37 @@ export function shoulderFor(h: number): number {
   return Math.min(SHOULDER, Math.max(4, h * 0.55));
 }
 
-export type IslandMode = "compact" | "peek" | "workspace" | "voice" | "drop" | "files" | "notice" | "clips" | "weather";
-export type PeekDeck = "nook" | "focus" | "tray" | "activity";
+export type IslandMode = "compact" | "peek" | "workspace" | "voice" | "drop" | "files" | "notice" | "clips" | "weather" | "hello";
+export type PeekDeck = "nook" | "focus" | "tray" | "activity" | "sound";
 
 export interface Dims {
   w: number;
   h: number;
 }
 
+export interface NotchGeometry {
+  has_notch: boolean;
+  notch_width: number;
+  notch_height: number;
+  menu_bar_height: number;
+}
+
+export const NOTCH_WINGS = 192;
+
+export function notchLayout(geometry?: NotchGeometry | null) {
+  const valid = geometry && [geometry.notch_width, geometry.notch_height, geometry.menu_bar_height]
+    .every((n) => Number.isFinite(n) && n >= 0);
+  const hasNotch = Boolean(valid && geometry.has_notch && geometry.notch_width > 0 && geometry.notch_height > 0);
+  return {
+    hasNotch,
+    exclusion: hasNotch ? geometry!.notch_width : 0,
+    top: hasNotch ? geometry!.notch_height : 0,
+    compactHeight: hasNotch ? geometry!.notch_height : valid && geometry.menu_bar_height > 0 ? geometry.menu_bar_height : null,
+  };
+}
+
 export interface DimsContext {
+  notch?: NotchGeometry | null;
   hasMedia: boolean;
   hasActivity: boolean;
   hasFocus?: boolean;
@@ -51,6 +73,18 @@ export interface DimsContext {
 }
 
 export function dimsFor(mode: IslandMode, ctx: DimsContext): Dims {
+  const dims = baseDimsFor(mode, ctx);
+  const notch = notchLayout(ctx.notch);
+  if (mode === "compact") {
+    return {
+      w: notch.hasNotch ? Math.max(dims.w, notch.exclusion + NOTCH_WINGS) : dims.w,
+      h: notch.compactHeight ?? dims.h,
+    };
+  }
+  return { w: notch.hasNotch ? Math.max(dims.w, notch.exclusion + NOTCH_WINGS) : dims.w, h: dims.h + notch.top };
+}
+
+function baseDimsFor(mode: IslandMode, ctx: DimsContext): Dims {
   switch (mode) {
     case "compact": {
       if (ctx.lip) return { w: 132, h: LIP_H };
@@ -73,6 +107,8 @@ export function dimsFor(mode: IslandMode, ctx: DimsContext): Dims {
           return { w: 604, h: 192 + extraH };
         case "activity":
           return { w: 556, h: 206 + extraH };
+        case "sound":
+          return { w: 616, h: 244 + extraH };
         case "nook":
         default:
           return { w: 616, h: 206 + extraH };
@@ -84,6 +120,8 @@ export function dimsFor(mode: IslandMode, ctx: DimsContext): Dims {
       return { w: 468, h: 144 };
     case "notice":
       return { w: 428, h: 128 };
+    case "hello":
+      return { w: 456, h: 104 };
     case "weather":
       return { w: 580, h: 196 };
     case "files":

@@ -146,6 +146,8 @@ pub struct VoiceSettings {
     pub reuse_llm_key: bool,
     pub input_device: String,
     pub output_device: String,
+    /// Make playing apps quieter while JARVIS listens and talks.
+    pub duck_media: bool,
 }
 
 impl Default for VoiceSettings {
@@ -165,6 +167,7 @@ impl Default for VoiceSettings {
             reuse_llm_key: true,
             input_device: String::new(),
             output_device: String::new(),
+            duck_media: true,
         }
     }
 }
@@ -266,6 +269,19 @@ impl Default for PersonaSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct UpdateSettings {
+    /// Look for a new version on GitHub soon after start and every six hours.
+    pub auto_check: bool,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        UpdateSettings { auto_check: true }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -278,4 +294,5 @@ pub struct Settings {
     pub agent: AgentSettings,
     pub launch_at_startup: bool,
     pub reduce_motion: bool,
+    pub updates: UpdateSettings,
 }

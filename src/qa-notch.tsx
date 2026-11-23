@@ -22,6 +22,8 @@ import { useGithub } from "./store/github";
 import { useAgent } from "./store/agent";
 import { useWeather, type Weather } from "./store/weather";
 import { primeShelfThumbs } from "./island/shelfThumbs";
+import { useBluetooth } from "./store/bluetooth";
+import type { BtDevice } from "./lib/types";
 
 const SAMPLE_WEATHER: Weather = {
   place: { city: "Караганда", region: "Карагандинская область", country: "Казахстан", lat: 49.8, lon: 73.1, approximate: true },
@@ -73,7 +75,13 @@ type PresetId =
   | "voice"
   | "drop"
   | "drop-send"
-  | "files";
+  | "files"
+  | "sound"
+  | "sound-single"
+  | "sound-low"
+  | "sound-empty"
+  | "hello"
+  | "pinned";
 
 function makeCoverArtDataUrl(hue: "ocean" | "crimson" | "gold"): string {
   const c = document.createElement("canvas");
@@ -361,6 +369,12 @@ const PRESETS: Array<{ id: PresetId; label: string }> = [
   { id: "drop", label: "10. Сброс файлов (Drop)" },
   { id: "drop-send", label: "10b. Сброс над «В Telegram»" },
   { id: "files", label: "11. Действия с файлом (+ На полку)" },
+  { id: "sound", label: "13. Звук: AirPods (каждый наушник и кейс)" },
+  { id: "sound-single", label: "13b. Звук: накладные наушники" },
+  { id: "sound-low", label: "13c. Звук: садятся" },
+  { id: "sound-empty", label: "13d. Звук: ничего не подключено" },
+  { id: "hello", label: "14. Наушники подключились" },
+  { id: "pinned", label: "15. Закреплённый остров" },
 ];
 
 const SOURCES: Array<{ id: string; label: string; app: string; track: string; artist: string; hue: "ocean" | "crimson" | "gold" }> = [
@@ -368,6 +382,72 @@ const SOURCES: Array<{ id: string; label: string; app: string; track: string; ar
   { id: "apple", label: "Apple Music", app: "AppleMusic.exe", track: "Cocoon", artist: "Björk · Vespertine", hue: "crimson" },
   { id: "yandex", label: "Яндекс Музыка", app: "YandexMusic.exe", track: "Ночной полёт", artist: "Антон Беляев", hue: "gold" },
 ];
+
+/** Battery samples every 10 minutes falling linearly from `from` to `to`. */
+function qaHistory(from: number, to: number, hours: number): Array<[number, number]> {
+  const now = Date.now();
+  const steps = Math.max(2, Math.round((hours * 60) / 10));
+  return Array.from({ length: steps + 1 }, (_, i) => [now - (hours * 3600_000 * (steps - i)) / steps, Math.round(from + ((to - from) * i) / steps)] as [number, number]);
+}
+
+function buildBtDevices(variant: "pods" | "single" | "low" | "away"): BtDevice[] {
+  const now = Date.now();
+  const base: Omit<BtDevice, "id" | "name" | "kind" | "connected" | "battery"> = {
+    lidOpen: null,
+    model: null,
+    vendor: null,
+    audioOutput: false,
+    history: [],
+    minutesLeft: null,
+    drainPerHour: null,
+    updatedAt: now - 20_000,
+    left: null,
+    right: null,
+    case: null,
+  };
+  const pods: BtDevice = {
+    ...base,
+    id: "qa-pods",
+    name: "AirPods Pro Артёма",
+    kind: "earbuds",
+    connected: true,
+    battery: 80,
+    left: { level: 90, charging: false, inEar: true },
+    right: { level: 80, charging: false, inEar: true },
+    case: { level: 40, charging: true, inEar: null },
+    model: "AirPods Pro 2 (USB‑C)",
+    vendor: "Apple",
+    audioOutput: true,
+    history: qaHistory(100, 80, 2.2),
+    minutesLeft: 250,
+    drainPerHour: 19,
+  };
+  const sony: BtDevice = {
+    ...base,
+    id: "qa-sony",
+    name: "WH-1000XM5",
+    kind: "headphones",
+    connected: true,
+    battery: variant === "low" ? 12 : 64,
+    vendor: "Sony",
+    audioOutput: true,
+    history: variant === "low" ? qaHistory(46, 12, 5) : qaHistory(92, 64, 5),
+    minutesLeft: variant === "low" ? 105 : 11 * 60 + 30,
+    drainPerHour: variant === "low" ? 6.8 : 5.6,
+  };
+  const keyboard: BtDevice = { ...base, id: "qa-kb", name: "Keyboard K380", kind: "keyboard", connected: true, battery: 70, vendor: "Logitech" };
+  const mouse: BtDevice = { ...base, id: "qa-mouse", name: "MX Master 3S", kind: "mouse", connected: true, battery: 15, vendor: "Logitech" };
+  const phone: BtDevice = { ...base, id: "qa-phone", name: "iPhone", kind: "phone", connected: false, battery: 60, vendor: "Apple" };
+  switch (variant) {
+    case "pods":
+      return [pods, keyboard, mouse, phone];
+    case "single":
+    case "low":
+      return [sony, keyboard, phone];
+    case "away":
+      return [{ ...pods, connected: false, audioOutput: false, battery: 60, left: null, right: null, case: null, history: [] }, keyboard, phone];
+  }
+}
 
 function QaHarness() {
   const [activePreset, setActivePreset] = useState<PresetId>("nook");
@@ -409,6 +489,8 @@ function QaHarness() {
     outputLevel.set(0);
     useVoice.setState({ state: "idle", error: null, userLine: "", assistantLine: "" });
     useFiles.setState({ open: false, loading: false, error: null, paths: [], files: [], actions: [], job: null });
+    useBluetooth.setState({ devices: buildBtDevices(id === "sound-single" ? "single" : id === "sound-low" ? "low" : id === "sound-empty" ? "away" : "pods"), hello: null });
+    useIsland.setState({ pinned: id === "pinned" });
 
     // Seed baseline Hub data for realistic inspection.
     useHub.setState({
@@ -634,6 +716,28 @@ function QaHarness() {
           clipsOpen: false,
           forceFocusBanner: false,
         });
+        break;
+
+      case "sound":
+      case "sound-single":
+      case "sound-low":
+      case "sound-empty":
+        seedMedia(srcIndex, true);
+        useHub.setState({ focus: EMPTY_FOCUS });
+        useIsland.setState({ hovered: true, peekDeck: "sound", dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: true });
+        break;
+
+      case "hello":
+        useSystem.setState({ media: null, artwork: null });
+        useHub.setState({ focus: EMPTY_FOCUS });
+        useIsland.setState({ hovered: false, dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: false });
+        useBluetooth.setState({ hello: { id: "qa-pods", reason: "connected", at: Date.now() } });
+        break;
+
+      case "pinned":
+        seedMedia(srcIndex, true);
+        useHub.setState({ focus: EMPTY_FOCUS });
+        useIsland.setState({ hovered: false, peekDeck: "nook", dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: true });
         break;
 
       case "files":
