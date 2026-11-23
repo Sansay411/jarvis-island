@@ -134,7 +134,9 @@ pub fn list_windows() -> Vec<WindowInfo> {
             let title = text(&d, "kCGWindowName");
             let ax = accessibility.entry(pid).or_insert_with(|| ax_windows(pid));
             let state = window_state(rect, &title, ax.as_deref());
-            let foreground = pid == front && !marked && state != "minimized";
+            let onscreen = d.find(CFString::new("kCGWindowIsOnscreen"))
+                .and_then(|v| v.downcast::<CFBoolean>()).map(bool::from).unwrap_or(false);
+            let foreground = pid == front && !marked && state != "minimized" && onscreen;
             marked |= foreground;
             let process = text(&d, "kCGWindowOwnerName");
             Some(WindowInfo {

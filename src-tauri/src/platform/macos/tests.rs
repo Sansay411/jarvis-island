@@ -146,10 +146,6 @@ fn capabilities_outside_this_step_report_unsupported() {
         platform::audio::list_app_sessions(),
         Err(AppError::Unsupported(_))
     ));
-    assert!(matches!(
-        platform::capture::capture_rect(platform::display::Rect::default(), None),
-        Err(AppError::Unsupported(_))
-    ));
 }
 
 #[test]

@@ -24,7 +24,29 @@ export interface Dims {
   h: number;
 }
 
+export interface NotchGeometry {
+  has_notch: boolean;
+  notch_width: number;
+  notch_height: number;
+  menu_bar_height: number;
+}
+
+export const NOTCH_WINGS = 192;
+
+export function notchLayout(geometry?: NotchGeometry | null) {
+  const valid = geometry && [geometry.notch_width, geometry.notch_height, geometry.menu_bar_height]
+    .every((n) => Number.isFinite(n) && n >= 0);
+  const hasNotch = Boolean(valid && geometry.has_notch && geometry.notch_width > 0 && geometry.notch_height > 0);
+  return {
+    hasNotch,
+    exclusion: hasNotch ? geometry!.notch_width : 0,
+    top: hasNotch ? geometry!.notch_height : 0,
+    compactHeight: hasNotch ? geometry!.notch_height : valid && geometry.menu_bar_height > 0 ? geometry.menu_bar_height : null,
+  };
+}
+
 export interface DimsContext {
+  notch?: NotchGeometry | null;
   hasMedia: boolean;
   hasActivity: boolean;
   hasFocus?: boolean;
@@ -51,6 +73,18 @@ export interface DimsContext {
 }
 
 export function dimsFor(mode: IslandMode, ctx: DimsContext): Dims {
+  const dims = baseDimsFor(mode, ctx);
+  const notch = notchLayout(ctx.notch);
+  if (mode === "compact") {
+    return {
+      w: notch.hasNotch ? Math.max(dims.w, notch.exclusion + NOTCH_WINGS) : dims.w,
+      h: notch.compactHeight ?? dims.h,
+    };
+  }
+  return { w: notch.hasNotch ? Math.max(dims.w, notch.exclusion + NOTCH_WINGS) : dims.w, h: dims.h + notch.top };
+}
+
+function baseDimsFor(mode: IslandMode, ctx: DimsContext): Dims {
   switch (mode) {
     case "compact": {
       if (ctx.lip) return { w: 132, h: LIP_H };

@@ -1,12 +1,21 @@
 pub use super::data_island::*;
-use crate::error::AppResult;
+#[path = "notch.rs"]
+pub mod notch;
+use crate::error::{AppError, AppResult};
+use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
+use objc2::MainThreadMarker;
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationOptions, NSRunningApplication, NSStatusWindowLevel,
+    NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
+};
+use objc2_foundation::NSPoint;
 use parking_lot::Mutex;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc,
+    atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
+    mpsc, Arc, Weak,
 };
 use std::time::Instant;
-use tauri::{AppHandle, Emitter, LogicalSize, PhysicalPosition, WebviewWindow};
+use tauri::{AppHandle, Emitter, LogicalSize, WebviewWindow};
 pub const LABEL: &str = "island";
 pub const CANVAS_W: f64 = 760.0;
 pub const CANVAS_H: f64 = 640.0;
@@ -14,6 +23,8 @@ pub const EVT_POINTER: &str = "island:pointer";
 pub const EVT_PRESENCE: &str = "island:presence";
 pub const EVT_BLUR: &str = "island:blur";
 pub const EVT_CONTEXT: &str = "island:context";
+static INPUT_FOCUSABLE: AtomicBool = AtomicBool::new(false);
+static CAPTURE_ISLAND: Mutex<Weak<Island>> = Mutex::new(Weak::new());
 pub struct Island {
     pub tracker_ticks: AtomicU64,
     window: WebviewWindow,
@@ -23,10 +34,19 @@ pub struct Island {
     covered: AtomicBool,
     shape: Mutex<ShapeRect>,
     pointer_suppressed: AtomicBool,
+    pointer_inside: AtomicBool,
+    previous_app: AtomicI32,
+    last_external_app: AtomicI32,
+    window_id: AtomicI32,
+    capture_hidden: AtomicBool,
+    screen: Mutex<Option<notch::ScreenGeometry>>,
 }
 impl Island {
     pub fn new(app: AppHandle, window: WebviewWindow) -> AppResult<Arc<Self>> {
         app.set_activation_policy(tauri::ActivationPolicy::Accessory)?;
+        unsafe {
+            install_panel(window.ns_window()? as *mut AnyObject)?;
+        }
         window.set_visible_on_all_workspaces(true)?;
         window.set_ignore_cursor_events(true)?;
         let island = Arc::new(Self {
@@ -43,22 +63,66 @@ impl Island {
                 height: 0.0,
             }),
             pointer_suppressed: AtomicBool::new(false),
+            pointer_inside: AtomicBool::new(false),
+            previous_app: AtomicI32::new(0),
+            window_id: AtomicI32::new(0),
+            capture_hidden: AtomicBool::new(false),
+            last_external_app: AtomicI32::new(
+                NSWorkspace::sharedWorkspace()
+                    .frontmostApplication()
+                    .map(|app| app.processIdentifier())
+                    .filter(|pid| *pid != std::process::id() as i32)
+                    .unwrap_or(0),
+            ),
+            screen: Mutex::new(None),
         });
         island.place()?;
+        *CAPTURE_ISLAND.lock() = Arc::downgrade(&island);
         Ok(island)
     }
     pub fn hwnd(&self) -> isize {
-        0
+        self.window_id.load(Ordering::Relaxed) as isize
     }
     pub fn place(&self) -> AppResult<()> {
-        if let Some(mon) = self.window.primary_monitor()? {
-            let scale = mon.scale_factor();
-            let area = mon.work_area();
+        let Some(mtm) = MainThreadMarker::new() else {
+            return Ok(());
+        };
+        let window = unsafe { &*(self.window.ns_window()? as *const NSWindow) };
+        self.window_id
+            .store(window.windowNumber() as i32, Ordering::Relaxed);
+        let input = INPUT_FOCUSABLE.load(Ordering::Relaxed);
+        let style_changed = set_input_style(window, input);
+        if window.level() != NSStatusWindowLevel + 2 {
+            window.setLevel(NSStatusWindowLevel + 2);
+        }
+        if window.hasShadow() {
+            window.setHasShadow(false);
+        }
+        let behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::IgnoresCycle;
+        if window.collectionBehavior() != behavior {
+            window.setCollectionBehavior(behavior);
+        }
+        if style_changed && input {
+            self.focus_webview()?;
+        }
+        if let Some(screen) = notch::read(mtm) {
+            let mut current = self.screen.lock();
+            if current.as_ref() == Some(&screen) {
+                return Ok(());
+            }
             self.window.set_size(LogicalSize::new(CANVAS_W, CANVAS_H))?;
-            self.window.set_position(PhysicalPosition::new(
-                area.position.x + (area.size.width as i32 - (CANVAS_W * scale).round() as i32) / 2,
-                area.position.y,
-            ))?;
+            // AppKit screen coordinates are logical points with a bottom-left origin.
+            window.setFrameTopLeftPoint(NSPoint::new(
+                screen.center_x - CANVAS_W / 2.0,
+                screen.frame.origin.y + screen.frame.size.height,
+            ));
+            *current = Some(screen);
+            let _ = self
+                .app
+                .emit_to(LABEL, "island:notch-geometry", screen.notch);
         }
         Ok(())
     }
@@ -70,7 +134,7 @@ impl Island {
     }
     fn apply_visibility(&self, reason: &'static str) {
         let visible = self.is_visible();
-        let result = if visible {
+        let result = if visible && !self.capture_hidden.load(Ordering::Relaxed) {
             self.window.show()
         } else {
             self.window.hide()
@@ -114,12 +178,68 @@ impl Island {
         self.set_user_hidden(!self.hidden.load(Ordering::Relaxed));
     }
     pub fn begin_input(&self) -> AppResult<()> {
-        self.window.set_focusable(true)?;
+        if self.capture_hidden.load(Ordering::Relaxed) {
+            return Err(AppError::platform("Дождитесь завершения снимка экрана"));
+        }
+        if self.previous_app.load(Ordering::Relaxed) == 0 {
+            let front = NSWorkspace::sharedWorkspace()
+                .frontmostApplication()
+                .map(|app| app.processIdentifier());
+            self.previous_app.store(
+                previous_app_pid(front, self.last_external_app.load(Ordering::Relaxed)),
+                Ordering::Relaxed,
+            );
+        }
+        INPUT_FOCUSABLE.store(true, Ordering::Relaxed);
+        let window = unsafe { &*(self.window.ns_window()? as *const NSWindow) };
+        set_input_style(window, true);
         self.window.set_focus()?;
+        self.focus_webview()
+    }
+    fn focus_webview(&self) -> AppResult<()> {
+        self.window.with_webview(|webview| {
+            if INPUT_FOCUSABLE.load(Ordering::Relaxed) {
+                let view = unsafe { &*(webview.inner() as *const NSView) };
+                if let Some(window) = view.window() {
+                    window.makeFirstResponder(Some(view));
+                }
+            }
+        })?;
         Ok(())
     }
-    pub fn end_input(&self, _restore: bool) -> AppResult<()> {
-        self.window.set_focusable(false)?;
+    pub fn end_input(&self, restore: bool) -> AppResult<()> {
+        let mtm = MainThreadMarker::new()
+            .ok_or_else(|| AppError::platform("Фокус окна требует главный поток"))?;
+        let window = unsafe { &*(self.window.ns_window()? as *const NSWindow) };
+        window.makeFirstResponder(None);
+        window.resignKeyWindow();
+        INPUT_FOCUSABLE.store(false, Ordering::Relaxed);
+        set_input_style(window, false);
+        let pid = self.previous_app.swap(0, Ordering::Relaxed);
+        let front = NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .map(|app| app.processIdentifier())
+            .unwrap_or(0);
+        if should_restore_input(restore, pid, front) {
+            if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+                let application = NSApplication::sharedApplication(mtm);
+                let can_yield: bool = unsafe {
+                    objc2::msg_send![&application, respondsToSelector: objc2::sel!(yieldActivationToApplication:)]
+                };
+                if can_yield {
+                    application.yieldActivationToApplication(&app);
+                }
+                application.deactivate();
+                #[allow(deprecated)]
+                let activated = app.activateWithOptions(
+                    NSApplicationActivationOptions::ActivateIgnoringOtherApps
+                        | NSApplicationActivationOptions::ActivateAllWindows,
+                );
+                if !activated {
+                    tracing::warn!(pid, "could not restore focus to previous application");
+                }
+            }
+        }
         Ok(())
     }
     pub fn suppress_pointer(&self, on: bool) {
@@ -129,45 +249,54 @@ impl Island {
         }
     }
     pub fn on_focus_lost(&self) {
-        let _ = self.app.emit_to(LABEL, EVT_BLUR, ());
+        if !self.capture_hidden.load(Ordering::Relaxed) {
+            let _ = self.app.emit_to(LABEL, EVT_BLUR, ());
+        }
     }
     pub fn spawn_tracker(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         tauri::async_runtime::spawn(async move {
-            let mut last_inside = false;
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(32));
             loop {
                 interval.tick().await;
                 let Some(island) = weak.upgrade() else { break };
-                island.tracker_ticks.fetch_add(1, Ordering::Relaxed);
-                let inside = match (
-                    island.window.cursor_position(),
-                    island.window.outer_position(),
-                    island.window.scale_factor(),
-                ) {
-                    (Ok(cursor), Ok(origin), Ok(scale)) => {
-                        island.is_visible()
+                let refresh = island.tracker_ticks.fetch_add(1, Ordering::Relaxed) % 32 == 0;
+                let weak = Arc::downgrade(&island);
+                let _ = island.app.run_on_main_thread(move || {
+                    if let Some(island) = weak.upgrade() {
+                        if let Some(app) = NSWorkspace::sharedWorkspace().frontmostApplication() {
+                            let pid = app.processIdentifier();
+                            if pid != std::process::id() as i32 {
+                                island.last_external_app.store(pid, Ordering::Relaxed);
+                            }
+                        }
+                        if refresh {
+                            if let Err(e) = island.place() {
+                                tracing::warn!("island screen refresh: {e}");
+                            }
+                        }
+                        let Ok(raw) = island.window.ns_window() else {
+                            return;
+                        };
+                        let window = unsafe { &*(raw as *const NSWindow) };
+                        let point = window.mouseLocationOutsideOfEventStream();
+                        let inside = island.is_visible()
+                            && !island.capture_hidden.load(Ordering::Relaxed)
                             && !island.pointer_suppressed.load(Ordering::Relaxed)
-                            && contains(
-                                *island.shape.lock(),
-                                (cursor.x - f64::from(origin.x)) / scale,
-                                (cursor.y - f64::from(origin.y)) / scale,
-                            )
+                            && contains_cocoa(*island.shape.lock(), point.x, point.y);
+                        window.setIgnoresMouseEvents(!inside);
+                        if inside != island.pointer_inside.swap(inside, Ordering::Relaxed) {
+                            let _ = island.app.emit_to(
+                                LABEL,
+                                EVT_POINTER,
+                                PointerEvent {
+                                    inside,
+                                    drag_approach: false,
+                                },
+                            );
+                        }
                     }
-                    _ => false,
-                };
-                let _ = island.window.set_ignore_cursor_events(!inside);
-                if inside != last_inside {
-                    last_inside = inside;
-                    let _ = island.app.emit_to(
-                        LABEL,
-                        EVT_POINTER,
-                        PointerEvent {
-                            inside,
-                            drag_approach: false,
-                        },
-                    );
-                }
+                });
             }
         });
     }
@@ -179,13 +308,210 @@ impl Island {
     }
 }
 
+pub(super) struct CaptureVisibility {
+    island: Arc<Island>,
+    was_visible: Arc<AtomicBool>,
+    was_key: Arc<AtomicBool>,
+}
+
+pub(super) fn hide_for_capture(hwnd: isize) -> AppResult<CaptureVisibility> {
+    let island = CAPTURE_ISLAND
+        .lock()
+        .upgrade()
+        .filter(|island| island.hwnd() == hwnd)
+        .ok_or_else(|| AppError::platform("Не удалось исключить окно острова из снимка"))?;
+    let guard = CaptureVisibility {
+        island,
+        was_visible: Arc::new(AtomicBool::new(false)),
+        was_key: Arc::new(AtomicBool::new(false)),
+    };
+    guard.set_hidden(true)?;
+    Ok(guard)
+}
+
+impl CaptureVisibility {
+    fn set_hidden(&self, hidden: bool) -> AppResult<()> {
+        let island = self.island.clone();
+        let was_visible = self.was_visible.clone();
+        let was_key = self.was_key.clone();
+        let change = move || -> AppResult<()> {
+            if !hidden {
+                island.capture_hidden.store(false, Ordering::Relaxed);
+            }
+            let window = unsafe { &*(island.window.ns_window()? as *const NSWindow) };
+            if hidden {
+                was_visible.store(window.isVisible(), Ordering::Relaxed);
+                was_key.store(window.isKeyWindow(), Ordering::Relaxed);
+                island.capture_hidden.store(true, Ordering::Relaxed);
+                window.orderOut(None);
+            } else if was_visible.load(Ordering::Relaxed) && island.is_visible() {
+                window.orderFrontRegardless();
+                let front = NSWorkspace::sharedWorkspace()
+                    .frontmostApplication()
+                    .map(|app| app.processIdentifier())
+                    .unwrap_or(0);
+                if should_restore_capture_key(
+                    was_key.load(Ordering::Relaxed),
+                    INPUT_FOCUSABLE.load(Ordering::Relaxed),
+                    front,
+                ) {
+                    window.makeKeyWindow();
+                }
+            }
+            Ok(())
+        };
+        if MainThreadMarker::new().is_some() {
+            return change();
+        }
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.island.app.run_on_main_thread(move || {
+            let _ = tx.send(change());
+        })?;
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| AppError::platform("Окно острова не ответило при создании снимка"))?
+    }
+}
+
+impl Drop for CaptureVisibility {
+    fn drop(&mut self) {
+        if let Err(error) = self.set_hidden(false) {
+            tracing::warn!(%error, "could not restore island after capture");
+        }
+    }
+}
+
+fn should_restore_input(restore: bool, previous: i32, front: i32) -> bool {
+    restore && previous != 0 && (front == previous || front == std::process::id() as i32)
+}
+
+fn input_style(mut style: NSWindowStyleMask, input: bool) -> NSWindowStyleMask {
+    style.set(NSWindowStyleMask::NonactivatingPanel, !input);
+    style
+}
+
+fn set_input_style(window: &NSWindow, input: bool) -> bool {
+    let current = window.styleMask();
+    let desired = input_style(current, input);
+    if current == desired {
+        return false;
+    }
+    window.setStyleMask(desired);
+    true
+}
+
+fn should_restore_capture_key(was_key: bool, input: bool, front: i32) -> bool {
+    was_key && input && front == std::process::id() as i32
+}
+
+unsafe fn install_panel(window: *mut AnyObject) -> AppResult<()> {
+    let original = unsafe { &*window }.class();
+    let panel =
+        AnyClass::get(c"NSPanel").ok_or_else(|| AppError::platform("NSPanel недоступен"))?;
+    let tao =
+        AnyClass::get(c"TaoWindow").ok_or_else(|| AppError::platform("Нет класса TaoWindow"))?;
+    let is_tao = std::iter::successors(Some(original), |class| class.superclass())
+        .any(|class| std::ptr::eq(class, tao));
+    if !is_tao || panel.instance_size() > original.instance_size() {
+        return Err(AppError::platform(format!(
+            "Несовместимая структура окна {:?}: {} / NSPanel {}",
+            original.name(),
+            original.instance_size(),
+            panel.instance_size()
+        )));
+    }
+    let class = AnyClass::get(c"JarvisIslandPanel").unwrap_or_else(|| {
+        let mut builder =
+            ClassBuilder::new(c"JarvisIslandPanel", panel).expect("unique panel class");
+        unsafe {
+            builder.add_method(
+                objc2::sel!(canBecomeKeyWindow),
+                panel_can_become_key as extern "C" fn(_, _) -> _,
+            );
+        }
+        let class = builder.register();
+        for method in tao.instance_methods().iter() {
+            if method.name() != objc2::sel!(sendEvent:) {
+                continue;
+            }
+            unsafe {
+                objc2::ffi::class_addMethod(
+                    class as *const _ as *mut _,
+                    method.name(),
+                    method.implementation(),
+                    objc2::ffi::method_getTypeEncoding(*method),
+                );
+            }
+        }
+        class
+    });
+    // NSPanel fits in TaoWindow's allocation; keep NSWindow storage and Tao's event dispatch.
+    unsafe {
+        objc2::ffi::object_setClass(window, class);
+    }
+    let _: () = unsafe { objc2::msg_send![window, setHidesOnDeactivate: false] };
+    Ok(())
+}
+
+extern "C" fn panel_can_become_key(_: &AnyObject, _: Sel) -> Bool {
+    Bool::new(INPUT_FOCUSABLE.load(Ordering::Relaxed))
+}
+
 fn contains(shape: ShapeRect, x: f64, y: f64) -> bool {
     x >= shape.x && y >= shape.y && x < shape.x + shape.width && y < shape.y + shape.height
+}
+
+fn previous_app_pid(front: Option<i32>, last_external: i32) -> i32 {
+    front
+        .filter(|pid| *pid > 0 && *pid != std::process::id() as i32)
+        .unwrap_or(last_external)
+}
+
+fn contains_cocoa(shape: ShapeRect, x: f64, y: f64) -> bool {
+    contains(shape, x, CANVAS_H - y)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn input_style_changes_only_the_nonactivating_bit_and_is_idempotent() {
+        for base in [
+            NSWindowStyleMask::empty(),
+            NSWindowStyleMask::Resizable | NSWindowStyleMask::Titled,
+        ] {
+            let idle = input_style(base, false);
+            assert!(idle.contains(NSWindowStyleMask::NonactivatingPanel));
+            assert_eq!(input_style(idle, false), idle);
+            assert_eq!(input_style(idle, true), base);
+            assert_eq!(input_style(base, true), base);
+        }
+    }
+    #[test]
+    fn capture_restores_input_only_if_the_user_has_not_switched_apps() {
+        let own = std::process::id() as i32;
+        assert!(should_restore_capture_key(true, true, own));
+        assert!(!should_restore_capture_key(false, true, own));
+        assert!(!should_restore_capture_key(true, false, own));
+        assert!(!should_restore_capture_key(true, true, 0));
+        assert!(!should_restore_capture_key(true, true, 42));
+    }
+    #[test]
+    fn previous_app_survives_activation_before_input_begins() {
+        assert_eq!(previous_app_pid(Some(42), 43), 42);
+        assert_eq!(previous_app_pid(Some(std::process::id() as i32), 42), 42);
+        assert_eq!(previous_app_pid(None, 42), 42);
+        assert_eq!(previous_app_pid(None, 0), 0);
+        assert_eq!(previous_app_pid(Some(0), 42), 42);
+    }
+    #[test]
+    fn input_restore_respects_the_frontmost_application() {
+        let own = std::process::id() as i32;
+        assert!(should_restore_input(true, 42, own));
+        assert!(should_restore_input(true, 42, 42));
+        assert!(!should_restore_input(false, 42, own));
+        assert!(!should_restore_input(true, 0, own));
+        assert!(!should_restore_input(true, 42, 43));
+    }
     #[test]
     fn pointer_hit_test_handles_inside_outside_and_empty_shapes() {
         let shape = ShapeRect {
@@ -197,6 +523,10 @@ mod tests {
         assert!(contains(shape, 50.0, 20.0));
         assert!(!contains(shape, 184.0, 20.0));
         assert!(!contains(shape, 50.0, -1.0));
+        assert!(contains_cocoa(shape, 50.0, CANVAS_H));
+        assert!(contains_cocoa(shape, 50.0, CANVAS_H - 20.0));
+        assert!(!contains_cocoa(shape, 50.0, CANVAS_H - 36.0));
+        assert!(!contains_cocoa(shape, 50.0, CANVAS_H + 1.0));
         assert!(!contains(
             ShapeRect {
                 width: 0.0,
