@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use windows::Foundation::TypedEventHandler;
 use windows::Media::Control::{
@@ -28,35 +27,10 @@ use crate::error::{AppError, AppResult};
 pub const EVT_MEDIA: &str = "media:changed";
 pub const EVT_ARTWORK: &str = "media:artwork";
 
-/// The last player state the watcher saw (or a command produced). The voice
-/// gate reads it for every phrase: a song or a film playing means the room's
-/// sentences are not the user's.
-static LAST: Mutex<Option<MediaState>> = Mutex::new(None);
-
-fn remember(state: &MediaState) {
-    *LAST.lock() = Some(state.clone());
-}
-
-/// The player state as last seen, without asking Windows.
-pub fn cached() -> MediaState {
-    LAST.lock().clone().unwrap_or_default()
-}
-
-/// Something plays right now.
-pub fn is_playing() -> bool {
-    LAST.lock().as_ref().is_some_and(|m| m.available && m.status == "playing")
-}
-
-/// A player is open (playing or paused), so «дальше» and «назад» are about it.
-pub fn has_player() -> bool {
-    LAST.lock().as_ref().is_some_and(|m| m.available)
-}
-
-/// Tests: pretend a player is open.
+use super::data_media::remember;
+pub use super::data_media::{cached, has_player, is_playing};
 #[cfg(test)]
-pub fn set_cached(state: MediaState) {
-    remember(&state);
-}
+pub use super::data_media::set_cached;
 
 pub use super::data_media::MediaState;
 

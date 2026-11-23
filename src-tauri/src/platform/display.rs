@@ -1,6 +1,5 @@
 //! Monitor geometry, DPI and fullscreen detection.
 
-use serde::Serialize;
 use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{

@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
-use serde::Serialize;
 use windows::core::{Interface, GUID, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Storage::FileSystem::WIN32_FIND_DATAW;
 use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, IPersistFile, CLSCTX_INPROC_SERVER, STGM_READ};

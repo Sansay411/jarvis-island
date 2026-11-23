@@ -1,3 +1,4 @@
+use parking_lot::Mutex;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -54,4 +55,34 @@ pub struct ControlOutcome {
     pub method: &'static str,
     /// Whether the resulting state confirms the action (e.g. status flipped).
     pub verified: bool,
+}
+
+/// The last player state the watcher saw (or a command produced). The voice
+/// gate reads it for every phrase: a song or a film playing means the room's
+/// sentences are not the user's.
+static LAST: Mutex<Option<MediaState>> = Mutex::new(None);
+
+pub(super) fn remember(state: &MediaState) {
+    *LAST.lock() = Some(state.clone());
+}
+
+/// The player state as last seen, without asking the system.
+pub fn cached() -> MediaState {
+    LAST.lock().clone().unwrap_or_default()
+}
+
+/// Something plays right now.
+pub fn is_playing() -> bool {
+    LAST.lock().as_ref().is_some_and(|m| m.available && m.status == "playing")
+}
+
+/// A player is open (playing or paused), so «дальше» and «назад» are about it.
+pub fn has_player() -> bool {
+    LAST.lock().as_ref().is_some_and(|m| m.available)
+}
+
+/// Tests: pretend a player is open.
+#[cfg(test)]
+pub fn set_cached(state: MediaState) {
+    remember(&state);
 }

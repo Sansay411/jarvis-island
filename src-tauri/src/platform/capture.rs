@@ -12,7 +12,6 @@ use std::io::Cursor;
 use std::time::Instant;
 
 use base64::Engine;
-use serde::Serialize;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{
