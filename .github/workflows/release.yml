@@ -1,6 +1,9 @@
-# Builds the Windows installer and a portable exe, then attaches both to a
-# GitHub release. Runs on a version tag (git tag v0.1.0 && git push --tags)
-# or by hand from the Actions tab.
+# Builds Jarvis for Windows (the setup window, the NSIS package the
+# auto-updater installs, a portable exe) and macOS (Apple Silicon and Intel
+# DMGs plus the signed update bundles), then publishes the release together
+# with latest.json — the file the app's auto-updater reads. Runs on a version
+# tag (git tag v0.2.0 && git push --tags) or by hand from the Actions tab
+# (then it only builds; publishing needs a tag).
 name: Release
 
 on:
@@ -11,8 +14,13 @@ on:
 permissions:
   contents: write
 
+env:
+  # Signs the update packages; the public half is in tauri.conf.json.
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,38 +34,49 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            installer
 
       - run: npm ci
 
       - run: npm run tauri build
 
+      - name: Build the setup window around the NSIS package
+        shell: pwsh
+        run: |
+          $pkg = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $env:JARVIS_PAYLOAD = $pkg.FullName
+          $env:JARVIS_VERSION = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          cargo build --release --manifest-path installer/Cargo.toml
+
       - name: Collect files
         shell: pwsh
         run: |
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
           New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item installer/target/release/jarvis-setup.exe "out/Jarvis-$v-Setup.exe"
           Copy-Item src-tauri/target/release/bundle/nsis/*-setup.exe out/
+          Copy-Item src-tauri/target/release/bundle/nsis/*-setup.exe.sig out/
           Copy-Item src-tauri/target/release/jarvis.exe out/jarvis-portable.exe
           Get-ChildItem out
 
       - uses: actions/upload-artifact@v4
         with:
-          name: jarvis-windows-x64
+          name: windows
           path: out/*
-
-      - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          name: Jarvis ${{ github.ref_name }}
-          files: out/*
-          generate_release_notes: true
+          if-no-files-found: error
 
   macos:
     runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
-        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+        include:
+          - target: aarch64-apple-darwin
+            arch: aarch64
+          - target: x86_64-apple-darwin
+            arch: x64
     steps:
       - uses: actions/checkout@v4
 
@@ -77,18 +96,66 @@ jobs:
 
       - run: npm ci
 
-      - run: npm run tauri build -- --target ${{ matrix.target }} --bundles dmg,app
+      - run: npm run tauri build -- --target ${{ matrix.target }} --bundles app,dmg
+
+      - name: Collect files
+        run: |
+          v=$(node -p "require('./package.json').version")
+          b=src-tauri/target/${{ matrix.target }}/release/bundle
+          mkdir -p out
+          cp $b/dmg/*.dmg out/
+          cp $b/macos/Jarvis.app.tar.gz "out/Jarvis_${v}_${{ matrix.arch }}.app.tar.gz"
+          cp $b/macos/Jarvis.app.tar.gz.sig "out/Jarvis_${v}_${{ matrix.arch }}.app.tar.gz.sig"
+          ls -la out
 
       - uses: actions/upload-artifact@v4
         with:
-          name: jarvis-macos-${{ matrix.target }}
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          name: macos-${{ matrix.arch }}
+          path: out/*
           if-no-files-found: error
 
+  publish:
+    needs: [windows, macos]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Write latest.json and the release notes
+        run: |
+          cd release
+          python3 - "${GITHUB_REF_NAME#v}" "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" <<'PY'
+          import datetime, glob, json, pathlib, sys
+          version, base = sys.argv[1], sys.argv[2]
+          log = pathlib.Path("../CHANGELOG.md").read_text(encoding="utf-8")
+          section = log.split(f"## {version}", 1)[1].split("\n## ", 1)[0].strip() if f"## {version}" in log else ""
+          pathlib.Path("../release-notes.md").write_text(section + "\n", encoding="utf-8")
+          def entry(name):
+              return {"signature": pathlib.Path(name + ".sig").read_text().strip(), "url": f"{base}/{name}"}
+          windows = sorted(glob.glob("*_x64-setup.exe"))[0]
+          latest = {
+              "version": version,
+              "notes": section,
+              "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "platforms": {
+                  "windows-x86_64": entry(windows),
+                  "darwin-aarch64": entry(f"Jarvis_{version}_aarch64.app.tar.gz"),
+                  "darwin-x86_64": entry(f"Jarvis_{version}_x64.app.tar.gz"),
+              },
+          }
+          pathlib.Path("latest.json").write_text(json.dumps(latest, ensure_ascii=False, indent=2), encoding="utf-8")
+          PY
+          rm -f *.sig
+          ls -la
+
       - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
         with:
           name: Jarvis ${{ github.ref_name }}
-          files: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          body_path: release-notes.md
+          files: release/*
           fail_on_unmatched_files: true
-          generate_release_notes: true

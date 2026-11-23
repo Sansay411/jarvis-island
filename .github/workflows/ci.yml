@@ -40,3 +40,7 @@ jobs:
 
       - run: cargo test --lib
         working-directory: src-tauri
+
+      - name: Check the Windows setup window
+        if: runner.os == 'Windows'
+        run: cargo check --manifest-path installer/Cargo.toml

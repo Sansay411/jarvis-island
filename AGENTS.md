@@ -28,3 +28,24 @@ Visual QA without the native app: `npx vite --port 1420`, then open
 * Voice behaviour is decided in `src-tauri/src/voice/intent.rs` (whose words
   are these) and `agent/fast.rs` (exact local commands). Their tests use real
   phrases from the logs; add new live misfires there first.
+* The repo moved from `C:\Users\-pin\Documents\Jarvis` to `E:\Jarvis` on
+  2026-11-22. Build-script outputs in `src-tauri/target/*/build/*/output`
+  still pointed at the old path, so a crate that had to rebuild (after a
+  `windows` feature change) failed with «could not find native static library
+  `WebView2LoaderStatic`». Fix: `cargo clean -p <crate>` (and `--release`).
+* Files written by the editor tool come out CRLF; most of the repo is LF
+  (`sed -i 's/\r$//' file` before committing a new file).
+
+## Release
+
+* `installer/` is a separate crate (the Windows setup window). Build it after
+  `npm run tauri build` with `JARVIS_PAYLOAD=<path to *_x64-setup.exe>`; without
+  it the window opens with nothing to install (handy for UI work).
+* Update packages are signed: `npm run tauri build` needs
+  `TAURI_SIGNING_PRIVATE_KEY` (the file `~/.tauri/jarvis-updater.key`) and
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (`~/.tauri/jarvis-updater.password`).
+  CI has both as repository secrets. Losing the key means installed copies can
+  no longer be updated.
+* `git tag vX.Y.Z && git push --tags` runs `.github/workflows/release.yml`:
+  Windows + both macOS arches, then `latest.json` and the release notes from
+  `CHANGELOG.md`.
