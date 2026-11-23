@@ -177,6 +177,7 @@ jobs:
           # Checksums for people and for antivirus false-positive reports.
           sha256sum * > SHA256SUMS.txt
           { echo; echo '<details><summary>SHA-256</summary>'; echo; echo '```'; cat SHA256SUMS.txt; echo '```'; echo '</details>'; } >> ../release-notes.md
+          { echo; echo "**Code signing policy:** free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org). Details: [README](https://github.com/${GITHUB_REPOSITORY}#code-signing-policy) · [Privacy](https://github.com/${GITHUB_REPOSITORY}/blob/main/PRIVACY.md)"; } >> ../release-notes.md
           ls -la
 
       - uses: softprops/action-gh-release@v2
