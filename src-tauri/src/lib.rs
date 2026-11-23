@@ -12,6 +12,7 @@
 
 pub mod agent;
 pub mod ai;
+pub mod bluetooth;
 pub mod clips;
 pub mod error;
 pub mod filekit;
@@ -247,6 +248,13 @@ pub fn run() {
             let clips = clips::Clips::new(app.handle().clone());
             app.manage(clips.clone());
             clips.start();
+            let bluetooth = bluetooth::Bluetooth::new(app.handle().clone());
+            app.manage(bluetooth.clone());
+            // After start-up has settled: nobody waits for the first battery read.
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                bluetooth.spawn();
+            });
             // Start listening for «Джарвис» if that is on — after WebView2 has
             // booted and painted the island, so model loading does not pile
             // onto the busiest second of start-up.
@@ -317,6 +325,8 @@ pub fn run() {
             ipc::island_set_hidden,
             ipc::island_context,
             ipc::perf_report,
+            ipc::bluetooth_devices,
+            ipc::bluetooth_refresh,
             ipc::audio_get,
             ipc::audio_set_volume,
             ipc::audio_set_mute,

@@ -190,6 +190,27 @@ async fn context_snapshot(ctx: ToolCtx, _args: Value) -> AppResult<ToolOutput> {
     Ok(ToolOutput::ok(format!("Активное окно: {fg_title}"), data))
 }
 
+/// The headphones' charge (each bud and the case when known) and the other
+/// Bluetooth devices that report a battery.
+async fn bluetooth_battery(ctx: ToolCtx, _args: Value) -> AppResult<ToolOutput> {
+    use tauri::Manager;
+    let views = ctx.app.state::<std::sync::Arc<crate::bluetooth::Bluetooth>>().snapshot();
+    let part = |p: Option<platform::bluetooth::BtPart>| p.map(|p| json!({ "level": p.level, "charging": p.charging, "inEar": p.in_ear }));
+    let devices: Vec<Value> = views
+        .iter()
+        .filter(|v| v.device.battery.is_some() || v.device.is_audio())
+        .map(|v| {
+            let d = &v.device;
+            json!({
+                "name": d.name, "kind": d.kind, "model": d.model, "connected": d.connected, "battery": d.battery,
+                "left": part(d.left), "right": part(d.right), "case": part(d.case_part),
+                "soundPlaysHere": v.audio_output, "minutesLeft": v.minutes_left,
+            })
+        })
+        .collect();
+    Ok(ToolOutput::ok(crate::bluetooth::describe(&views), json!({ "devices": devices })))
+}
+
 async fn wait(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
     let secs = args.get("seconds").and_then(Value::as_f64).unwrap_or(1.0).clamp(0.2, 15.0);
     tokio::select! {
@@ -280,6 +301,16 @@ pub fn tools() -> Vec<Tool> {
             timeout: Duration::from_secs(6),
             parallel_safe: false,
             handler: handler(media_control),
+        },
+        Tool {
+            name: "bluetooth_battery",
+            description: "Battery of the user's Bluetooth devices: headphones (each AirPod and the case when known, charging, in ear, whether sound plays through them, minutes left at today's rate), keyboards, mice. Read-only.",
+            schema: object(json!({}), &[]),
+            risk: low,
+            title: |_| "Заряд наушников".into(),
+            timeout: Duration::from_secs(5),
+            parallel_safe: true,
+            handler: handler(bluetooth_battery),
         },
         Tool {
             name: "context_snapshot",

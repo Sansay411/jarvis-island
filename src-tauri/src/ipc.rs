@@ -46,6 +46,19 @@ pub fn island_set_hidden(state: State<'_, AppState>, hidden: bool) {
     state.island.set_user_hidden(hidden);
 }
 
+// ---------- bluetooth ----------
+
+#[tauri::command]
+pub fn bluetooth_devices(bt: State<'_, std::sync::Arc<crate::bluetooth::Bluetooth>>) -> Vec<crate::bluetooth::BtView> {
+    bt.snapshot()
+}
+
+/// The island opened the headphones deck: read the batteries again now.
+#[tauri::command]
+pub fn bluetooth_refresh(bt: State<'_, std::sync::Arc<crate::bluetooth::Bluetooth>>) {
+    bt.refresh_soon();
+}
+
 // ---------- audio ----------
 
 #[tauri::command]

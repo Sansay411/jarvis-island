@@ -27,3 +27,13 @@ pub fn working_set_mb() -> f64 {
     std::process::Command::new("/bin/ps").args(["-p", &std::process::id().to_string(), "-o", "rss="]).output().ok()
         .and_then(|o| String::from_utf8(o.stdout).ok()).and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(0.0) / 1024.0
 }
+
+/// «2 ч 30 мин», «45 мин», «9 ч»: a duration the way the island writes it
+/// (the voice pipeline reads the units out in words).
+pub fn human_minutes(minutes: u32) -> String {
+    match (minutes / 60, minutes % 60) {
+        (0, m) => format!("{m} мин"),
+        (h, 0) => format!("{h} ч"),
+        (h, m) => format!("{h} ч {m} мин"),
+    }
+}

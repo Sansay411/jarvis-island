@@ -19,6 +19,11 @@ pub mod audio;
 #[path = "macos/audio.rs"]
 pub mod audio;
 #[cfg(windows)]
+pub mod bluetooth;
+#[cfg(target_os = "macos")]
+#[path = "macos/bluetooth.rs"]
+pub mod bluetooth;
+#[cfg(windows)]
 pub mod brightness;
 #[cfg(target_os = "macos")]
 #[path = "macos/brightness.rs"]
@@ -154,6 +159,8 @@ mod data_apps;
 mod native;
 
 mod data_audio;
+
+mod data_bluetooth;
 
 mod data_brightness;
 
