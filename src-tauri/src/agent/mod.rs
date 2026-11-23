@@ -8,7 +8,7 @@
 
 pub mod events;
 mod prompt;
-mod fast;
+pub(crate) mod fast;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -112,6 +112,10 @@ struct Inner {
     pending_messages: Vec<ChatMessage>,
     /// Callers waiting for a turn's final answer (voice delegation).
     waiters: HashMap<String, oneshot::Sender<AppResult<String>>>,
+    /// The request of an ambient voice turn, written to disk only once the
+    /// model answers it: words the model judged not meant for JARVIS leave
+    /// no trace in the conversation.
+    deferred_user: Option<(String, ChatMessage)>,
 }
 
 pub struct Agent {
@@ -129,6 +133,50 @@ struct Turn {
     voice: bool,
     /// Streamed reply text for speech synthesis.
     deltas: Option<mpsc::UnboundedSender<String>>,
+    /// Heard without the name: the model may decide the words were not for
+    /// JARVIS and answer with `SILENT` (nothing is said, nothing is kept).
+    ambient: bool,
+}
+
+/// The whole reply of an ambient turn that was not meant for JARVIS.
+pub const SILENT: &str = "∅";
+
+/// Holds back the first characters of an ambient reply until it is clear
+/// whether they are `SILENT`, so the silence never reaches the chat or the
+/// speaker.
+#[derive(Default)]
+struct SilenceGate {
+    held: String,
+    /// None: undecided; Some(true): silent; Some(false): a real reply.
+    silent: Option<bool>,
+}
+
+impl SilenceGate {
+    /// Text to pass on now (empty while undecided or silent).
+    fn push(&mut self, t: &str) -> String {
+        match self.silent {
+            Some(true) => String::new(),
+            Some(false) => t.to_string(),
+            None => {
+                self.held.push_str(t);
+                let head = self.held.trim_start();
+                if head.is_empty() {
+                    String::new()
+                } else if head.starts_with(SILENT) {
+                    self.silent = Some(true);
+                    String::new()
+                } else {
+                    self.silent = Some(false);
+                    std::mem::take(&mut self.held)
+                }
+            }
+        }
+    }
+}
+
+/// The model's reply means «not for me».
+fn is_silent(text: &str) -> bool {
+    text.trim().starts_with(SILENT)
 }
 
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp"];
@@ -184,6 +232,7 @@ impl Agent {
                 pending_reports: Vec::new(),
                 pending_messages: Vec::new(),
                 waiters: HashMap::new(),
+                deferred_user: None,
             }),
         })
     }
@@ -336,16 +385,17 @@ impl Agent {
     /// (used by the voice session for multi-step work).
     pub async fn delegate(self: &Arc<Self>, task: String) -> AppResult<String> {
         let (tx, rx) = oneshot::channel();
-        self.start_turn(task, Vec::new(), Some(tx), true, None, None)?;
+        self.start_turn(task, Vec::new(), Some(tx), true, None, None, false)?;
         rx.await.map_err(|_| AppError::internal("Задача агента прервалась"))?
     }
 
     /// A spoken request from the local voice pipeline: a normal turn (shown in
     /// the chat, same tools and confirmations) whose reply text is streamed to
     /// `deltas` for speech as it is generated. Resolves with the final answer.
-    pub async fn voice_turn(self: &Arc<Self>, text: String, deltas: mpsc::UnboundedSender<String>) -> AppResult<String> {
+    /// `ambient`: heard without the name; the reply may be `SILENT`.
+    pub async fn voice_turn(self: &Arc<Self>, text: String, deltas: mpsc::UnboundedSender<String>, ambient: bool) -> AppResult<String> {
         let (tx, rx) = oneshot::channel();
-        self.start_turn(text, Vec::new(), Some(tx), true, Some(deltas), None)?;
+        self.start_turn(text, Vec::new(), Some(tx), true, Some(deltas), None, ambient)?;
         rx.await.map_err(|_| AppError::internal("Задача агента прервалась"))?
     }
 
@@ -365,6 +415,7 @@ impl Agent {
             settings,
             voice: true,
             deltas: None,
+            ambient: false,
         };
         let call = ToolCall { id: uuid::Uuid::new_v4().to_string(), name: name.to_string(), arguments: arguments.to_string() };
         let args: Value = match serde_json::from_str(arguments) {
@@ -404,20 +455,20 @@ impl Agent {
     }
 
     pub fn send(self: &Arc<Self>, text: String, attachments: Vec<String>) -> AppResult<SendResult> {
-        self.start_turn(text, attachments, None, false, None, None)
+        self.start_turn(text, attachments, None, false, None, None, false)
     }
 
     /// A request from another program (`jarvis.exe --ask`). Anyone on this
     /// computer can start one, so full control does not apply: every action
     /// that changes something is confirmed as if it were off.
     pub fn send_external(self: &Arc<Self>, text: String) -> AppResult<SendResult> {
-        self.start_turn(text, Vec::new(), None, false, None, Some(false))
+        self.start_turn(text, Vec::new(), None, false, None, Some(false), false)
     }
 
     /// Launch an autonomous playbook/routine explicitly chosen by the user in JARVIS.
     /// Irreversible / external actions remain guarded by `still_confirmed`.
     pub fn send_routine(self: &Arc<Self>, text: String, autonomy: bool) -> AppResult<SendResult> {
-        self.start_turn(text, Vec::new(), None, false, None, if autonomy { Some(true) } else { None })
+        self.start_turn(text, Vec::new(), None, false, None, if autonomy { Some(true) } else { None }, false)
     }
 
     fn start_turn(
@@ -428,6 +479,7 @@ impl Agent {
         voice: bool,
         deltas: Option<mpsc::UnboundedSender<String>>,
         autonomy_override: Option<bool>,
+        ambient: bool,
     ) -> AppResult<SendResult> {
         let text = text.trim().to_string();
         if text.is_empty() {
@@ -452,6 +504,7 @@ impl Agent {
                 settings,
                 voice,
                 deltas,
+                ambient,
             };
             i.active = Some(ActiveTurn { turn_id: t.id.clone(), cancel: t.cancel.clone() });
             if let Some(w) = waiter {
@@ -525,6 +578,13 @@ impl Agent {
     fn push_history(&self, conversation_id: &str, msg: ChatMessage, tool_title: Option<&str>, tool_ok: Option<bool>, persist: bool) {
         if persist {
             let store = &self.state().store;
+            // The ambient request goes to disk just before its first answer.
+            let deferred = self.inner.lock().deferred_user.take();
+            if let Some((conv, user)) = deferred {
+                if let Err(e) = store.append_message(&conv, &user, None, None) {
+                    tracing::warn!("history write failed: {e}");
+                }
+            }
             // Screenshots and other images are not written to disk.
             let mut stored = msg.clone();
             if stored.has_images() {
@@ -549,7 +609,7 @@ impl Agent {
 
     async fn run_turn(self: Arc<Self>, turn: Turn, conversation_id: String, text: String, client: OpenAiCompatible) {
         let started = Instant::now();
-        self.emit(AgentEvent::TurnStarted { turn_id: turn.id.clone(), conversation_id: conversation_id.clone(), user_text: text.clone(), voice: turn.voice });
+        self.emit(AgentEvent::TurnStarted { turn_id: turn.id.clone(), conversation_id: conversation_id.clone(), user_text: text.clone(), voice: turn.voice, ambient: turn.ambient });
         let persist = turn.settings.privacy.store_history;
         let store = self.state().store.clone();
         if persist {
@@ -557,12 +617,31 @@ impl Agent {
             let _ = store.task_started(&turn.id, &conversation_id, &text);
         }
         let user = self.user_message(&text, &turn.attachments);
-        self.push_history(&conversation_id, user, None, None, persist);
+        if turn.ambient {
+            // Kept in memory for the model; on disk only if it answers.
+            self.inner.lock().deferred_user = persist.then(|| (conversation_id.clone(), user.clone()));
+            self.push_history(&conversation_id, user, None, None, false);
+        } else {
+            self.push_history(&conversation_id, user, None, None, persist);
+        }
 
         let mut steps = 0u32;
         let outcome = self.turn_loop(&turn, &conversation_id, &client, &mut steps).await;
+        let ignored = matches!(outcome, Ok(true));
+        if ignored {
+            // Not meant for JARVIS: forget the words as if never heard.
+            let mut i = self.inner.lock();
+            i.deferred_user = None;
+            if i.history.last().is_some_and(|m| m.role == Role::User) {
+                i.history.pop();
+            }
+        } else {
+            self.inner.lock().deferred_user = None;
+        }
+        let outcome = outcome.map(|_| ());
 
         let (status, error) = match &outcome {
+            Ok(()) if ignored => ("ignored", None),
             Ok(()) => ("completed", None),
             Err(AppError::Cancelled) => ("cancelled", None),
             Err(e) => ("failed", Some(e.to_string())),
@@ -600,6 +679,7 @@ impl Agent {
         };
         if let Some(w) = waiter {
             let _ = w.send(match &outcome {
+                Ok(()) if ignored => Ok(SILENT.to_string()),
                 Ok(()) => Ok(final_text.unwrap_or_default()),
                 Err(e) => Err(AppError::internal(e.to_string())),
             });
@@ -613,7 +693,8 @@ impl Agent {
         }
     }
 
-    async fn turn_loop(&self, turn: &Turn, conversation_id: &str, client: &OpenAiCompatible, steps: &mut u32) -> AppResult<()> {
+    /// `Ok(true)`: an ambient turn the model judged not meant for JARVIS.
+    async fn turn_loop(&self, turn: &Turn, conversation_id: &str, client: &OpenAiCompatible, steps: &mut u32) -> AppResult<bool> {
         let mut specs = self.registry.specs();
         if !client.supports_web() { specs.retain(|s| !matches!(s.name.as_str(), "web_search" | "web_fetch")); }
         // A spoken turn is already said aloud by the voice pipeline; a second
@@ -622,19 +703,21 @@ impl Agent {
         if turn.voice { specs.retain(|s| s.name != "speak_aloud"); }
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
         // Gathered once: the same text on every step keeps the cache warm.
-        let turn_context = prompt::turn_context(&turn.settings, &self.state().history);
+        let turn_context = prompt::turn_context(&turn.settings, &self.state().history, turn.ambient);
         let vision_model = turn.settings.provider.vision_model.trim().to_string();
         let persist = turn.settings.privacy.store_history;
         // Whole-utterance matching only. Execute through the normal registry
         // so cancellation, verification, events and risk policy stay intact.
         if turn.attachments.is_empty() {
             let text = self.inner.lock().history.last().map(ChatMessage::joined_text).unwrap_or_default();
-            if let Some(fast::Fast::Say(reply)) = fast::command(&text) {
+            // Small talk heard without the name is as likely the room's: the
+            // model decides about it, not a phrasebook.
+            if let Some(fast::Fast::Say(reply)) = fast::command(&text).filter(|_| !turn.ambient) {
                 let _ = self.app.emit_to(crate::platform::island::LABEL, "island:emote", fast::emote_for(reply));
                 if let Some(tx) = &turn.deltas { let _ = tx.send(reply.to_string()); }
                 self.emit(AgentEvent::TextDelta { turn_id:turn.id.clone(), text:reply.to_string() });
                 self.push_history(conversation_id, ChatMessage::text(Role::Assistant, reply.to_string()), None, None, persist);
-                return Ok(());
+                return Ok(false);
             }
             if let Some(fast::Fast::Call(call)) = fast::command(&text) {
                 *steps += 1;
@@ -652,12 +735,26 @@ impl Agent {
                     };
                     let body = json!({"ok":output.ok,"summary":output.summary,"data":output.data});
                     self.push_history(conversation_id, ChatMessage::tool_result(&call.id, body.to_string()), Some(&title), Some(output.ok), persist);
-                    if output.ok {
-                        let answer = fast::answer(&call.name,&output.summary,&output.data);
-                        if let Some(tx) = &turn.deltas { let _ = tx.send(answer.clone()); }
+                    // A player that is not open or did not react: nothing for
+                    // the model to recover — it would open a music site.
+                    let answer = if output.ok {
+                        Some(fast::answer(&call.name, &call.arguments, &output.summary, &output.data))
+                    } else if call.name == "media_control" {
+                        Some(fast::media_failure(&output.data))
+                    } else {
+                        None
+                    };
+                    if let Some(answer) = answer {
+                        // A player command that worked is its own answer: the music
+                        // stops or goes on. Saying so over it only delayed the next
+                        // command (heard live 2026-11-21: 1–2.5 s of «Играет …»).
+                        // The chat still shows the line.
+                        let action = serde_json::from_str::<Value>(&call.arguments).ok().and_then(|a| a.get("action")?.as_str().map(str::to_string));
+                        let quiet = output.ok && call.name == "media_control" && action.as_deref() != Some("status");
+                        if let Some(tx) = turn.deltas.as_ref().filter(|_| !quiet) { let _ = tx.send(answer.clone()); }
                         self.emit(AgentEvent::TextDelta { turn_id:turn.id.clone(),text:answer.clone() });
                         self.push_history(conversation_id, ChatMessage::text(Role::Assistant,answer), None,None,persist);
-                        return Ok(());
+                        return Ok(false);
                     }
                     // Let the model recover from a failed native action.
                 }
@@ -685,9 +782,18 @@ impl Agent {
             let turn_id = turn.id.clone();
             let app = self.app.clone();
             let deltas = turn.deltas.clone();
+            // Only the first answer of an ambient turn may be silence.
+            let mut gate = (turn.ambient && *steps == 1).then(SilenceGate::default);
             let completion = model
                 .complete(&messages, &specs, &turn.cancel, None, move |d| match d {
                     StreamDelta::Text(t) => {
+                        let t = match gate.as_mut() {
+                            Some(g) => g.push(&t),
+                            None => t,
+                        };
+                        if t.is_empty() {
+                            return;
+                        }
                         if let Some(tx) = &deltas {
                             let _ = tx.send(t.clone());
                         }
@@ -699,12 +805,20 @@ impl Agent {
                     StreamDelta::ToolCallStarted { .. } => {}
                 })
                 .await?;
-            let msg = completion.message;
+            let mut msg = completion.message;
             let calls = msg.tool_calls.clone();
+            if turn.ambient && *steps == 1 && calls.is_empty() && is_silent(&msg.joined_text()) {
+                tracing::info!(turn = %turn.id, "ambient words judged not meant for JARVIS");
+                return Ok(true);
+            }
+            if is_silent(&msg.joined_text()) {
+                // Silence after acting (or with tools) is no answer to keep.
+                msg.parts.retain(|p| !matches!(p, Part::Text { .. }));
+            }
             self.push_history(conversation_id, msg, None, None, persist);
 
             if calls.is_empty() {
-                return Ok(());
+                return Ok(false);
             }
             self.emit(AgentEvent::Phase { turn_id: turn.id.clone(), phase: "acting" });
 

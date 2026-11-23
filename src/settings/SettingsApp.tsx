@@ -54,6 +54,7 @@ export interface Settings {
     reuseLlmKey: boolean;
     inputDevice: string;
     outputDevice: string;
+    duckMedia: boolean;
   };
   persona: { userName: string; address: "ty" | "vy"; style: "witty" | "warm" | "concise" };
   shortcuts: { workspace: string; voice: string; clipboard: string };
@@ -173,6 +174,7 @@ const FALLBACK_SETTINGS_VIEW: SettingsView = {
       reuseLlmKey: true,
       inputDevice: "",
       outputDevice: "",
+      duckMedia: true,
     },
     persona: { userName: "Александр", address: "ty", style: "witty" },
     shortcuts: { workspace: "Ctrl+Alt+J", voice: "Ctrl+Alt+K", clipboard: "Ctrl+Alt+V" },
@@ -241,8 +243,8 @@ const SECTIONS: { id: Section; label: string; line: [string, string] }[] = [
     id: "voice",
     label: "Голос",
     line: [
-      "Бесплатная нейросетевая озвучка HD из коробки, мгновенный потоковый отклик и локальный слух.",
-      "Бесплатная нейросетевая озвучка HD из коробки, мгновенный потоковый отклик и локальный слух.",
+      "Как я звучу и как слышу тебя. Речь распознаётся на этом компьютере.",
+      "Как я звучу и как слышу вас. Речь распознаётся на этом компьютере.",
     ],
   },
   {
@@ -254,8 +256,8 @@ const SECTIONS: { id: Section; label: string; line: [string, string] }[] = [
     id: "behaviour",
     label: "Агент и управление",
     line: [
-      "Режим автопилота, рабочие папки и сценарии, которые я выполняю в один клик.",
-      "Режим автопилота, рабочие папки и сценарии, которые я выполняю в один клик.",
+      "Сколько я делаю сам, где лежат твои проекты и что запускать одной кнопкой.",
+      "Сколько я делаю сам, где лежат ваши проекты и что запускать одной кнопкой.",
     ],
   },
   {
@@ -734,7 +736,7 @@ function RoutinesSettingsManager({ notify }: { notify: (tone: Tone, text: string
       await saveRoutine({
         id: editing.id,
         title: editing.title.trim(),
-        subtitle: editing.subtitle.trim() || "Исполнительный сценарий",
+        subtitle: editing.subtitle.trim() || "Сценарий",
         icon: editing.icon,
         prompt: editing.prompt.trim(),
         autonomy: editing.autonomy,
@@ -767,7 +769,7 @@ function RoutinesSettingsManager({ notify }: { notify: (tone: Tone, text: string
   };
 
   return (
-    <Group title="Сценарии автопилота (Routines)">
+    <Group title="Сценарии">
       <p className="note" style={{ marginTop: 10, marginBottom: 14 }}>
         Готовые многошаговые поручения, доступные на стартовом экране чата и в нижней панели быстрого запуска.
       </p>
@@ -849,7 +851,7 @@ function RoutinesSettingsManager({ notify }: { notify: (tone: Tone, text: string
             <textarea
               rows={3}
               value={editing.prompt}
-              placeholder="Сверни лишние окна через window_layout, запусти сессию фокуса на 45 минут…"
+              placeholder="Сверни лишние окна и включи фокус на 45 минут…"
               onChange={(e) => setEditing({ ...editing, prompt: e.target.value })}
             />
           </Row>
@@ -1251,23 +1253,18 @@ export default function SettingsApp({
 
           {section === "voice" && (
             <>
-              {/* Prominent Free Neural HD TTS Studio Card */}
-              <section className="tts-studio-card" aria-label="Бесплатная нейросетевая озвучка HD">
+              <section className="tts-studio-card" aria-label="Голос">
                 <div className="tts-studio-head">
                   <div className="tts-studio-title-wrap">
-                    <span className="tts-studio-eyebrow">
-                      <span className="tts-studio-live-dot" />
-                      БЕСПЛАТНО ИЗ КОРОБКИ · EDGE NEURAL HD · БЕЗ КЛЮЧЕЙ API
-                    </span>
-                    <h2 className="tts-studio-title">Бесплатная нейросетевая озвучка HD (Edge Neural)</h2>
+                    <span className="tts-studio-eyebrow">Edge Neural · без ключей</span>
+                    <h2 className="tts-studio-title">Мой голос</h2>
                     <p className="tts-studio-desc">
-                      Студийные нейронные голоса работают сразу после установки — без платных подписок, ключей и тяжёлых загрузок.
-                      Тёплый потоковый пул выдаёт первый звук за ~160–240 мс, 2-уровневый кэш (RAM + диск) отвечает быстрее 10 мс, а без интернета Джарвис автоматически переходит на локальный движок (Supertonic / Piper / Windows).
+                      Работают сразу, ничего скачивать не нужно. Без интернета говорю скачанным локальным голосом или голосом Windows.
                     </p>
                   </div>
                 </div>
 
-                <div className="tts-hd-grid" role="radiogroup" aria-label="Бесплатные голоса Edge Neural HD">
+                <div className="tts-hd-grid" role="radiogroup" aria-label="Голоса Edge Neural">
                   {CURATED_EDGE_VOICES.map((cv) => {
                     const selected = draft.voice.ttsVoice === cv.id;
                     const pKey = `tts:hd-${cv.id}`;
@@ -1315,17 +1312,16 @@ export default function SettingsApp({
                   })}
                 </div>
 
-                {/* Interactive Voice Preview & Live Speed Benchmark */}
                 <div className="tts-bench-box">
                   <div className="tts-bench-label-row">
-                    <span className="tts-bench-label">Стенд проверки голоса и замера скорости</span>
+                    <span className="tts-bench-label">Проверить</span>
                     <span className="tts-bench-active-voice mono">{voiceName}</span>
                   </div>
                   <div className="tts-bench-input-row">
                     <input
                       value={samplePhrase}
                       onChange={(e) => setSamplePhrase(e.target.value)}
-                      placeholder="Введите фразу для проверки синтеза речи…"
+                      placeholder="Фраза, которую я скажу…"
                       aria-label="Тестовая фраза для озвучки"
                     />
                     {ttsSpeaking || preview.playing ? (
@@ -1386,7 +1382,7 @@ export default function SettingsApp({
                 </div>
               </section>
 
-              <Group title="Параметры речи и автоозвучка">
+              <Group title="Речь">
                 <Row
                   label="Озвучивать ответы Джарвиса в чате"
                   hint="Автоматически читать вслух завершённые ответы ассистента в рабочем пространстве (также переключается кнопкой «Автоозвучка» в шапке чата)."
@@ -1437,7 +1433,7 @@ export default function SettingsApp({
                 </Row>
               </Group>
 
-              <Group title="Голосовой диалог и слух">
+              <Group title="Разговор">
                 <Row label="Голосовой режим" hint="Ctrl+Alt+K или кнопка микрофона на острове.">
                   <Switch
                     label="Голосовой режим"
@@ -1448,12 +1444,21 @@ export default function SettingsApp({
                 {draft.voice.engine === "local" && (
                   <Row
                     label="Откликаться на имя"
-                    hint="«Джарвис…» или «Джар…» в начале фразы — и я слушаю, без мыши. «Стоп» или «хватит» — замолкаю и снова жду имени. Фразы без имени разбираются локально и сразу забываются."
+                    hint="«Джарвис, …» — и я слушаю. Команды плеера — «пауза», «играй», «дальше», «назад», «стоп» — работают и без имени, от любого голоса. Остальное без имени я не слушаю."
                   >
                     <Switch
                       label="Откликаться на имя"
                       checked={draft.voice.wakeWord}
                       onChange={(v) => set((s) => ({ ...s, voice: { ...s.voice, wakeWord: v } }))}
+                    />
+                  </Row>
+                )}
+                {draft.voice.engine === "local" && (
+                  <Row label="Приглушать музыку" hint="Пока мы говорим, другие приложения звучат тише — так я лучше слышу. Потом громкость возвращается.">
+                    <Switch
+                      label="Приглушать музыку"
+                      checked={draft.voice.duckMedia}
+                      onChange={(v) => set((s) => ({ ...s, voice: { ...s.voice, duckMedia: v } }))}
                     />
                   </Row>
                 )}
@@ -1473,7 +1478,7 @@ export default function SettingsApp({
               {draft.voice.engine === "local" ? (
                 <>
                   {sttModels.length > 0 && (
-                    <Group title="Распознавание речи (Слух)">
+                    <Group title="Распознавание речи">
                       {sttModels.map((m) => (
                         <Row
                           key={m.id}
@@ -1486,7 +1491,7 @@ export default function SettingsApp({
                     </Group>
                   )}
 
-                  <Group title="Все доступные голоса и офлайн-резерв">
+                  <Group title="Все голоса">
                     <div className="voices" role="radiogroup" aria-label="Голос Джарвиса">
                       {[
                         { id: "", name: "Автоматический выбор (Edge Neural HD → Офлайн)", language: "ru" },
@@ -1536,7 +1541,7 @@ export default function SettingsApp({
                     )}
                   </Group>
 
-                  <Group title="Дополнительные облачные ключи (необязательно)">
+                  <Group title="Облачные голоса">
                     <YandexVoice
                       has={view.hasYandexKey}
                       notify={notify}
@@ -1705,13 +1710,12 @@ export default function SettingsApp({
                 <div className="autopilot-hero-main">
                   <div className="autopilot-hero-badge">
                     <WsIcon name="bolt" size={12} />
-                    <span>ИСПОЛНИТЕЛЬНЫЙ РЕЖИМ · TAKE CONTROL</span>
+                    <span>Автопилот</span>
                   </div>
-                  <h2>Полное управление (Автопилот ⚡)</h2>
+                  <h2>Полное управление</h2>
                   <p>
-                    Джарвис действует как автономный оператор ПК: сам выравнивает и сворачивает окна (<code>window_layout</code>), ведёт план миссии (<code>mission_plan</code>),
-                    управляет сессиями фокуса, захватывает выделенный текст и работает с кодом без лишних пауз. Необратимые действия (удаление, оплата, отправка сообщений)
-                    всегда требуют вашего подтверждения.
+                    Делаю дело без лишних вопросов: окна, программы, файлы, фокус, план задачи. Удаление, покупки и отправку сообщений
+                    {vy ? " всё равно сначала покажу вам." : " всё равно сначала покажу тебе."}
                   </p>
                 </div>
                 <div className="autopilot-hero-switch">

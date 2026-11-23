@@ -11,7 +11,9 @@ export interface PlanStep {
 }
 
 export type AgentEvent =
-  | { type: "turnStarted"; turnId: string; conversationId: string; userText: string; voice?: boolean }
+  /** `ambient`: a voice phrase heard without the name — shown only once the
+   * model answers it; it may finish as `ignored` (not meant for JARVIS). */
+  | { type: "turnStarted"; turnId: string; conversationId: string; userText: string; voice?: boolean; ambient?: boolean }
   | { type: "phase"; turnId: string; phase: AgentPhase }
   | { type: "textDelta"; turnId: string; text: string }
   | { type: "toolStarted"; turnId: string; callId: string; tool: string; title: string; args: unknown }
@@ -35,8 +37,8 @@ export type AgentEvent =
     }
   | { type: "plan_updated"; turnId: string; steps: PlanStep[] }
   | { type: "planUpdated"; turnId: string; steps: PlanStep[] }
-  | { type: "turnFinished"; turnId: string; status: "completed" | "cancelled" | "failed"; error: string | null }
-  | { type: "turn_done"; turnId: string; status?: "completed" | "cancelled" | "failed"; error?: string | null }
+  | { type: "turnFinished"; turnId: string; status: "completed" | "cancelled" | "failed" | "ignored"; error: string | null }
+  | { type: "turn_done"; turnId: string; status?: "completed" | "cancelled" | "failed" | "ignored"; error?: string | null }
   | { type: "report"; text: string; tone: "ok" | "error" }
   | { type: "waiting"; turnId: string; seconds: number };
 

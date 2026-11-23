@@ -4043,3 +4043,235 @@
 .now-strip-wx:hover {
   color: var(--text-1);
 }
+
+/* ---------- design pass (2026-11-21): one system, no haze ----------
+   Black hardware, white type on a strict scale, hairlines instead of boxes.
+   Amber is JARVIS — the eyes, his voice, what he is doing right now — and
+   nothing else. A cover's colour may tint the thin timeline, never the
+   island: the blue haze over half the deck read as a smear, not as light.
+   Numbers are tabular everywhere, so times and counters never jitter. */
+
+.island {
+  font-feature-settings: "ss01", "cv11", "tnum";
+}
+
+/* The cover no longer floods the deck: a faint wash stays as a hint. */
+.stage.is-music .island-shape {
+  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.5)) drop-shadow(0 2px 5px rgba(0, 0, 0, 0.36));
+}
+.peek-ambient img,
+.peek-ambient.is-playing img {
+  opacity: 0.1;
+  filter: blur(56px) saturate(1.1) brightness(0.55);
+  animation: none;
+}
+.peek-ambient-pool,
+.peek-ambient.is-playing .peek-ambient-pool {
+  opacity: 0.18;
+}
+.artwork-wrap::before {
+  display: none;
+}
+.artwork-wrap.is-playing .artwork {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1), 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+/* Player: title, artist, transport, a 3 px timeline. */
+.nook-media.is-live .media-title {
+  font-size: 15px;
+  font-weight: 640;
+  letter-spacing: -0.012em;
+  text-shadow: none;
+}
+.nook-media.is-live .media-artist {
+  color: var(--text-2);
+  text-shadow: none;
+}
+.nook-media.is-live .eq-bars.is-playing .eq-bar {
+  background: var(--text-2);
+  box-shadow: none;
+}
+.media-scrub-track {
+  height: 3px;
+  background: rgba(255, 255, 255, 0.1);
+}
+.media-scrub-track:hover,
+.media-scrub-track.is-dragging {
+  height: 5px;
+}
+.media-scrub-fill,
+.nook-media.is-live .media-scrub-fill {
+  background: color-mix(in srgb, rgb(var(--art, 236, 235, 230)) 30%, #f2f2f0);
+  box-shadow: none;
+}
+.nook-media.is-live .media-scrub-thumb {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+.media-time {
+  font-size: 10px;
+  color: var(--text-3);
+  letter-spacing: 0.01em;
+}
+.transport-btn {
+  color: var(--text-2);
+  transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.transport-btn:hover:not(:disabled) {
+  color: var(--text-1);
+}
+.nook-media.is-live .transport-btn.is-primary {
+  width: 30px;
+  height: 30px;
+  color: var(--on-bone);
+  background: var(--bone);
+}
+.nook-media.is-live .transport-btn.is-primary:hover:not(:disabled) {
+  background: #ffffff;
+  box-shadow: none;
+}
+.source-badge {
+  box-shadow: 0 0 0 2px #050506;
+}
+
+/* The line under the player speaks the interface's language, not a terminal's. */
+.now-strip {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 520;
+  letter-spacing: 0.005em;
+}
+.now-strip-time {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+/* Deck tabs: quiet words, the chosen one on a solid chip. */
+.deck-tab {
+  color: var(--text-3);
+  font-weight: 560;
+}
+.deck-tab:hover {
+  color: var(--text-1);
+}
+.deck-tab-bg {
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: none;
+}
+.deck-tab-badge {
+  background: transparent;
+  color: var(--text-3);
+  min-width: 0;
+  padding: 0 0 0 1px;
+  font-weight: 600;
+}
+.deck-tab.is-active .deck-tab-badge {
+  color: var(--text-2);
+}
+
+/* Small labels above content: one style across every deck. */
+.focus-eyebrow,
+.focus-queue-label,
+.wx-day {
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* Voice: the eyes speak; the wings follow the sound without a glow. */
+.wing-bar {
+  width: 2.5px;
+  background: var(--text-1);
+}
+.wings.is-speaking .wing-bar {
+  background: var(--amber);
+  box-shadow: none;
+}
+.wings.is-thinking .wing-bar {
+  background: var(--text-3);
+}
+.view-voice .brow-name {
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.voice-line {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.003em;
+}
+.voice-line.is-user .word {
+  color: var(--text-3);
+}
+.voice-line.is-user .word.is-new {
+  color: var(--text-2);
+}
+.stop-ring {
+  width: 28px;
+  height: 28px;
+  box-shadow: inset 0 0 0 1.5px rgba(255, 178, 63, 0.85);
+}
+
+/* Agenda and focus rows: hairline rhythm, no filled bars. */
+.agenda-time,
+.focus-task-time {
+  color: var(--text-3);
+  font-size: 11px;
+}
+/* The blurred cover behind the deck: gone; a faint tint of it stays. */
+.peek-ambient img {
+  display: none;
+}
+.peek-ambient-pool,
+.peek-ambient.is-playing .peek-ambient-pool {
+  opacity: 0.1;
+}
+
+/* Focus: the dial is an instrument, not a lamp. */
+.focus-dial-glow,
+.focus-dial.is-live .focus-dial-glow {
+  opacity: 0;
+}
+.focus-tick {
+  stroke: rgba(236, 235, 230, 0.1);
+}
+.focus-dial-head-halo {
+  fill: rgba(255, 178, 63, 0.18);
+}
+/* The task being focused on: an amber tick at its edge, no slab. */
+.focus-task-row.is-current {
+  background: transparent;
+  box-shadow: inset 2px 0 0 var(--amber);
+}
+.focus-task-row.is-current .focus-task-title {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.focus-task-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.focus-task-title {
+  font-weight: 500;
+}
+.focus-cancel-link {
+  font-weight: 560;
+}
+
+/* Monochrome means monochrome: the focus clock and «На полку» lose their blue. */
+.compact-timer.is-focus {
+  color: var(--text-1);
+}
+.compact-focus-ring .timer-ring-fill {
+  stroke: var(--amber);
+}
+.file-action.is-shelf {
+  background: var(--bone);
+  box-shadow: none;
+  color: var(--on-bone);
+}
+.file-action.is-shelf:hover:not(:disabled) {
+  background: #ffffff;
+}

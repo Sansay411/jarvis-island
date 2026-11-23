@@ -138,7 +138,7 @@ export function FocusHoverBanner({ onExpand }: { onExpand: () => void }) {
 
         <div className="focus-banner-meta">
           <span>
-            {fmtRemaining(rem)} осталось{!focus.paused && endsLabel ? `, до ${endsLabel}` : ""}
+            осталось {fmtRemaining(rem)}{!focus.paused && endsLabel ? ` · до ${endsLabel}` : ""}
           </span>
           <span className="focus-banner-next">
             {nextTask
@@ -263,7 +263,7 @@ export function FocusDeck() {
                 {focus.title}
               </div>
               <div className="focus-card-sub">
-                {fmtRemaining(remSec)} осталось{!focus.paused && endsLabel ? `, до ${endsLabel}` : ""}
+                осталось {fmtRemaining(remSec)}{!focus.paused && endsLabel ? ` · до ${endsLabel}` : ""}
               </div>
             </>
           ) : (

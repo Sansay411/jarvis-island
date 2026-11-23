@@ -12,8 +12,8 @@
 const NAMES: &[&str] = &[
     "джарвис", "джарвиз", "джарвиса", "джарвису", "джарвисом", "джарвисе", "джарви", "джарвес", "джервис", "джарбис",
     "джарес", "джарис", "джар", "джарр", "жарвис", "чарвис", "джавис", "джарвиш", "jarvis", "javis", "jarvi", "jarviz",
-    // Heard live: «Спасибо, Жервис», «Дарвис, стоп».
-    "жервис", "дарвис", "джервиз", "жарвиз", "дарвиз", "джарвас", "жервиз",
+    // Heard live: «Спасибо, Жервис», «Дарвис, стоп», «Джанс.» (2026-11-21).
+    "жервис", "дарвис", "джервиз", "жарвиз", "дарвиз", "джарвас", "жервиз", "джанс",
 ];
 
 /// Words that may come before the name: «эй, Джарвис», «окей, Джар».
@@ -66,10 +66,10 @@ fn words(text: &str) -> Vec<String> {
 /// What is left of the name when the recogniser cuts it («Дар.», «Джал»).
 /// These are ordinary words too («жар»), so they count only when nothing
 /// follows them but punctuation — see `addressed`.
-const SHORT: &[&str] = &["жар", "дар", "чар", "джал", "жал", "джа", "дарв", "жарв"];
+pub(super) const SHORT: &[&str] = &["жар", "дар", "чар", "джал", "жал", "джа", "дарв", "жарв"];
 
 /// Words that sound like the name but are not it.
-const NOT_NAMES: &[&str] = &["сервис", "сервиз", "дарвин", "харви", "марвин", "чарли", "жарить", "жаркий"];
+const NOT_NAMES: &[&str] = &["сервис", "сервиз", "дарвин", "харви", "марвин", "чарли", "жарить", "жаркий", "нарвись", "нарвис"];
 
 fn levenshtein(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
@@ -92,8 +92,21 @@ fn sounds_like_name(w: &str) -> bool {
     if !(4..=10).contains(&n) || NOT_NAMES.iter().any(|x| w.starts_with(x)) {
         return false;
     }
+    // A soft sign the recogniser adds («Ярвись») is no sound of its own.
+    let c = w.replace("дж", "ж").replace('ч', "ж").replace('з', "с").replace(['ь', 'ъ'], "");
+    // Two letters off is loose: the sound must still hold «рв» or begin like
+    // the name — «Ларис!» (to a Лариса) and «Парис» are not JARVIS.
+    (c.starts_with('ж') || c.contains("рв")) && levenshtein(&c, "жарвис") <= 2
+}
+
+/// Close to the name, for a decode that mangled it after the early cue had
+/// already heard it («Джас», «Жаз»): within three letters.
+pub(super) fn near_name(w: &str) -> bool {
+    if !(3..=9).contains(&w.chars().count()) {
+        return false;
+    }
     let c = w.replace("дж", "ж").replace('ч', "ж").replace('з', "с");
-    levenshtein(&c, "жарвис") <= 2
+    is_name(w) || levenshtein(&c, "жарвис") <= 3
 }
 
 /// The name, or a greeting glued to it («Эйджарвис» — 2 of 7 voices).
@@ -216,14 +229,14 @@ mod tests {
 
     #[test]
     fn cut_and_misheard_names_wake() {
-        for t in ["Дар.", "Эрвис.", "Джал, открой браузер", "Жар!", "Джервиз, сколько времени?", "Дарвис, включи музыку", "Жарвиса", "Чарвис, пауза", "Эй, джа рвис", "Джарви, громче", "Джарвисом", "Ярвис, привет"] {
+        for t in ["Дар.", "Эрвис.", "Джал, открой браузер", "Жар!", "Джервиз, сколько времени?", "Дарвис, включи музыку", "Жарвиса", "Чарвис, пауза", "Эй, джа рвис", "Джарви, громче", "Джарвисом", "Ярвис, привет", "Ярвись дальше.", "Иди нахрен, Жарвюс.", "А-а, Джарли, что ты умеешь?", "Джанс.", "Джанс, пауза"] {
             assert!(yes(t), "must wake: {t}");
         }
     }
 
     #[test]
     fn similar_ordinary_words_do_not() {
-        for t in ["Сервис не работает", "Жарко сегодня", "Дар речи пропал", "Чарли, иди сюда", "Жарить картошку"] {
+        for t in ["Сервис не работает", "Жарко сегодня", "Дар речи пропал", "Чарли, иди сюда", "Жарить картошку", "Ларис, иди сюда", "Парис!", "Нарвись!", "Включи джаз", "Это джаз.", "Есть шанс."] {
             assert!(!yes(t), "must not wake: {t}");
         }
     }

@@ -28,6 +28,36 @@ use crate::error::{AppError, AppResult};
 pub const EVT_MEDIA: &str = "media:changed";
 pub const EVT_ARTWORK: &str = "media:artwork";
 
+/// The last player state the watcher saw (or a command produced). The voice
+/// gate reads it for every phrase: a song or a film playing means the room's
+/// sentences are not the user's.
+static LAST: Mutex<Option<MediaState>> = Mutex::new(None);
+
+fn remember(state: &MediaState) {
+    *LAST.lock() = Some(state.clone());
+}
+
+/// The player state as last seen, without asking Windows.
+pub fn cached() -> MediaState {
+    LAST.lock().clone().unwrap_or_default()
+}
+
+/// Something plays right now.
+pub fn is_playing() -> bool {
+    LAST.lock().as_ref().is_some_and(|m| m.available && m.status == "playing")
+}
+
+/// A player is open (playing or paused), so «дальше» and «назад» are about it.
+pub fn has_player() -> bool {
+    LAST.lock().as_ref().is_some_and(|m| m.available)
+}
+
+/// Tests: pretend a player is open.
+#[cfg(test)]
+pub fn set_cached(state: MediaState) {
+    remember(&state);
+}
+
 #[derive(Debug, Clone, Serialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaState {
@@ -195,10 +225,12 @@ fn browser_site(aumid: &str, title: &str) -> String {
 
 pub fn snapshot() -> AppResult<MediaState> {
     let mgr = manager()?;
-    match current_session(&mgr) {
-        Some(s) => Ok(session_state(&s)?.0),
-        None => Ok(MediaState::default()),
-    }
+    let state = match current_session(&mgr) {
+        Some(s) => session_state(&s)?.0,
+        None => MediaState::default(),
+    };
+    remember(&state);
+    Ok(state)
 }
 
 /// Read, downscale (≤160 px) and encode the thumbnail as a JPEG data URL.
@@ -264,6 +296,14 @@ pub struct ControlOutcome {
     pub verified: bool,
 }
 
+/// The same track again from (near) its beginning.
+fn restarted(before: &MediaState, after: &MediaState) -> bool {
+    match (before.position_ms, after.position_ms) {
+        (Some(b), Some(a)) => b > 2_500 && a + 1_500 < b,
+        _ => false,
+    }
+}
+
 pub fn control(action: MediaAction) -> AppResult<ControlOutcome> {
     let mgr = manager()?;
     let Some(session) = current_session(&mgr) else {
@@ -301,11 +341,15 @@ pub fn control(action: MediaAction) -> AppResult<ControlOutcome> {
         let verified = match action {
             MediaAction::PlayPause => after.status != before.status,
             MediaAction::Play => after.status == "playing",
-            MediaAction::Pause => after.status == "paused",
+            MediaAction::Pause => after.status == "paused" || after.status == "stopped",
             MediaAction::Stop => after.status == "stopped" || after.status == "closed",
-            MediaAction::Next | MediaAction::Previous => after.track_key != before.track_key,
+            MediaAction::Next => after.track_key != before.track_key,
+            // «Назад» a few seconds into a track starts it over in most
+            // players: the same track, the position back near zero.
+            MediaAction::Previous => after.track_key != before.track_key || restarted(&before, &after),
         };
         if verified || Instant::now() > deadline {
+            remember(&after);
             return Ok(ControlOutcome { state: after, method: "session", verified });
         }
     }
@@ -437,6 +481,7 @@ impl MediaWatcher {
                         None => (MediaState::default(), None),
                     };
                     if last_state.as_ref() != Some(&state) {
+                        remember(&state);
                         let _ = app.emit(EVT_MEDIA, &state);
                     }
                     // Artwork is only re-read when the track identity changes;
@@ -498,6 +543,25 @@ impl MediaWatcher {
             }
             Err(e) => tracing::warn!("subscribing to media session failed: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(track: &str, pos: Option<i64>) -> MediaState {
+        MediaState { available: true, track_key: track.into(), position_ms: pos, status: "playing".into(), ..Default::default() }
+    }
+
+    #[test]
+    fn previous_that_restarts_the_track_counts_as_done() {
+        assert!(restarted(&at("a", Some(42_000)), &at("a", Some(300))));
+        // Already at the start, or no timeline: nothing to compare.
+        assert!(!restarted(&at("a", Some(1_200)), &at("a", Some(200))));
+        assert!(!restarted(&at("a", None), &at("a", None)));
+        // Still playing on: not restarted.
+        assert!(!restarted(&at("a", Some(42_000)), &at("a", Some(42_300))));
     }
 }
 

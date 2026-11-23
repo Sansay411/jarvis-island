@@ -259,7 +259,7 @@ export function Artwork({
           <Icon name="music" size={Math.max(11, Math.round(size * 0.36))} />
         )}
       </div>
-      {showBadge && media && <SourceBadge aumid={media.sourceApp} site={media.site} size={Math.max(16, Math.round(size * 0.34))} />}
+      {showBadge && media && <SourceBadge aumid={media.sourceApp} site={media.site} size={Math.max(14, Math.round(size * 0.26))} />}
     </div>
   );
 }

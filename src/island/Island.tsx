@@ -445,17 +445,15 @@ export function Island() {
 
   // State-derived ambient bottom glow (zero generic gradients; strictly real state).
   const ambientGlow = useMemo(() => {
-    // Only two sources of light: JARVIS itself (amber, while it talks or
-    // works) and the cover of what is playing. Decks get no coloured wash.
+    // One source of light: JARVIS itself, a low amber line at the lower
+    // rim while it talks or works. The cover of what plays tints only the
+    // timeline — washing half the deck in it read as a smear (2026-11-21).
     if (lip || mode === "compact") return "none";
     if (ttsSpeaking || mode === "voice" || missionActive) {
-      return "radial-gradient(82% 50% at 50% 106%, rgba(255, 178, 63, 0.2) 0%, rgba(255, 178, 63, 0.05) 52%, transparent 100%)";
-    }
-    if (mode === "peek" && st.peekDeck === "nook" && withMedia && media?.status === "playing" && artworkRgb) {
-      return `radial-gradient(85% 55% at 28% 108%, rgba(${artworkRgb}, 0.24) 0%, rgba(${artworkRgb}, 0.06) 55%, transparent 100%)`;
+      return "radial-gradient(46% 14% at 50% 100%, rgba(255, 178, 63, 0.16) 0%, rgba(255, 178, 63, 0.04) 60%, transparent 100%)";
     }
     return "none";
-  }, [lip, mode, showFocusBanner, st.peekDeck, focus.active, ttsSpeaking, missionActive, withMedia, media?.status, artworkRgb]);
+  }, [lip, mode, ttsSpeaking, missionActive]);
 
   // Gaze follows the pointer while it is over the island.
   const lookX = useSpring(0, { stiffness: 200, damping: 24 });

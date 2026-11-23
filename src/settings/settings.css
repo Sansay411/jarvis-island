@@ -1494,3 +1494,70 @@
   }
 }
 
+
+/* ---------- design pass (2026-11-21) ----------
+   Same system as the island: one family, strict sizes, small uppercase
+   labels in grey, amber only where JARVIS acts (autopilot on, his voice). */
+.page-head h1 {
+  font-size: 26px;
+  font-weight: 640;
+  letter-spacing: -0.022em;
+}
+/* The two amber bars read as a pause button, not as eyes. */
+.says {
+  padding-left: 0;
+  font-size: 14px;
+  color: var(--text-2);
+}
+.says::before {
+  display: none;
+}
+.tts-studio-eyebrow,
+.autopilot-hero-badge {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.autopilot-hero-card.is-on .autopilot-hero-badge {
+  color: var(--amber);
+}
+.autopilot-hero-card.is-on {
+  background: #0f0e0c;
+  border-color: rgba(255, 178, 63, 0.32);
+}
+.face-notch {
+  background: #0a0a0c;
+  box-shadow:
+    inset 0 -1px 0 rgba(255, 255, 255, 0.1),
+    0 18px 40px rgba(0, 0, 0, 0.5);
+}
+.face-caption span {
+  font-variant-numeric: tabular-nums;
+}
+/* Measurements are facts, not badges: one quiet pill style, numbers in the UI face. */
+.tts-metric-pill,
+.tts-metric-pill.is-fast,
+.tts-metric-pill.is-cache {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--line-strong);
+  color: var(--text-3);
+}
+.tts-metric-pill strong,
+.tts-metric-pill.is-fast strong,
+.tts-metric-pill.is-cache strong {
+  font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+}
+.tts-metric-dot {
+  background: var(--ok);
+  box-shadow: none;
+}
+.tts-metric-meta,
+.tts-bench-active-voice {
+  font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+}

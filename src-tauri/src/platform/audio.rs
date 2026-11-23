@@ -7,7 +7,7 @@ use windows::core::{Interface, GUID};
 use windows::Win32::Foundation::PROPERTYKEY;
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
-    eConsole, eRender, IAudioSessionControl2, IAudioSessionManager2, IMMDevice,
+    eConsole, eRender, AudioSessionStateActive, IAudioSessionControl2, IAudioSessionManager2, IMMDevice,
     IMMDeviceEnumerator, ISimpleAudioVolume, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL, STGM_READ};
@@ -215,6 +215,96 @@ pub fn set_app_volume(process: &str, percent: u8) -> AppResult<Vec<AppAudioSessi
             n.strip_suffix(".exe").unwrap_or(&n) == wanted
         })
         .collect())
+}
+
+/// An app made quieter while JARVIS listens and talks, and what to put back.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, Serialize)]
+pub struct Ducked {
+    pub pid: u32,
+    pub process: String,
+    pub original: f32,
+    pub ducked: f32,
+}
+
+/// The level a ducked app gets: a fraction of its own, never louder.
+pub fn ducked_level(original: f32, factor: f32) -> f32 {
+    (original * factor).clamp(0.0, original)
+}
+
+/// Whether to put `original` back: only if the level is still the one we set.
+/// A user who moved the slider meanwhile keeps their choice.
+pub fn still_ducked(current: f32, d: &Ducked) -> bool {
+    (current - d.ducked).abs() < 0.02
+}
+
+/// Make every app that is playing sound right now (but JARVIS itself)
+/// quieter by `factor`, the way a phone does for a call: music under the
+/// voice is what the microphone hears instead of the command.
+pub fn duck(factor: f32) -> AppResult<Vec<Ducked>> {
+    let own = std::process::id();
+    let dev = default_device()?;
+    let mut out = Vec::new();
+    unsafe {
+        let mgr = dev.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None)?;
+        let en = mgr.GetSessionEnumerator()?;
+        for i in 0..en.GetCount()? {
+            let ctl = en.GetSession(i)?;
+            if ctl.GetState().ok() != Some(AudioSessionStateActive) {
+                continue;
+            }
+            let Ok(ctl2) = ctl.cast::<IAudioSessionControl2>() else { continue };
+            let pid = ctl2.GetProcessId().unwrap_or(0);
+            if pid == 0 || pid == own || ctl2.IsSystemSoundsSession().is_ok() {
+                continue;
+            }
+            let Ok(simple) = ctl.cast::<ISimpleAudioVolume>() else { continue };
+            let original = simple.GetMasterVolume()?;
+            let ducked = ducked_level(original, factor);
+            if original <= 0.01 || simple.GetMute()?.as_bool() {
+                continue;
+            }
+            simple.SetMasterVolume(ducked, &GUID::zeroed())?;
+            out.push(Ducked { pid, process: process_name(pid).unwrap_or_default(), original, ducked });
+        }
+    }
+    Ok(out)
+}
+
+/// Put ducked apps back. `by_name`: match by process name, not pid — after a
+/// crash the apps (and their pids) may have restarted, and Windows remembers
+/// an app's level, so the ducked one would stay for good.
+pub fn unduck(list: &[Ducked], by_name: bool) -> AppResult<()> {
+    if list.is_empty() {
+        return Ok(());
+    }
+    for (pid, simple) in sessions()? {
+        let name = if by_name { process_name(pid).unwrap_or_default().to_lowercase() } else { String::new() };
+        let Some(d) = list.iter().find(|d| if by_name { !name.is_empty() && d.process.to_lowercase() == name } else { d.pid == pid }) else {
+            continue;
+        };
+        unsafe {
+            if still_ducked(simple.GetMasterVolume()?, d) {
+                simple.SetMasterVolume(d.original, &GUID::zeroed())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ducking_lowers_and_restores_only_what_it_set() {
+        assert!((ducked_level(0.8, 0.3) - 0.24).abs() < 1e-6);
+        assert_eq!(ducked_level(0.5, 1.5), 0.5);
+        let d = Ducked { pid: 1, process: "music.exe".into(), original: 0.8, ducked: 0.24 };
+        assert!(still_ducked(0.24, &d));
+        assert!(still_ducked(0.25, &d));
+        // The user moved the slider while ducked: theirs stays.
+        assert!(!still_ducked(0.6, &d));
+    }
 }
 
 #[cfg(test)]

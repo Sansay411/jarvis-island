@@ -146,6 +146,8 @@ pub struct VoiceSettings {
     pub reuse_llm_key: bool,
     pub input_device: String,
     pub output_device: String,
+    /// Make playing apps quieter while JARVIS listens and talks.
+    pub duck_media: bool,
 }
 
 impl Default for VoiceSettings {
@@ -165,6 +167,7 @@ impl Default for VoiceSettings {
             reuse_llm_key: true,
             input_device: String::new(),
             output_device: String::new(),
+            duck_media: true,
         }
     }
 }
