@@ -190,6 +190,75 @@ const paths = {
       <circle cx="13.7" cy="13.2" r="2" />
     </>
   ),
+  pinned: (
+    <>
+      <path d="M7.2 3.8h5.6l-.8 4.3 2.3 2.5H5.7L8 8.1Z" fill="currentColor" />
+      <path d="M10 10.6v5.6" />
+    </>
+  ),
+  headphones: (
+    <>
+      <path d="M3.8 12.2V10a6.2 6.2 0 0 1 12.4 0v2.2" />
+      <rect x="3" y="11.2" width="3.7" height="5.6" rx="1.5" />
+      <rect x="13.3" y="11.2" width="3.7" height="5.6" rx="1.5" />
+    </>
+  ),
+  budLeft: (
+    <>
+      <path d="M11.65 7.17 12.3 15.3a1.15 1.15 0 0 1-2.3.1L9.53 9.7A3.3 3.3 0 1 1 11.65 7.17Z" />
+      <circle cx="7.3" cy="6.1" r=".75" fill="currentColor" stroke="none" />
+    </>
+  ),
+  budRight: (
+    <g transform="matrix(-1 0 0 1 20 0)">
+      <path d="M11.65 7.17 12.3 15.3a1.15 1.15 0 0 1-2.3.1L9.53 9.7A3.3 3.3 0 1 1 11.65 7.17Z" />
+      <circle cx="7.3" cy="6.1" r=".75" fill="currentColor" stroke="none" />
+    </g>
+  ),
+  budCase: (
+    <>
+      <rect x="3.4" y="5.4" width="13.2" height="10.4" rx="3.4" />
+      <path d="M3.6 8.9h12.8" />
+      <circle cx="10" cy="12.5" r=".8" fill="currentColor" stroke="none" />
+    </>
+  ),
+  keyboard: (
+    <>
+      <rect x="2.6" y="5.4" width="14.8" height="9.2" rx="2" />
+      <path d="M5.6 8.3h.01M8.2 8.3h.01M10.8 8.3h.01M13.4 8.3h.01M6.2 11.6h7.6" />
+    </>
+  ),
+  mouse: (
+    <>
+      <rect x="5.6" y="3" width="8.8" height="14" rx="4.4" />
+      <path d="M10 5.6v2.4" />
+    </>
+  ),
+  phone: (
+    <>
+      <rect x="6" y="2.8" width="8" height="14.4" rx="2.2" />
+      <path d="M9 14.6h2" />
+    </>
+  ),
+  gamepad: (
+    <>
+      <path d="M6.3 6.3h7.4a3.6 3.6 0 0 1 3.5 2.8l.8 3.7a2 2 0 0 1-3.4 1.8l-1.5-1.5H6.9l-1.5 1.5A2 2 0 0 1 2 12.8l.8-3.7a3.6 3.6 0 0 1 3.5-2.8Z" />
+      <path d="M6.8 8.6v2.4M5.6 9.8H8M12.6 9.1h.01M14.1 10.5h.01" />
+    </>
+  ),
+  watch: (
+    <>
+      <rect x="5.8" y="5.4" width="8.4" height="9.2" rx="2.4" />
+      <path d="M7.6 5.4 8.2 3h3.6l.6 2.4M7.6 14.6l.6 2.4h3.6l.6-2.4" />
+    </>
+  ),
+  laptop: (
+    <>
+      <rect x="4.2" y="4.6" width="11.6" height="8" rx="1.4" />
+      <path d="M2.8 15.4h14.4" />
+    </>
+  ),
+  bluetooth: <path d="m6 6.6 8 6.4-4 3.2V3.8l4 3.2-8 6.4" />,
 } as const;
 
 export type IconName = keyof typeof paths;

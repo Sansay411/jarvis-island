@@ -16,8 +16,8 @@ export function shoulderFor(h: number): number {
   return Math.min(SHOULDER, Math.max(4, h * 0.55));
 }
 
-export type IslandMode = "compact" | "peek" | "workspace" | "voice" | "drop" | "files" | "notice" | "clips" | "weather";
-export type PeekDeck = "nook" | "focus" | "tray" | "activity";
+export type IslandMode = "compact" | "peek" | "workspace" | "voice" | "drop" | "files" | "notice" | "clips" | "weather" | "hello";
+export type PeekDeck = "nook" | "focus" | "tray" | "activity" | "sound";
 
 export interface Dims {
   w: number;
@@ -107,6 +107,8 @@ function baseDimsFor(mode: IslandMode, ctx: DimsContext): Dims {
           return { w: 604, h: 192 + extraH };
         case "activity":
           return { w: 556, h: 206 + extraH };
+        case "sound":
+          return { w: 616, h: 244 + extraH };
         case "nook":
         default:
           return { w: 616, h: 206 + extraH };
@@ -118,6 +120,8 @@ function baseDimsFor(mode: IslandMode, ctx: DimsContext): Dims {
       return { w: 468, h: 144 };
     case "notice":
       return { w: 428, h: 128 };
+    case "hello":
+      return { w: 456, h: 104 };
     case "weather":
       return { w: 580, h: 196 };
     case "files":

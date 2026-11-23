@@ -1,0 +1,531 @@
+/* «Звук»: the headphones battery deck, the brow chip, the pin and the
+   «connected» card (2026-11-23). One rule for colour: the charge ring is
+   bone while there is plenty, warm yellow at 20 % and below, coral at 10 %
+   and below, green while charging. Nothing else in the deck is coloured. */
+
+.sound-deck {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.04fr) 1px minmax(0, 1fr);
+  padding: 2px 16px 14px;
+}
+.sound-hero {
+  padding-right: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+.sound-side {
+  padding-left: 15px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.sound-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+/* the ring */
+.bt-ring {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  --tone: var(--bone);
+}
+.bt-ring.is-low {
+  --tone: var(--warn);
+}
+.bt-ring.is-critical {
+  --tone: var(--danger);
+}
+.bt-ring.is-charging {
+  --tone: var(--ok);
+}
+.bt-ring > svg {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+.bt-ring-track {
+  fill: none;
+  stroke: var(--graphite-3);
+}
+.bt-ring-track.is-unknown {
+  stroke: var(--graphite-4);
+  stroke-dasharray: 2 4.2;
+}
+.bt-ring-fill {
+  fill: none;
+  stroke: var(--tone);
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--tone) 30%, transparent));
+}
+.bt-ring-glyph {
+  position: relative;
+  display: grid;
+  place-items: center;
+  color: var(--text-1);
+}
+.bt-ring.is-dim .bt-ring-glyph {
+  color: var(--text-4);
+}
+.bt-ring-bolt {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: var(--obsidian);
+  color: var(--ok);
+  box-shadow: 0 0 0 1.5px var(--obsidian), inset 0 0 0 1px rgba(124, 217, 146, 0.4);
+}
+.bt-ring-bolt svg {
+  fill: currentColor;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .bt-ring.is-charging .bt-ring-fill {
+    animation: bt-breathe 2.4s ease-in-out infinite;
+  }
+}
+@keyframes bt-breathe {
+  0%,
+  100% {
+    stroke-opacity: 1;
+  }
+  50% {
+    stroke-opacity: 0.55;
+  }
+}
+
+/* each bud and the case */
+.bt-pods {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+  gap: 6px;
+}
+.bt-pod {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+.bt-pod-level {
+  margin-top: 9px;
+  color: var(--text-1);
+  font-size: 19px;
+  font-weight: 640;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.bt-pod.is-low .bt-pod-level {
+  color: var(--warn);
+}
+.bt-pod.is-critical .bt-pod-level {
+  color: var(--danger);
+}
+.bt-pod.is-unknown .bt-pod-level {
+  color: var(--text-4);
+}
+.bt-pod-label,
+.bt-stats dt,
+.bt-single-caption {
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.bt-pod-label {
+  margin-top: 6px;
+}
+.bt-pod-note {
+  margin-top: 2px;
+  min-height: 14px;
+  color: var(--text-2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.bt-pod.is-charging .bt-pod-note {
+  color: var(--ok);
+}
+
+/* one battery */
+.bt-single {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.bt-single-text {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  column-gap: 2px;
+}
+.bt-single-level {
+  color: var(--text-1);
+  font-size: 44px;
+  font-weight: 620;
+  letter-spacing: -0.04em;
+  line-height: 0.95;
+  font-variant-numeric: tabular-nums;
+}
+.bt-single.is-low .bt-single-level {
+  color: var(--warn);
+}
+.bt-single.is-critical .bt-single-level {
+  color: var(--danger);
+}
+.bt-single-unit {
+  color: var(--text-2);
+  font-size: 18px;
+  font-weight: 560;
+}
+.bt-single-caption {
+  grid-column: 1 / -1;
+  margin-top: 6px;
+}
+.bt-single.is-charging .bt-single-caption {
+  color: var(--ok);
+}
+
+/* nothing connected */
+.bt-away {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.bt-away-text {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.bt-away-title {
+  color: var(--text-1);
+  font-size: var(--fs-13);
+  font-weight: 600;
+}
+.bt-away-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  min-width: 0;
+}
+.bt-away-line.is-hint {
+  color: var(--text-3);
+  line-height: 1.35;
+}
+.bt-away-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bt-away-level {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* facts on the right */
+.bt-facts {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.bt-facts.is-empty {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  padding-top: 4px;
+}
+.bt-facts-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.bt-facts-name {
+  color: var(--text-1);
+  font-size: var(--fs-14);
+  font-weight: 640;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.bt-facts-status {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 560;
+  white-space: nowrap;
+}
+.bt-facts-status.is-on {
+  color: var(--text-2);
+}
+.bt-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-4);
+}
+.bt-facts-status.is-on .bt-dot {
+  background: var(--ok);
+  box-shadow: 0 0 6px rgba(124, 217, 146, 0.55);
+}
+.bt-facts-sub {
+  margin-top: 1px;
+  color: var(--text-3);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bt-stats {
+  margin: 9px 0 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.bt-stats div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.bt-stats dd {
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.bt-spark-wrap {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--bone);
+}
+.bt-spark-wrap.is-low {
+  color: var(--warn);
+}
+.bt-spark-wrap.is-critical {
+  color: var(--danger);
+}
+.bt-spark-wrap.is-charging {
+  color: var(--ok);
+}
+.bt-spark {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+.bt-spark.is-empty {
+  display: flex;
+  align-items: center;
+  color: var(--text-4);
+  font-size: 10.5px;
+  border-top: 1px dashed var(--line-strong);
+}
+.bt-updated {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-4);
+  font-size: 10px;
+}
+
+/* other devices */
+.bt-others {
+  display: flex;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+}
+.bt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  background: var(--graphite-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text-2);
+  font-size: 10.5px;
+  min-width: 0;
+  max-width: 50%;
+}
+.bt-chip.is-away {
+  opacity: 0.6;
+}
+.bt-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.bt-chip-level {
+  flex: none;
+  color: var(--text-1);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.bt-chip.is-low .bt-chip-level {
+  color: var(--warn);
+}
+.bt-chip.is-critical .bt-chip-level {
+  color: var(--danger);
+}
+
+/* brow: headphones chip and the pin */
+.brow-headset {
+  height: 23px;
+  padding: 0 7px;
+  margin-right: 2px;
+  border-radius: var(--r-pill);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.brow-headset:hover {
+  background: var(--graphite-3);
+  color: var(--text-1);
+}
+.brow-headset.is-low {
+  color: var(--warn);
+}
+.brow-headset.is-critical {
+  color: var(--danger);
+}
+.brow-headset.is-charging {
+  color: var(--ok);
+}
+.brow-headset.is-charging svg:last-child {
+  fill: currentColor;
+}
+.brow-right .pin-btn.is-on {
+  color: var(--amber);
+  background: rgba(255, 178, 63, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 178, 63, 0.28);
+}
+.brow-right .pin-btn.is-on:hover {
+  color: var(--amber-hi);
+  background: rgba(255, 178, 63, 0.16);
+}
+
+/* «connected» / «running low» card */
+.view-hello {
+  justify-content: flex-end;
+  cursor: default;
+}
+.hello-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px 14px;
+  min-width: 0;
+}
+.hello-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.hello-title {
+  color: var(--text-1);
+  font-size: var(--fs-14);
+  font-weight: 640;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hello-sub {
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  white-space: nowrap;
+}
+.view-hello.is-low .hello-sub {
+  color: var(--warn);
+}
+.hello-parts {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+.hello-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  background: var(--graphite-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+}
+.hello-part.is-big {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 17px;
+}
+.hello-part.is-low {
+  color: var(--warn);
+}
+.hello-part.is-critical {
+  color: var(--danger);
+}
+.hello-part.is-charging {
+  color: var(--ok);
+}
+.hello-part.is-unknown {
+  color: var(--text-4);
+}
+
+/* compact: headphones running low */
+.compact-battery {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.compact-battery.is-low {
+  color: var(--warn);
+}
+.compact-battery.is-critical {
+  color: var(--danger);
+}

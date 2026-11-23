@@ -9,6 +9,26 @@ afterEach(() => {
   vi.resetAllMocks();
 });
 
+describe("pinned island", () => {
+  it("stays open without the pointer and only the pin closes it", () => {
+    vi.stubGlobal("localStorage", { getItem: vi.fn(), setItem: vi.fn() });
+    useIsland.setState({ pinned: false, hovered: false, inputFocused: false, dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false });
+    useIsland.getState().togglePinned();
+    expect(resolveMode(useIsland.getState())).toBe("peek");
+    // The pointer leaving changes nothing while pinned.
+    useIsland.getState().set({ hovered: false });
+    expect(resolveMode(useIsland.getState())).toBe("peek");
+    // Voice and the workspace still take over, and give the pinned deck back.
+    useIsland.getState().set({ voiceOpen: true });
+    expect(resolveMode(useIsland.getState())).toBe("voice");
+    useIsland.getState().set({ voiceOpen: false });
+    expect(resolveMode(useIsland.getState())).toBe("peek");
+    useIsland.getState().togglePinned();
+    expect(resolveMode(useIsland.getState())).toBe("compact");
+    expect(localStorage.setItem).toHaveBeenLastCalledWith("jarvis.islandPinned", "0");
+  });
+});
+
 describe("inline input Escape", () => {
   it("blurs before releasing native input and collapses", async () => {
     vi.stubGlobal("window", { clearTimeout: vi.fn() });

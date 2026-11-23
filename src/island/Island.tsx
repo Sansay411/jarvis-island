@@ -36,6 +36,8 @@ import { activityOf, emote, useEmote } from "../store/emote";
 import { useClockRows } from "./views/ClocksStrip";
 import { inputLevel, outputLevel, toggleVoice, useVoice, type VoiceState } from "../store/voice";
 import { WorkspaceView } from "../workspace/WorkspaceView";
+import { HeadsetHello } from "./views/SoundDeck";
+import { useBluetooth } from "../store/bluetooth";
 import "./island.css";
 
 const SHAPE_SPRING = { stiffness: 460, damping: 34, mass: 0.65 };
@@ -284,7 +286,7 @@ function voiceMood(state: VoiceState, agentMood: EyeMood | null): EyeMood {
 function moodFor(mode: IslandMode, agentMood: EyeMood | null, hovered: boolean, ttsSpeaking: boolean): EyeMood {
   if (ttsSpeaking) return "speaking";
   if (agentMood) return agentMood;
-  if (mode === "drop" || mode === "files" || mode === "notice" || mode === "clips" || mode === "weather") return "attentive";
+  if (mode === "drop" || mode === "files" || mode === "notice" || mode === "clips" || mode === "weather" || mode === "hello") return "attentive";
   if (mode === "peek" || mode === "workspace" || hovered) return "attentive";
   return "idle";
 }
@@ -361,6 +363,7 @@ export function Island() {
   const voiceClock = useVoiceClock();
   const base = resolveMode(st);
   const weatherCard = useWeather((s) => s.card !== null);
+  const helloCard = useBluetooth((s) => s.hello !== null);
   const mode: IslandMode =
     base === "drop"
       ? "drop"
@@ -372,7 +375,9 @@ export function Island() {
             ? "voice"
             : alerting
               ? "notice"
-              : base;
+              : helloCard && base === "compact"
+                ? "hello"
+                : base;
 
   const [workspaceWarm, setWorkspaceWarm] = useState(false);
   useEffect(() => {
@@ -544,6 +549,7 @@ export function Island() {
                 {mode === "notice" && <NoticeView />}
                 {mode === "weather" && <WeatherView />}
                 {mode === "clips" && <ClipsView />}
+                {mode === "hello" && <HeadsetHello />}
               </motion.div>
             )}
           </AnimatePresence>

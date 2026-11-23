@@ -34,10 +34,24 @@ interface IslandStore {
   forceFocusBanner: boolean;
   /** True while an inline `<input>` inside the Island holds native keyboard focus. */
   inputFocused: boolean;
+  /** The user pinned the island open: it stays expanded when the pointer
+   *  leaves or the user clicks elsewhere, until unpinned. Kept across restarts. */
+  pinned: boolean;
   pendingAttachments: DroppedFile[];
-  set: (patch: Partial<Omit<IslandStore, "set" | "addAttachments" | "setDeck">>) => void;
+  set: (patch: Partial<Omit<IslandStore, "set" | "addAttachments" | "setDeck" | "togglePinned">>) => void;
   setDeck: (deck: PeekDeck) => void;
+  togglePinned: () => void;
   addAttachments: (files: DroppedFile[]) => void;
+}
+
+const PINNED_KEY = "jarvis.islandPinned";
+
+function readPinned(): boolean {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(PINNED_KEY) === "1";
+  } catch {
+    return false;
+  }
 }
 
 export const useIsland = create<IslandStore>((set) => ({
@@ -55,8 +69,20 @@ export const useIsland = create<IslandStore>((set) => ({
   focusBannerDismissed: false,
   forceFocusBanner: false,
   inputFocused: false,
+  pinned: readPinned(),
   pendingAttachments: [],
   set: (patch) => set(patch),
+  togglePinned: () =>
+    set((s) => {
+      const pinned = !s.pinned;
+      try {
+        localStorage.setItem(PINNED_KEY, pinned ? "1" : "0");
+      } catch {
+        /* remembered for this session only */
+      }
+      // Unpinning with the pointer away closes the island right away.
+      return pinned ? { pinned } : { pinned, hovered: false, focusBannerDismissed: false };
+    }),
   setDeck: (peekDeck) =>
     set((s) =>
       s.peekDeck === peekDeck
@@ -107,7 +133,7 @@ export function islandInputHandlers() {
 }
 
 export function resolveMode(
-  s: Pick<IslandStore, "hovered" | "dragOver" | "workspaceOpen" | "voiceOpen" | "clipsOpen" | "inputFocused">,
+  s: Pick<IslandStore, "hovered" | "dragOver" | "workspaceOpen" | "voiceOpen" | "clipsOpen" | "inputFocused"> & { pinned?: boolean },
 ): IslandMode {
   // Only a real file drag opens the drop zone: the native drop catcher
   // reports «enter» once Windows hands it files, so a plain press-and-drag
@@ -117,6 +143,7 @@ export function resolveMode(
   if (s.voiceOpen) return "voice";
   if (s.workspaceOpen) return "workspace";
   if (s.clipsOpen) return "clips";
-  if (s.hovered || s.inputFocused) return "peek";
+  // Pinned: the opened island stays, whatever the pointer does.
+  if (s.hovered || s.inputFocused || s.pinned) return "peek";
   return "compact";
 }

@@ -10,6 +10,7 @@ import type {
   AppErrorPayload,
   ArtworkEvent,
   AudioState,
+  BtDevice,
   DisplayBrightness,
   FocusState,
   IslandCommand,
@@ -88,6 +89,10 @@ export const ipc = {
     status: () => invoke<TtsStatePayload>("tts_status"),
     benchmark: (voice?: string | null) => invoke<TtsBenchResult>("tts_benchmark", { voice: voice ?? null }),
   },
+  bluetooth: {
+    devices: () => (isTauri() ? invoke<BtDevice[]>("bluetooth_devices") : Promise.resolve<BtDevice[]>([])),
+    refresh: () => (isTauri() ? invoke<void>("bluetooth_refresh") : noopAsync()),
+  },
   weather: {
     get: (place?: string) => invoke<import("../store/weather").Weather>("weather_get", { place: place ?? null }),
   },
@@ -155,6 +160,8 @@ type EventMap = {
   "island:command": IslandCommand;
   "media:changed": MediaState;
   "media:artwork": ArtworkEvent;
+  "bluetooth:devices": BtDevice[];
+  "bluetooth:low": { name: string; level: number };
   "tts:state": TtsStatePayload;
   "hub:tasks": TaskItem[];
   "hub:focus": FocusState;

@@ -10,6 +10,22 @@ import { useHub } from "../../store/hub";
 import { useTts } from "../../store/tts";
 import { useAgent } from "../../store/agent";
 import { Icon } from "../../ui/Icon";
+import { isCharging, levelOf, levelTone, primaryAudio, useBluetooth } from "../../store/bluetooth";
+import { kindIcon } from "./SoundDeck";
+
+/** Headphones running low, at rest: the one thing worth a glance. */
+function LowHeadset() {
+  const main = useBluetooth((s) => primaryAudio(s.devices));
+  if (!main || isCharging(main)) return null;
+  const level = levelOf(main);
+  if (level == null || level > 20) return null;
+  return (
+    <span className={`compact-battery is-${levelTone(level)}`} title={`${main.model ?? main.name}: ${level}%`}>
+      <Icon name={kindIcon(main.kind)} size={11} />
+      {level}%
+    </span>
+  );
+}
 
 /** Digits and a ring that drains to the end; the last ten seconds pulse. */
 function TimerLeft({ t }: { t: Reminder }) {
@@ -172,7 +188,9 @@ export function CompactView() {
           <StopwatchTime />
         ) : running.length > 0 || agentActive ? (
           <span className="job-ring" aria-label="Джарвис работает" />
-        ) : null}
+        ) : (
+          <LowHeadset />
+        )}
       </div>
     </div>
   );
