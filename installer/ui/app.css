@@ -451,6 +451,76 @@ h2 {
   background: rgba(22, 22, 26, 0.05);
 }
 
+/* uninstall */
+[hidden] {
+  display: none !important;
+}
+.hero-mid {
+  margin-top: 14px;
+  height: 196px;
+}
+.hero-mid img {
+  height: 196px;
+}
+.hero img {
+  transition: filter 900ms ease, opacity 900ms ease;
+}
+.hero-off img {
+  filter: grayscale(1) drop-shadow(0 14px 24px rgba(22, 22, 26, 0.12));
+  opacity: 0.6;
+  animation: none;
+}
+.lead-tight {
+  margin-top: 10px;
+}
+.options {
+  margin-top: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.option {
+  margin-top: 0;
+  align-items: flex-start;
+}
+.option .box {
+  flex: none;
+  margin-top: 1px;
+}
+.option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.option-text b {
+  font-weight: 560;
+}
+.option-text small {
+  font-size: 13px;
+  color: var(--ink-3);
+}
+.check input:disabled + .box {
+  opacity: 0.45;
+}
+.check:has(input:disabled) {
+  cursor: default;
+}
+.scene-out {
+  transform: scaleX(-1);
+  animation: none;
+}
+.warn {
+  margin: 14px 0 0;
+  max-width: 560px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: rgba(255, 178, 63, 0.14);
+  color: var(--amber-ink);
+  font-size: 13.5px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

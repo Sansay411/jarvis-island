@@ -1,17 +1,29 @@
 [package]
 name = "jarvis-setup"
 version = "0.2.0"
-description = "Установщик Джарвиса"
+description = "Установщик и удаление Джарвиса"
 edition = "2021"
 publish = false
 
 # Built on its own (`cargo build --release` in this folder) after the app:
 # JARVIS_PAYLOAD points at the NSIS package Tauri produced, which is embedded
 # and run silently. Without it the window opens with nothing to install.
+#
+# `jarvis-uninstall` is built *before* the app: the NSIS hook in
+# src-tauri/windows/hooks.nsh copies it into the install folder and registers
+# it as the uninstaller in «Apps & features».
+
+[lib]
+name = "jarvis_setup"
+path = "src/lib.rs"
 
 [[bin]]
 name = "jarvis-setup"
 path = "src/main.rs"
+
+[[bin]]
+name = "jarvis-uninstall"
+path = "src/uninstall.rs"
 
 [dependencies]
 tao = "=0.37.1"
@@ -22,9 +34,14 @@ serde_json = "1"
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
+  "Win32_Security_Credentials",
   "Win32_System_Com",
+  "Win32_System_Environment",
   "Win32_System_Registry",
+  "Win32_System_RestartManager",
+  "Win32_System_Threading",
   "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
 ] }
 
 [build-dependencies]

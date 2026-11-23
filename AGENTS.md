@@ -38,9 +38,27 @@ Visual QA without the native app: `npx vite --port 1420`, then open
 
 ## Release
 
-* `installer/` is a separate crate (the Windows setup window). Build it after
-  `npm run tauri build` with `JARVIS_PAYLOAD=<path to *_x64-setup.exe>`; without
-  it the window opens with nothing to install (handy for UI work).
+* `installer/` is a separate crate with two windows sharing `src/lib.rs`:
+  `jarvis-setup` (embeds the NSIS package) and `jarvis-uninstall`. Order:
+  1. `cargo build --release --manifest-path installer/Cargo.toml --bin jarvis-uninstall`
+  2. `npm run tauri build` — `src-tauri/windows/hooks.nsh` packs that exe and
+     makes it `UninstallString` (skipped with no error if it isn't built);
+  3. `cargo build --release --bin jarvis-setup` in `installer/` with
+     `JARVIS_PAYLOAD=<path to *_x64-setup.exe>`; without it the window opens
+     with nothing to install (handy for UI work).
+* The uninstall window forwards any `/S`, `/P`, `/UPDATE` or `_?=` call to the
+  NSIS `uninstall.exe` unchanged (updates call `UninstallString` that way).
+  UI work: `target/debug/jarvis-uninstall.exe --demo` (debug builds only,
+  touches nothing), or serve `installer/ui/` and open `uninstall.html`. Never
+  run it without `--demo` against the real install: it finds Jarvis through
+  the registry and removes it. To test the real flow, make a folder with an
+  empty `jarvis.exe`, a stand-in `uninstall.exe` and the uninstaller, and
+  untick both boxes (the data step uses the real `%LOCALAPPDATA%`).
+* Windows signing (SmartScreen/antivirus): planned through SignPath Foundation
+  (free for OSS, signs only GitHub Actions builds, each release approved by
+  hand). Everything that runs needs a signature: `jarvis.exe`,
+  `jarvis-uninstall.exe`, the NSIS package and its `uninstall.exe`, and
+  `jarvis-setup.exe`. Don't add packers (UPX) or self-deleting scripts.
 * Update packages are signed: `npm run tauri build` needs
   `TAURI_SIGNING_PRIVATE_KEY` (the file `~/.tauri/jarvis-updater.key`) and
   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (`~/.tauri/jarvis-updater.password`).

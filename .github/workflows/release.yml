@@ -47,6 +47,15 @@ jobs:
 
       - run: npm ci
 
+      # The NSIS hook (src-tauri/windows/hooks.nsh) packs this file and
+      # registers it as the uninstaller, so it has to exist before the bundle.
+      - name: Build the uninstall window
+        shell: pwsh
+        run: |
+          $env:JARVIS_VERSION = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          cargo build --release --manifest-path installer/Cargo.toml --bin jarvis-uninstall
+          if (-not (Test-Path installer/target/release/jarvis-uninstall.exe)) { throw "jarvis-uninstall.exe was not built" }
+
       - run: npm run tauri build
 
       - name: Build the setup window around the NSIS package
@@ -165,6 +174,9 @@ jobs:
           pathlib.Path("latest.json").write_text(json.dumps(latest, ensure_ascii=False, indent=2), encoding="utf-8")
           PY
           rm -f *.sig
+          # Checksums for people and for antivirus false-positive reports.
+          sha256sum * > SHA256SUMS.txt
+          { echo; echo '<details><summary>SHA-256</summary>'; echo; echo '```'; cat SHA256SUMS.txt; echo '```'; echo '</details>'; } >> ../release-notes.md
           ls -la
 
       - uses: softprops/action-gh-release@v2

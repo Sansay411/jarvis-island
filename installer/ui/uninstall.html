@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>Удаление Джарвиса</title>
+    <link rel="stylesheet" href="/app.css" />
+    <script src="/config.js"></script>
+  </head>
+  <body>
+    <header class="bar" data-drag>
+      <div class="brand" data-drag>
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i></span>
+        <span class="brand-name">jarvis</span>
+      </div>
+      <div class="win">
+        <button class="win-btn" data-cmd="minimize" aria-label="Свернуть">
+          <svg viewBox="0 0 12 12"><path d="M2 6.5h8" /></svg>
+        </button>
+        <button class="win-btn" data-cmd="close" aria-label="Закрыть">
+          <svg viewBox="0 0 12 12"><path d="m2.5 2.5 7 7M9.5 2.5l-7 7" /></svg>
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section class="screen" id="confirm">
+        <div class="hero hero-mid"><img src="/hero.png" alt="" draggable="false" /></div>
+        <h1>Удалить Джарвиса?</h1>
+        <p class="lead lead-tight">Он закроется и пропадёт с экрана, из меню «Пуск» и автозапуска.</p>
+        <div class="options">
+          <label class="check option">
+            <input type="checkbox" id="opt-cache" checked />
+            <span class="box" aria-hidden="true"><svg viewBox="0 0 12 12"><path d="m2.5 6.2 2.4 2.3 4.6-5" /></svg></span>
+            <span class="option-text"><b>Голосовые модели и кэш</b><small id="cache-note">Считаю, сколько места они занимают…</small></span>
+          </label>
+          <label class="check option">
+            <input type="checkbox" id="opt-personal" />
+            <span class="box" aria-hidden="true"><svg viewBox="0 0 12 12"><path d="m2.5 6.2 2.4 2.3 4.6-5" /></svg></span>
+            <span class="option-text"><b>Настройки, история и ключи API</b><small>Оставьте, чтобы после переустановки всё было как раньше</small></span>
+          </label>
+        </div>
+      </section>
+
+      <section class="screen screen-progress" id="progress">
+        <div class="progress-col">
+          <h2>Удаление: <span id="pct">0</span>%</h2>
+          <ol class="steps">
+            <li class="step is-run" data-step="0">
+              <span class="mark" aria-hidden="true"></span>
+              <span class="step-text"><b>Закрываем Джарвиса</b><small>Остров и голос сейчас пропадут…</small></span>
+            </li>
+            <li class="step" data-step="1">
+              <span class="mark" aria-hidden="true"></span>
+              <span class="step-text"><b>Удаляем приложение</b><small>Убираем файлы, ярлыки и автозапуск…</small></span>
+            </li>
+            <li class="step" data-step="2">
+              <span class="mark" aria-hidden="true"></span>
+              <span class="step-text"><b id="data-title">Освобождаем место</b><small id="data-note">Удаляем модели и кэш…</small></span>
+            </li>
+          </ol>
+        </div>
+        <img class="scene scene-out" src="/scene.png" alt="" draggable="false" />
+        <div class="notice">
+          Если Джарвис запущен, он закроется сам. Удаление займёт меньше минуты — компьютер перезагружать не нужно.
+        </div>
+      </section>
+
+      <section class="screen screen-done" id="done">
+        <div class="hero hero-small hero-off"><img src="/hero.png" alt="" draggable="false" /></div>
+        <h1>Джарвис удалён</h1>
+        <p class="lead" id="done-lead"></p>
+        <p class="warn" id="left" hidden></p>
+        <p class="legal">Передумаете — <a data-open="release">скачайте Джарвиса снова</a></p>
+      </section>
+
+      <section class="screen screen-failed" id="failed">
+        <div class="fail-icon" aria-hidden="true">!</div>
+        <h1>Не получилось удалить</h1>
+        <p class="lead" id="error"></p>
+      </section>
+
+      <section class="screen screen-failed" id="missing">
+        <div class="fail-icon" aria-hidden="true">?</div>
+        <h1>Джарвис не найден</h1>
+        <p class="lead">Похоже, он уже удалён с этого компьютера. Если остался ярлык, его можно просто стереть.</p>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <span class="version" id="version"></span>
+      <div class="foot-actions">
+        <button class="btn btn-ghost" id="close-btn" data-cmd="close">Отмена</button>
+        <button class="btn btn-primary" id="primary">Удалить</button>
+      </div>
+    </footer>
+    <script src="/uninstall.js"></script>
+  </body>
+</html>
