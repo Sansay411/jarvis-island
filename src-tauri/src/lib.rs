@@ -35,6 +35,7 @@ mod shortcuts;
 mod state;
 pub mod store;
 pub mod tools;
+pub mod updater;
 pub mod util;
 pub mod voice;
 
@@ -67,11 +68,12 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let chat = MenuItem::with_id(app, "chat", "Открыть чат", true, None::<&str>)?;
     let toggle = MenuItem::with_id(app, "toggle", "Показать или скрыть остров", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Настройки", true, None::<&str>)?;
+    let update = MenuItem::with_id(app, "update", "Проверить обновления", true, None::<&str>)?;
     let cancel = MenuItem::with_id(app, "cancel", "Остановить текущую задачу", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Выйти из JARVIS", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&chat, &toggle, &sep, &cancel, &settings, &sep2, &quit])?;
+    let menu = Menu::with_items(app, &[&chat, &toggle, &sep, &cancel, &settings, &update, &sep2, &quit])?;
     TrayIconBuilder::with_id("jarvis")
         .icon(app.default_window_icon().cloned().expect("bundled icon"))
         .tooltip("JARVIS")
@@ -88,6 +90,23 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
                     let _ = ipc_agent::settings_open(app).await;
+                });
+            }
+            "update" => {
+                // Found: install it (the user asked from the tray). Not found:
+                // the island says so.
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let updates = app.state::<updater::Updates>();
+                    match updates.check(&app).await {
+                        Ok(Some(_)) => {
+                            if let Err(e) = updates.install(&app).await {
+                                app.state::<Arc<agent::Agent>>().post_report(e.to_string(), false);
+                            }
+                        }
+                        Ok(None) => app.state::<Arc<agent::Agent>>().post_report(format!("Установлена последняя версия Джарвиса — {}.", env!("CARGO_PKG_VERSION")), true),
+                        Err(e) => app.state::<Arc<agent::Agent>>().post_report(e.to_string(), false),
+                    }
                 });
             }
             "quit" => app.exit(0),
@@ -211,6 +230,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .plugin(shortcuts::plugin())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let data_dir = app.path().app_local_data_dir()?;
             let store = Arc::new(store::Store::open(&data_dir.join("jarvis.db"))?);
@@ -244,6 +264,8 @@ pub fn run() {
             let reminders = reminders::Reminders::new(app.handle().clone());
             app.manage(reminders.clone());
             app.manage(Arc::new(stopwatch::Stopwatch::new(app.handle().clone())));
+            app.manage(updater::Updates::default());
+            updater::spawn(app.handle().clone());
             reminders.spawn();
             let clips = clips::Clips::new(app.handle().clone());
             app.manage(clips.clone());
@@ -325,6 +347,9 @@ pub fn run() {
             ipc::island_set_hidden,
             ipc::island_context,
             ipc::perf_report,
+            ipc::update_status,
+            ipc::update_check,
+            ipc::update_install,
             ipc::bluetooth_devices,
             ipc::bluetooth_refresh,
             ipc::audio_get,

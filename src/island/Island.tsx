@@ -38,6 +38,8 @@ import { inputLevel, outputLevel, toggleVoice, useVoice, type VoiceState } from 
 import { WorkspaceView } from "../workspace/WorkspaceView";
 import { HeadsetHello } from "./views/SoundDeck";
 import { useBluetooth } from "../store/bluetooth";
+import { UpdateCard } from "./views/UpdateCard";
+import { useUpdates } from "../store/updates";
 import "./island.css";
 
 const SHAPE_SPRING = { stiffness: 460, damping: 34, mass: 0.65 };
@@ -364,6 +366,7 @@ export function Island() {
   const base = resolveMode(st);
   const weatherCard = useWeather((s) => s.card !== null);
   const helloCard = useBluetooth((s) => s.hello !== null);
+  const updateCard = useUpdates((s) => s.card && s.status?.available != null);
   const mode: IslandMode =
     base === "drop"
       ? "drop"
@@ -375,7 +378,7 @@ export function Island() {
             ? "voice"
             : alerting
               ? "notice"
-              : helloCard && base === "compact"
+              : (helloCard || updateCard) && base === "compact"
                 ? "hello"
                 : base;
 
@@ -549,7 +552,7 @@ export function Island() {
                 {mode === "notice" && <NoticeView />}
                 {mode === "weather" && <WeatherView />}
                 {mode === "clips" && <ClipsView />}
-                {mode === "hello" && <HeadsetHello />}
+                {mode === "hello" && (helloCard ? <HeadsetHello /> : <UpdateCard />)}
               </motion.div>
             )}
           </AnimatePresence>

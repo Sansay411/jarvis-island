@@ -269,6 +269,19 @@ impl Default for PersonaSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct UpdateSettings {
+    /// Look for a new version on GitHub soon after start and every six hours.
+    pub auto_check: bool,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        UpdateSettings { auto_check: true }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -281,4 +294,5 @@ pub struct Settings {
     pub agent: AgentSettings,
     pub launch_at_startup: bool,
     pub reduce_motion: bool,
+    pub updates: UpdateSettings,
 }

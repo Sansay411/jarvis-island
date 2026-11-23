@@ -46,6 +46,26 @@ pub fn island_set_hidden(state: State<'_, AppState>, hidden: bool) {
     state.island.set_user_hidden(hidden);
 }
 
+// ---------- updates ----------
+
+#[tauri::command]
+pub fn update_status(updates: State<'_, crate::updater::Updates>) -> crate::updater::UpdateStatus {
+    updates.status()
+}
+
+#[tauri::command]
+pub async fn update_check(app: tauri::AppHandle) -> AppResult<Option<crate::updater::UpdateInfo>> {
+    use tauri::Manager;
+    app.state::<crate::updater::Updates>().check(&app).await
+}
+
+/// Download, verify and install the new version, then restart.
+#[tauri::command]
+pub async fn update_install(app: tauri::AppHandle) -> AppResult<()> {
+    use tauri::Manager;
+    app.state::<crate::updater::Updates>().install(&app).await
+}
+
 // ---------- bluetooth ----------
 
 #[tauri::command]

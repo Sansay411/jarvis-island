@@ -161,6 +161,8 @@ type EventMap = {
   "media:changed": MediaState;
   "media:artwork": ArtworkEvent;
   "bluetooth:devices": BtDevice[];
+  "update:available": import("../store/updates").UpdateInfo;
+  "update:progress": { downloaded: number; total: number | null };
   "bluetooth:low": { name: string; level: number };
   "tts:state": TtsStatePayload;
   "hub:tasks": TaskItem[];
