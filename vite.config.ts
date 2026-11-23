@@ -10,6 +10,12 @@ const input: Record<string, string> = {
 if (existsSync(resolve(root, "qa/notch-showcase.html"))) {
   input["qa/notch-showcase"] = resolve(root, "qa/notch-showcase.html");
 }
+if (existsSync(resolve(root, "qa/reset.html"))) {
+  input["qa/reset"] = resolve(root, "qa/reset.html");
+}
+if (existsSync(resolve(root, "qa/planner.html"))) {
+  input["qa/planner"] = resolve(root, "qa/planner.html");
+}
 if (existsSync(resolve(root, "qa/workspace-showcase.html"))) {
   input["qa/workspace-showcase"] = resolve(root, "qa/workspace-showcase.html");
 }

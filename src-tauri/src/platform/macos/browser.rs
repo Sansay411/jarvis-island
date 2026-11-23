@@ -17,6 +17,9 @@ pub fn browser_label(_process: &str) -> Option<&'static str> {
 pub fn browser_windows(_which: Option<&str>) -> Vec<WindowInfo> {
     Vec::new()
 }
+pub fn active_url(_hwnd: i64) -> Option<String> {
+    None
+}
 pub fn state(_hwnd: i64) -> AppResult<BrowserState> {
     Err(AppError::unsupported("Пока не поддерживается на macOS"))
 }

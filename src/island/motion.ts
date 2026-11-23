@@ -6,7 +6,7 @@
 import type { Transition, Variants } from "motion/react";
 import type { PeekDeck } from "./geometry";
 
-const DECK_ORDER: PeekDeck[] = ["nook", "focus", "tray", "activity", "sound"];
+const DECK_ORDER: PeekDeck[] = ["nook", "focus", "growth", "tray", "activity", "sound"];
 
 /** +1 when the new deck sits to the right of the old tab, -1 to the left. */
 export function deckDirection(from: PeekDeck, to: PeekDeck): 1 | -1 | 0 {

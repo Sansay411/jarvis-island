@@ -40,6 +40,7 @@ import { HeadsetHello } from "./views/SoundDeck";
 import { useBluetooth } from "../store/bluetooth";
 import { UpdateCard } from "./views/UpdateCard";
 import { useUpdates } from "../store/updates";
+import { useMentor } from "../store/mentor";
 import "./island.css";
 
 const SHAPE_SPRING = { stiffness: 460, damping: 34, mass: 0.65 };
@@ -321,6 +322,7 @@ export function Island() {
   const focus = useHub((s) => s.focus);
   const ttsSpeaking = useTts((s) => s.speaking);
   const missionActive = useMissionActive();
+  const watching = useMentor((s) => s.watching !== null);
 
   const { emote: currentEmote, seq: emoteSeq } = useEmote();
   const runningTool = useAgent((s) => {
@@ -407,7 +409,7 @@ export function Island() {
       dimsFor(mode, {
         notch: notchGeometry,
         hasMedia: withMedia,
-        hasActivity: jobRows > 0 || !!timer || stopwatch || missionActive,
+        hasActivity: jobRows > 0 || !!timer || stopwatch || missionActive || watching,
         hasFocus: focus.active,
         thinking: agentThinking,
         ttsSpeaking,
@@ -441,6 +443,7 @@ export function Island() {
       !!timer,
       stopwatch,
       agentThinking,
+      watching,
     ],
   );
 

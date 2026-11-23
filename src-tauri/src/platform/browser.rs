@@ -120,6 +120,13 @@ fn address(u: &IUIAutomation, root: &IUIAutomationElement) -> Option<String> {
     None
 }
 
+/// The active tab's address only (cheaper than [`state`]: no tab list).
+pub fn active_url(hwnd: i64) -> Option<String> {
+    let u = uia().ok()?;
+    let root = unsafe { u.ElementFromHandle(HWND(hwnd as isize as *mut _)) }.ok()?;
+    address(&u, &root)
+}
+
 pub fn state(hwnd: i64) -> AppResult<BrowserState> {
     let w = winmgr::describe(winmgr::to_hwnd(hwnd)).ok_or_else(|| AppError::not_found("Окно браузера закрыто"))?;
     let u = uia()?;

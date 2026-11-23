@@ -25,12 +25,17 @@ mod ipc_files;
 mod ipc_hub;
 pub mod jobs;
 mod ipc_mcp;
+mod ipc_mentor;
+mod ipc_planner;
 pub mod ipc_tts;
 pub mod mcp;
+pub mod mentor;
 mod ipc_agent;
+pub mod planner;
 pub mod platform;
 pub mod reminders;
 pub mod stopwatch;
+pub mod telegram;
 mod shortcuts;
 mod state;
 pub mod store;
@@ -258,6 +263,15 @@ pub fn run() {
             let hub = hub::Hub::new(app.handle().clone())?;
             hub.spawn();
             app.manage(hub);
+            let planner = planner::Planner::new(app.handle().clone(), app.state::<AppState>().store.clone());
+            planner::google::spawn(planner.clone());
+            app.manage(planner);
+            let mentor = mentor::Mentor::new(Some(app.handle().clone()), app.state::<AppState>().store.clone())?;
+            mentor::guard::spawn(app.handle().clone(), mentor.clone());
+            app.manage(mentor);
+            let bot = Arc::new(telegram::Bot::default());
+            telegram::spawn(app.handle().clone(), bot.clone());
+            app.manage(bot);
             app.manage(jobs::JobManager::new(app.handle().clone()));
             app.manage(voice::VoiceManager::new(app.handle().clone()));
             app.manage(Arc::new(filekit::FileJobs::default()));
@@ -440,6 +454,33 @@ pub fn run() {
             ipc_tts::tts_stop,
             ipc_tts::tts_status,
             ipc_tts::tts_benchmark,
+            ipc_planner::planner_open,
+            ipc_planner::planner_events,
+            ipc_planner::planner_create,
+            ipc_planner::planner_update,
+            ipc_planner::planner_delete,
+            ipc_planner::planner_suggest,
+            ipc_planner::planner_google_status,
+            ipc_planner::planner_google_connect,
+            ipc_planner::planner_google_disconnect,
+            ipc_planner::planner_google_sync,
+            ipc_mentor::mentor_state,
+            ipc_mentor::mentor_pending,
+            ipc_mentor::mentor_open_reset,
+            ipc_mentor::mentor_feed,
+            ipc_mentor::mentor_answer,
+            ipc_mentor::mentor_complete,
+            ipc_mentor::mentor_best,
+            ipc_mentor::mentor_workout,
+            ipc_mentor::mentor_words,
+            ipc_mentor::mentor_steps,
+            ipc_mentor::mentor_start_step,
+            ipc_mentor::mentor_allow,
+            ipc_mentor::mentor_review,
+            ipc_mentor::telegram_status,
+            ipc_mentor::telegram_set_token,
+            ipc_mentor::telegram_pair,
+            ipc_mentor::telegram_unbind,
         ])
         .run(tauri::generate_context!())
         .expect("error while running JARVIS");

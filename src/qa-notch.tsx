@@ -23,6 +23,7 @@ import { useAgent } from "./store/agent";
 import { useWeather, type Weather } from "./store/weather";
 import { primeShelfThumbs } from "./island/shelfThumbs";
 import { useBluetooth } from "./store/bluetooth";
+import { useMentor } from "./store/mentor";
 import type { BtDevice } from "./lib/types";
 
 const SAMPLE_WEATHER: Weather = {
@@ -81,7 +82,9 @@ type PresetId =
   | "sound-low"
   | "sound-empty"
   | "hello"
-  | "pinned";
+  | "pinned"
+  | "growth"
+  | "watching";
 
 function makeCoverArtDataUrl(hue: "ocean" | "crimson" | "gold"): string {
   const c = document.createElement("canvas");
@@ -375,6 +378,8 @@ const PRESETS: Array<{ id: PresetId; label: string }> = [
   { id: "sound-empty", label: "13d. Звук: ничего не подключено" },
   { id: "hello", label: "14. Наушники подключились" },
   { id: "pinned", label: "15. Закреплённый остров" },
+  { id: "growth", label: "16. Рост (наставник)" },
+  { id: "watching", label: "17. Компакт: минуты TikTok" },
 ];
 
 const SOURCES: Array<{ id: string; label: string; app: string; track: string; artist: string; hue: "ocean" | "crimson" | "gold" }> = [
@@ -491,6 +496,7 @@ function QaHarness() {
     useFiles.setState({ open: false, loading: false, error: null, paths: [], files: [], actions: [], job: null });
     useBluetooth.setState({ devices: buildBtDevices(id === "sound-single" ? "single" : id === "sound-low" ? "low" : id === "sound-empty" ? "away" : "pods"), hello: null });
     useIsland.setState({ pinned: id === "pinned" });
+    if (id !== "watching") useMentor.setState({ watching: null });
 
     // Seed baseline Hub data for realistic inspection.
     useHub.setState({
@@ -556,6 +562,28 @@ function QaHarness() {
         useSystem.setState({ media: null, artwork: null });
         useHub.setState({ focus: EMPTY_FOCUS, tasks: [] });
         useIsland.setState({ hovered: true, peekDeck: "focus", dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: true });
+        break;
+
+      case "growth": {
+        useSystem.setState({ media: null, artwork: null });
+        useHub.setState({ focus: EMPTY_FOCUS });
+        const base = useMentor.getState().state!;
+        const week = Array.from({ length: 7 }, (_, i) => {
+          const d = new Date();
+          d.setDate(d.getDate() - (6 - i));
+          const xp = [80, 64, 20, 95, 55, 0, 35][i]!;
+          return { date: localDateIso(d), xp, shortMin: [12, 8, 25, 4, 10, 30, 10][i]!, focusMin: xp / 2, growth: xp >= 50 };
+        });
+        useMentor.setState({ state: { ...base, week }, watching: null });
+        useIsland.setState({ hovered: true, peekDeck: "growth", dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: true });
+        break;
+      }
+
+      case "watching":
+        useSystem.setState({ media: null, artwork: null });
+        useHub.setState({ focus: EMPTY_FOCUS });
+        useMentor.setState({ watching: { site: "tiktok", label: "TikTok", usedSec: 452, limitSec: 600, strict: null } });
+        useIsland.setState({ hovered: false, dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: false });
         break;
 
       case "compact":

@@ -12,7 +12,10 @@ npx vite build                        # production frontend bundle (dist/ is git
 
 Visual QA without the native app: `npx vite --port 1420`, then open
 `/qa/notch-showcase.html` (every island state) and
-`/qa/workspace-showcase.html?scene=workspace-active|workspace-empty|settings-voice|settings-behaviour`.
+`/qa/workspace-showcase.html?scene=workspace-active|workspace-empty|settings-voice|settings-behaviour`,
+`/qa/planner.html?view=day|4day|week|month&plan=1` (the Google-style planner
+with a sample week) and `/qa/reset.html?reason=budget|strict|voluntary&screen=feed|games|workout|breath|step|done&plan=1`
+(«Перезагрузка»).
 
 ## Gotchas
 
@@ -35,6 +38,20 @@ Visual QA without the native app: `npx vite --port 1420`, then open
   `WebView2LoaderStatic`». Fix: `cargo clean -p <crate>` (and `--release`).
 * Files written by the editor tool come out CRLF; most of the repo is LF
   (`sed -i 's/\r$//' file` before committing a new file).
+
+## Planner, mentor, Telegram
+
+* `planner/` keeps events as local wall-time strings (`YYYY-MM-DDTHH:MM`,
+  all-day `YYYY-MM-DD`, ends exclusive) so range queries are string compares;
+  `planner/google.rs` mirrors the primary calendar (push first, then a
+  windowed pull: 35 days back, 120 ahead). Unit tests cover the mapping and
+  the reconcile rules without network.
+* `mentor/guard.rs` polls the foreground window every 2 s; the address bar is
+  read over UIA only when the title changes on YouTube/Instagram/VK. Closing
+  uses the selected tab via UIA, Ctrl+W only if the same page is still in
+  front. `mentor/seed.rs` holds the offline cards (checked by a test).
+* `telegram/` long-polls inside the app; one bound chat (`/start CODE` from
+  Settings). Never log Bot API URLs: the token is in them.
 
 ## Release
 

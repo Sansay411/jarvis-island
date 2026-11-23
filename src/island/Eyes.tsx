@@ -9,8 +9,8 @@
 //
 // Each eye is a small lens of light, drawn in layers: a two-step halo, the
 // amber body with side shading (so it reads round), a hot inner core, a thin
-// light rim, a glint that drifts against the gaze, and a faint reflection on
-// the obsidian below. A very slow shimmer keeps it alive.
+// light rim and a glint that drifts against the gaze. A very slow shimmer
+// keeps it alive.
 
 import { animate, motion, useMotionValue, useReducedMotion, useSpring, useTransform, type MotionValue } from "motion/react";
 import { useEffect, useId, useRef } from "react";
@@ -109,12 +109,6 @@ function Pill({ x, y, h, gx, ids, error, clip }: { x: MotionValue<number>; y: Mo
   );
 }
 
-/** The faint light an eye throws on the island surface below it. */
-function Reflection({ x, y, h, ids }: { x: MotionValue<number>; y: MotionValue<number>; h: MotionValue<number>; ids: Ids }) {
-  const cx = useTransform(() => x.get() + EYE_W / 2);
-  const cy = useTransform(() => y.get() + h.get() + 3.4);
-  return <motion.ellipse cx={cx} cy={cy} rx={3.6} ry={1.15} fill={`url(#${ids.refl})`} />;
-}
 
 const SPRING = { stiffness: 420, damping: 30, mass: 0.6 };
 
@@ -454,8 +448,6 @@ export function Eyes({ mood, level, lookX, lookY = 0, scale = 1, emote = null, e
       )}
 
       <motion.g initial={false} animate={{ opacity: pillsHidden || mood === "sleep" ? 0 : 1 }} transition={{ duration: 0.18 }}>
-        <Reflection x={leftX} y={yL} h={hL} ids={ids} />
-        <Reflection x={rightX} y={yR} h={hR} ids={ids} />
       </motion.g>
 
       <motion.g initial={false} animate={{ opacity: pillsHidden ? 0 : mood === "sleep" ? 0.45 : 1 }} transition={{ duration: 0.18 }}>

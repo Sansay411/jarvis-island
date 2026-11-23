@@ -16,6 +16,7 @@ pub mod executive;
 mod file_actions;
 mod files;
 mod memory;
+mod planner;
 mod reminders;
 pub mod screen;
 mod shell;
@@ -169,6 +170,7 @@ impl Registry {
             .chain(reminders::tools())
             .chain(clipboard_history::tools())
             .chain(executive::tools())
+            .chain(planner::tools())
         {
             tools.insert(t.name, t);
         }

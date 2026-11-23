@@ -17,7 +17,7 @@ export function shoulderFor(h: number): number {
 }
 
 export type IslandMode = "compact" | "peek" | "workspace" | "voice" | "drop" | "files" | "notice" | "clips" | "weather" | "hello";
-export type PeekDeck = "nook" | "focus" | "tray" | "activity" | "sound";
+export type PeekDeck = "nook" | "focus" | "growth" | "tray" | "activity" | "sound";
 
 export interface Dims {
   w: number;
@@ -95,23 +95,27 @@ function baseDimsFor(mode: IslandMode, ctx: DimsContext): Dims {
       return { w: 174, h: BROW_H };
     }
     case "peek": {
+      // Every opened deck has one width, so switching tabs only changes height.
+      const W = 640;
       const stripRows = ctx.jobRows + (ctx.clockRows ?? 0) + (ctx.missionActive ? 1 : 0);
       const extraH = stripRows * 28;
       if (ctx.focusBanner) {
-        return { w: 584, h: 128 + extraH };
+        return { w: 600, h: 132 + extraH };
       }
       switch (ctx.peekDeck ?? "nook") {
         case "focus":
-          return { w: 624, h: 300 + extraH };
+          return { w: W, h: 318 + extraH };
+        case "growth":
+          return { w: W, h: 222 + extraH };
         case "tray":
-          return { w: 604, h: 192 + extraH };
+          return { w: W, h: 200 + extraH };
         case "activity":
-          return { w: 556, h: 206 + extraH };
+          return { w: W, h: 214 + extraH };
         case "sound":
-          return { w: 616, h: 244 + extraH };
+          return { w: W, h: 248 + extraH };
         case "nook":
         default:
-          return { w: 616, h: 206 + extraH };
+          return { w: W, h: 214 + extraH };
       }
     }
     case "voice":

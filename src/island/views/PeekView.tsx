@@ -1,4 +1,4 @@
-// The opened island: five decks (Обзор, Фокус, Полка, Стрик, Звук) under a
+// The opened island: four tabs (Обзор, Фокус, Рост, Полка; Звук and the year map open from inside) under a
 // brow whose centre column belongs to JARVIS's eyes. The tabs are the only
 // deck switcher (plus Alt+1..5 and a horizontal swipe). The pin keeps the
 // island open.
@@ -14,7 +14,7 @@ import { useHub } from "../../store/hub";
 import { useTts } from "../../store/tts";
 import { toggleVoice, useVoice } from "../../store/voice";
 import type { PeekDeck } from "../geometry";
-import { Artwork, EqualizerBars, IdlePlayer, MediaCard } from "./MediaCard";
+import { EqualizerBars, IdlePlayer, MediaCard } from "./MediaCard";
 import { JobsStrip } from "./JobsStrip";
 import { ClocksStrip } from "./ClocksStrip";
 import { WeekCalendar } from "./WeekCalendar";
@@ -23,15 +23,18 @@ import { TrayDeck } from "./TrayDeck";
 import { ActivityDeck } from "./ActivityDeck";
 import { AgentMissionBar } from "./AgentMissionBar";
 import { HeadsetChip, SoundDeck } from "./SoundDeck";
+import { GrowthDeck } from "./GrowthDeck";
+import { invoke } from "@tauri-apps/api/core";
 import { deg, useWeather } from "../../store/weather";
 import { WeatherGlyph } from "../../ui/WeatherGlyph";
 
+// Four tabs keep the brow clear of the eyes. «Звук» opens from the headset
+// chip, the year map from «Рост».
 const DECKS: Array<{ id: PeekDeck; label: string; icon: IconName }> = [
   { id: "nook", label: "Обзор", icon: "nook" },
   { id: "focus", label: "Фокус", icon: "target" },
+  { id: "growth", label: "Рост", icon: "grid" },
   { id: "tray", label: "Полка", icon: "tray" },
-  { id: "activity", label: "Стрик", icon: "grid" },
-  { id: "sound", label: "Звук", icon: "headphones" },
 ];
 
 export function PeekView() {
@@ -122,7 +125,8 @@ export function PeekView() {
       <div className="brow brow-split">
         <div className="brow-left" role="tablist" aria-label="Разделы острова">
           {DECKS.map((d) => {
-            const active = !showFocusBanner && peekDeck === d.id;
+            const owner = peekDeck === "activity" ? "growth" : peekDeck;
+            const active = !showFocusBanner && owner === d.id;
             return (
               <button
                 key={d.id}
@@ -165,20 +169,19 @@ export function PeekView() {
               <EqualizerBars playing accent="amber" />
               <span>Стоп</span>
             </button>
-          ) : withMedia && (showFocusBanner || peekDeck !== "nook") ? (
-            <button
-              type="button"
-              className="brow-live-pill is-audio"
-              title={`${media.title} — открыть плеер`}
-              onClick={() => setDeck("nook")}
-            >
-              <Artwork size={14} radius={4} />
-              <span className="brow-audio-title">{media.title}</span>
-              <EqualizerBars playing={media.status === "playing"} />
-            </button>
           ) : null}
 
           <HeadsetChip />
+
+          <button
+            type="button"
+            className="icon-btn icon-btn-sm"
+            aria-label="Календарь"
+            title="Планировщик"
+            onClick={() => isTauri() && void invoke("planner_open", { date: null })}
+          >
+            <Icon name="calendar" size={14} />
+          </button>
 
           <button
             type="button"
@@ -282,6 +285,7 @@ export function PeekView() {
 
               {peekDeck === "focus" && <FocusDeck />}
               {peekDeck === "tray" && <TrayDeck />}
+              {peekDeck === "growth" && <GrowthDeck />}
               {peekDeck === "activity" && <ActivityDeck />}
               {peekDeck === "sound" && <SoundDeck />}
             </motion.div>

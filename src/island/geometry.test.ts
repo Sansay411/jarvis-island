@@ -7,7 +7,7 @@ const notch: NotchGeometry = { has_notch: true, notch_width: 200, notch_height: 
 describe("notch geometry", () => {
   it("preserves Windows and missing-geometry dimensions", () => {
     expect(dimsFor("compact", ctx)).toEqual({ w: 174, h: 36 });
-    expect(dimsFor("peek", ctx)).toEqual({ w: 616, h: 206 });
+    expect(dimsFor("peek", ctx)).toEqual({ w: 640, h: 214 });
     expect(dimsFor("compact", { ...ctx, notch: null })).toEqual(dimsFor("compact", ctx));
   });
 

@@ -7,6 +7,7 @@ import { useVoice } from "../../store/voice";
 import { useNextTimer, type Reminder } from "../../store/reminders";
 import { clock, elapsedMs, useStopwatch, useTick } from "../../store/stopwatch";
 import { useHub } from "../../store/hub";
+import { useMentor, type Watching } from "../../store/mentor";
 import { useTts } from "../../store/tts";
 import { useAgent } from "../../store/agent";
 import { Icon } from "../../ui/Icon";
@@ -118,6 +119,19 @@ function ThinkingCompact() {
 
 /** Resting state: centered amber eyes, left media cover+equalizer / focus ring / mission badge,
  *  and right countdown / TTS live stop indicator / job spinner. */
+/** «TikTok 4:12» — the day's short-video minutes running out, or «закрыто». */
+function VideoLeft({ w }: { w: Watching }) {
+  const left = Math.max(0, w.limitSec - w.usedSec);
+  const mm = Math.floor(left / 60);
+  const ss = String(left % 60).padStart(2, "0");
+  return (
+    <span className={`compact-video${left < 60 ? " is-low" : ""}`} title={w.strict ?? `${w.label}: осталось ${mm} мин`}>
+      <i style={{ ["--p" as string]: `${Math.min(100, (w.usedSec / Math.max(1, w.limitSec)) * 100)}%` }} />
+      <span>{w.strict ? "закрыто" : `${mm}:${ss}`}</span>
+    </span>
+  );
+}
+
 export function CompactView() {
   const media = useSystem((s) => s.media);
   const running = useRunningJobs();
@@ -131,6 +145,7 @@ export function CompactView() {
   const agentActive = useAgent((s) => Boolean(s.activeTurn));
   const ttsSpeaking = useTts((s) => s.speaking);
   const stopTts = useTts((s) => s.stop);
+  const watching = useMentor((s) => s.watching);
 
   if (lip) return <div className="view view-compact" title={voiceError ?? undefined} />;
 
@@ -147,7 +162,9 @@ export function CompactView() {
   return (
     <div className="view view-compact">
       <div className="compact-side compact-left">
-        {withMedia ? (
+        {watching ? (
+          <VideoLeft w={watching} />
+        ) : withMedia ? (
           <div className="compact-media-cluster">
             <Artwork size={20} radius={6} />
             <EqualizerBars playing={media.status === "playing"} />

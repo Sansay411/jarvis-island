@@ -8,6 +8,11 @@ pub const AZURE_SPEECH_REGION: &str = "JARVIS/azure-speech-region";
 pub const ELEVENLABS_KEY: &str = "JARVIS/elevenlabs-key";
 /// Yandex SpeechKit: API key of a service account (role ai.speechkit-tts.user).
 pub const YANDEX_SPEECH_KEY: &str = "JARVIS/yandex-speech-key";
+/// Google Calendar OAuth client secret (the user's own Cloud project).
+pub const GOOGLE_CLIENT_SECRET: &str = "JARVIS/google-client-secret";
+pub const GOOGLE_REFRESH_TOKEN: &str = "JARVIS/google-refresh-token";
+/// Telegram bot token from @BotFather.
+pub const TELEGRAM_BOT_TOKEN: &str = "JARVIS/telegram-bot-token";
 
 fn entry(target: &str) -> AppResult<keyring::Entry> {
     keyring::Entry::new(target, "jarvis")

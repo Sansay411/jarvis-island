@@ -282,6 +282,120 @@ impl Default for UpdateSettings {
     }
 }
 
+/// The planner window and Google Calendar (Settings → Календарь).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PlannerSettings {
+    /// Working hours, "HH:MM": «Спланировать день» puts deep work inside them.
+    pub work_start: String,
+    pub work_end: String,
+    /// The hour the day and week views scroll to.
+    pub day_start_hour: u32,
+    /// OAuth client of the user's own Google Cloud project («Desktop app»).
+    pub google_client_id: String,
+    /// "primary" or a calendar id.
+    pub google_calendar_id: String,
+}
+
+impl Default for PlannerSettings {
+    fn default() -> Self {
+        PlannerSettings {
+            work_start: "09:00".into(),
+            work_end: "18:00".into(),
+            day_start_hour: 8,
+            google_client_id: String::new(),
+            google_calendar_id: "primary".into(),
+        }
+    }
+}
+
+/// Words that make a YouTube video «learning» rather than distraction.
+pub const LEARNING_WORDS: &[&str] = &[
+    "урок", "курс", "лекци", "обучени", "разбор", "туториал", "для начинающих", "как сделать",
+    "tutorial", "course", "lecture", "lesson", "learn", "explained", "how to", "crash course",
+    "программирован", "programming", "coding", "rust", "javascript", "typescript", "python", "react",
+    "алгоритм", "algorithm", "leetcode", "system design", "собеседован", "interview",
+    "english", "английск", "grammar", "грамматик", "vocabulary", "ielts", "toefl",
+    "тренировк", "workout", "упражнени", "растяжк", "stretching",
+];
+
+/// The mentor (Settings → Наставник): short videos are limited, growth is
+/// rewarded.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MentorSettings {
+    /// Watch short videos and close them once the day's minutes are spent.
+    pub guard: bool,
+    /// Minutes of TikTok, Shorts, Reels and VK clips a day.
+    pub short_minutes: u32,
+    /// Minutes of ordinary YouTube a day (learning videos are not counted).
+    pub youtube_minutes: u32,
+    /// Growth earns extra minutes: a feed set, a workout, a focus session.
+    pub earn: bool,
+    /// During focus and work, study or project blocks short videos close at once.
+    pub strict_focus: bool,
+    /// Say it aloud when stepping in.
+    pub speak: bool,
+    /// What the user grows in: "code", "english", "body", "projects".
+    pub tracks: Vec<String>,
+    /// A YouTube title with one of these is learning.
+    pub learning_words: Vec<String>,
+    /// Quiet hours, "HH:MM" (short videos close at once); empty = off.
+    pub night_from: String,
+    pub night_to: String,
+    /// «Если потянет в короткие видео, то я …»: the user's own plan, shown back.
+    pub if_then: String,
+}
+
+impl Default for MentorSettings {
+    fn default() -> Self {
+        MentorSettings {
+            guard: true,
+            short_minutes: 10,
+            youtube_minutes: 30,
+            earn: true,
+            strict_focus: true,
+            speak: true,
+            tracks: ["code", "english", "body", "projects"].iter().map(|s| s.to_string()).collect(),
+            learning_words: LEARNING_WORDS.iter().map(|s| s.to_string()).collect(),
+            night_from: String::new(),
+            night_to: String::new(),
+            if_then: String::new(),
+        }
+    }
+}
+
+/// The Telegram bot (Settings → Telegram). The token is in the key store.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TelegramSettings {
+    pub enabled: bool,
+    /// The one chat the bot serves (bound with «/start CODE»); 0 = none yet.
+    pub chat_id: i64,
+    pub bot_username: String,
+    /// Morning plan and evening review, "HH:MM"; empty = off.
+    pub morning: String,
+    pub evening: String,
+    /// Minutes before an event to remind about it; 0 = off.
+    pub remind_before: u32,
+    /// Plain messages go to JARVIS as requests.
+    pub agent: bool,
+}
+
+impl Default for TelegramSettings {
+    fn default() -> Self {
+        TelegramSettings {
+            enabled: true,
+            chat_id: 0,
+            bot_username: String::new(),
+            morning: "08:30".into(),
+            evening: "21:30".into(),
+            remind_before: 10,
+            agent: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -295,4 +409,7 @@ pub struct Settings {
     pub launch_at_startup: bool,
     pub reduce_motion: bool,
     pub updates: UpdateSettings,
+    pub planner: PlannerSettings,
+    pub mentor: MentorSettings,
+    pub telegram: TelegramSettings,
 }

@@ -431,6 +431,15 @@ impl Agent {
         rx.await.map_err(|_| AppError::internal("Задача агента прервалась"))?
     }
 
+    /// A request from the user's own Telegram chat: a normal text turn whose
+    /// final answer comes back. Like `--ask`, every action that changes
+    /// something waits for a confirmation on this computer.
+    pub async fn remote_turn(self: &Arc<Self>, text: String) -> AppResult<String> {
+        let (tx, rx) = oneshot::channel();
+        self.start_turn(text, Vec::new(), Some(tx), false, None, Some(false), Heard::Addressed)?;
+        rx.await.map_err(|_| AppError::internal("Задача агента прервалась"))?
+    }
+
     pub fn is_busy(&self) -> bool {
         self.inner.lock().active.is_some()
     }

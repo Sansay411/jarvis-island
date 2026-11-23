@@ -140,6 +140,8 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(clips::SCHEMA)?;
         conn.execute_batch(crate::hub::SCHEMA)?;
+        conn.execute_batch(crate::planner::SCHEMA)?;
+        conn.execute_batch(crate::mentor::SCHEMA)?;
         Ok(Store { conn: Mutex::new(conn) })
     }
 
@@ -149,6 +151,8 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(clips::SCHEMA)?;
         conn.execute_batch(crate::hub::SCHEMA)?;
+        conn.execute_batch(crate::planner::SCHEMA)?;
+        conn.execute_batch(crate::mentor::SCHEMA)?;
         Ok(Store { conn: Mutex::new(conn) })
     }
 

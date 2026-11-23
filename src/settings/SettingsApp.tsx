@@ -24,6 +24,7 @@ import "./settings.css";
 import { TitleBar } from "./TitleBar";
 import { Group, Row, Segmented, Switch } from "./controls";
 import { McpSection } from "./McpSection";
+import { CalendarSection, MentorSection, TelegramSection } from "./GrowthSections";
 import { ACTIVITIES, EMOTES, emote, useEmote, type Activity } from "../store/emote";
 import { LiveAudioBars, routineIconName, WsIcon } from "../workspace/WorkspaceIcons";
 import { Icon, type IconName } from "../ui/Icon";
@@ -67,6 +68,21 @@ export interface Settings {
   launchAtStartup: boolean;
   reduceMotion: boolean;
   updates: { autoCheck: boolean };
+  planner: { workStart: string; workEnd: string; dayStartHour: number; googleClientId: string; googleCalendarId: string };
+  mentor: {
+    guard: boolean;
+    shortMinutes: number;
+    youtubeMinutes: number;
+    earn: boolean;
+    strictFocus: boolean;
+    speak: boolean;
+    tracks: string[];
+    learningWords: string[];
+    nightFrom: string;
+    nightTo: string;
+    ifThen: string;
+  };
+  telegram: { enabled: boolean; chatId: number; botUsername: string; morning: string; evening: string; remindBefore: number; agent: boolean };
 }
 
 interface SettingsView {
@@ -125,7 +141,7 @@ interface TaskRecord {
   startedAt: string;
 }
 
-export type Section = "general" | "model" | "voice" | "persona" | "behaviour" | "privacy" | "memory" | "mcp";
+export type Section = "general" | "model" | "voice" | "persona" | "behaviour" | "mentor" | "calendar" | "telegram" | "privacy" | "memory" | "mcp";
 type Tone = "ok" | "error" | "info";
 
 const FALLBACK_SETTINGS_VIEW: SettingsView = {
@@ -167,6 +183,21 @@ const FALLBACK_SETTINGS_VIEW: SettingsView = {
     launchAtStartup: true,
     reduceMotion: false,
     updates: { autoCheck: true },
+    planner: { workStart: "09:00", workEnd: "18:00", dayStartHour: 8, googleClientId: "", googleCalendarId: "primary" },
+    mentor: {
+      guard: true,
+      shortMinutes: 10,
+      youtubeMinutes: 30,
+      earn: true,
+      strictFocus: true,
+      speak: true,
+      tracks: ["code", "english", "body", "projects"],
+      learningWords: ["урок", "курс", "tutorial", "course", "english"],
+      nightFrom: "",
+      nightTo: "",
+      ifThen: "",
+    },
+    telegram: { enabled: true, chatId: 0, botUsername: "", morning: "08:30", evening: "21:30", remindBefore: 10, agent: true },
   },
   presets: [
     {
@@ -221,6 +252,9 @@ const SECTIONS: { id: Section; label: string; icon: IconName; hint: string }[] =
   { id: "voice", label: "Голос", icon: "mic", hint: "Как Джарвис говорит и как слышит." },
   { id: "persona", label: "Характер", icon: "chat", hint: "Обращение и манера разговора." },
   { id: "behaviour", label: "Самостоятельность", icon: "target", hint: "Что Джарвис делает сам, а что — только с вашего разрешения." },
+  { id: "mentor", label: "Наставник", icon: "timer", hint: "Короткие видео по минутам, а польза — в награду." },
+  { id: "calendar", label: "Календарь", icon: "calendar", hint: "Планировщик и синхронизация с Google Календарём." },
+  { id: "telegram", label: "Telegram", icon: "send", hint: "Свой бот: план утром, итог вечером, Джарвис с телефона." },
   { id: "privacy", label: "Приватность", icon: "eye", hint: "Что можно видеть и что хранить на этом компьютере." },
   { id: "memory", label: "Память", icon: "clipboard", hint: "Что Джарвис помнит о вас. Любую запись можно стереть." },
   { id: "mcp", label: "Подключения", icon: "globe", hint: "Инструменты других программ по протоколу MCP." },
@@ -1580,6 +1614,9 @@ export default function SettingsApp({
           )}
 
           {section === "mcp" && <McpSection notify={notify} vy={vy} />}
+          {section === "mentor" && <MentorSection draft={draft} set={set} notify={notify} />}
+          {section === "calendar" && <CalendarSection draft={draft} set={set} notify={notify} />}
+          {section === "telegram" && <TelegramSection draft={draft} set={set} notify={notify} />}
 
           {section === "general" && (
             <>
