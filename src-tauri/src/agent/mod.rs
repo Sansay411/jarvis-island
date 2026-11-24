@@ -130,6 +130,9 @@ struct Turn {
     id: String,
     cancel: CancellationToken,
     attachments: Arc<Vec<String>>,
+    /// Screen area captured via the area picker or cursor-circling, attached
+    /// directly as an image part on the user's message.
+    area: Option<crate::area::PendingArea>,
     settings: Settings,
     /// Spoken request: the reply is read aloud (shorter, no Markdown).
     voice: bool,
@@ -239,6 +242,41 @@ fn trim_history(h: &mut Vec<ChatMessage>) {
         let drop = (h.len() - HISTORY_WINDOW * 2) / HISTORY_BLOCK * HISTORY_BLOCK;
         h.drain(..drop);
     }
+}
+
+fn build_user_message(text: &str, attachments: &[String], area: Option<&crate::area::PendingArea>) -> ChatMessage {
+    let mut body = text.to_string();
+    if !attachments.is_empty() {
+        body.push_str("\n\n[Прикреплённые файлы — можно читать без подтверждения: ");
+        body.push_str(&attachments.join("; "));
+        body.push(']');
+    }
+    if let Some(a) = area {
+        let title_note = a
+            .window_title
+            .as_deref()
+            .filter(|t| !t.trim().is_empty())
+            .map(|t| format!(" (окно «{t}»)"))
+            .unwrap_or_default();
+        body.push_str(&format!(
+            "\n\n[Прикреплена выделенная область экрана {}×{}{title_note} — изображение приложено ниже, отвечай по нему напрямую.]",
+            a.width, a.height
+        ));
+    }
+    let mut parts = vec![Part::Text { text: body }];
+    if let Some(a) = area {
+        parts.push(Part::Image { data_url: a.data_url.clone() });
+    }
+    for a in attachments {
+        if IMAGE_EXTS.contains(&ext_of(a).as_str()) {
+            if let Ok(bytes) = std::fs::read(a) {
+                if let Ok(url) = crate::tools::image_data_url(&bytes) {
+                    parts.push(Part::Image { data_url: url });
+                }
+            }
+        }
+    }
+    ChatMessage { role: Role::User, parts, tool_calls: vec![], tool_call_id: None }
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -482,6 +520,7 @@ impl Agent {
             id: format!("voice-{}", uuid::Uuid::new_v4().simple()),
             cancel,
             attachments: Arc::new(Vec::new()),
+            area: None,
             settings,
             voice: true,
             deltas: None,
@@ -559,18 +598,39 @@ impl Agent {
         if let Some(full) = autonomy_override {
             settings.agent.full_control = full;
         }
+        // Consume any pending screen area (from the area picker or cursor
+        // circling) for normal user chat or voice requests.
+        let area = if autonomy_override.is_none() && !heard.may_be_silent() {
+            self.app
+                .try_state::<Arc<crate::area::AreaManager>>()
+                .and_then(|m| m.take_pending())
+        } else {
+            None
+        };
+        if area.is_some() && !settings.privacy.allow_screen {
+            return Err(AppError::PermissionDenied(
+                "Снимки экрана выключены в настройках приватности".into(),
+            ));
+        }
         let client = ai::client_from_settings(&settings, &self.state().store)?;
         self.ensure_loaded();
 
         let turn = {
             let mut i = self.inner.lock();
             if i.active.is_some() {
+                // Put the area back if the agent was busy so the user does not lose it.
+                if let Some(a) = area {
+                    if let Some(m) = self.app.try_state::<Arc<crate::area::AreaManager>>() {
+                        m.set_pending(a);
+                    }
+                }
                 return Err(AppError::invalid("Джарвис уже выполняет задачу — дождитесь или остановите её"));
             }
             let t = Turn {
                 id: uuid::Uuid::new_v4().to_string(),
                 cancel: CancellationToken::new(),
                 attachments: Arc::new(attachments),
+                area,
                 settings,
                 voice,
                 deltas,
@@ -592,24 +652,8 @@ impl Agent {
         Ok(result)
     }
 
-    fn user_message(&self, text: &str, attachments: &[String]) -> ChatMessage {
-        let mut body = text.to_string();
-        if !attachments.is_empty() {
-            body.push_str("\n\n[Прикреплённые файлы — можно читать без подтверждения: ");
-            body.push_str(&attachments.join("; "));
-            body.push(']');
-        }
-        let mut parts = vec![Part::Text { text: body }];
-        for a in attachments {
-            if IMAGE_EXTS.contains(&ext_of(a).as_str()) {
-                if let Ok(bytes) = std::fs::read(a) {
-                    if let Ok(url) = crate::tools::image_data_url(&bytes) {
-                        parts.push(Part::Image { data_url: url });
-                    }
-                }
-            }
-        }
-        ChatMessage { role: Role::User, parts, tool_calls: vec![], tool_call_id: None }
+    fn user_message(&self, text: &str, attachments: &[String], area: Option<&crate::area::PendingArea>) -> ChatMessage {
+        build_user_message(text, attachments, area)
     }
 
     /// History window for the model: starts at a user message (never at an
@@ -679,14 +723,21 @@ impl Agent {
 
     async fn run_turn(self: Arc<Self>, turn: Turn, conversation_id: String, text: String, client: OpenAiCompatible) {
         let started = Instant::now();
-        self.emit(AgentEvent::TurnStarted { turn_id: turn.id.clone(), conversation_id: conversation_id.clone(), user_text: text.clone(), voice: turn.voice, ambient: turn.heard.may_be_silent() });
+        self.emit(AgentEvent::TurnStarted {
+            turn_id: turn.id.clone(),
+            conversation_id: conversation_id.clone(),
+            user_text: text.clone(),
+            voice: turn.voice,
+            ambient: turn.heard.may_be_silent(),
+            area: turn.area.as_ref().map(crate::area::PendingArea::preview),
+        });
         let persist = turn.settings.privacy.store_history;
         let store = self.state().store.clone();
         if persist {
             let _ = store.create_conversation(&conversation_id);
             let _ = store.task_started(&turn.id, &conversation_id, &text);
         }
-        let user = self.user_message(&text, &turn.attachments);
+        let user = self.user_message(&text, &turn.attachments, turn.area.as_ref());
         if turn.heard.may_be_silent() {
             // Kept in memory for the model; on disk only if it answers.
             self.inner.lock().deferred_user = persist.then(|| (conversation_id.clone(), user.clone()));
@@ -807,7 +858,7 @@ impl Agent {
         let persist = turn.settings.privacy.store_history;
         // Whole-utterance matching only. Execute through the normal registry
         // so cancellation, verification, events and risk policy stay intact.
-        if turn.attachments.is_empty() {
+        if turn.attachments.is_empty() && turn.area.is_none() {
             let text = self.inner.lock().history.last().map(ChatMessage::joined_text).unwrap_or_default();
             // Small talk heard without the name is as likely the room's: the
             // model decides about it, not a phrasebook.
@@ -1304,5 +1355,25 @@ mod tests {
         let t = truncate_chars(&s, 7);
         assert!(t.starts_with("привет"));
         assert!(t.ends_with("[обрезано]"));
+    }
+
+    #[test]
+    fn user_message_attaches_pending_area_as_image_part() {
+        let area = crate::area::PendingArea {
+            id: "a1".into(),
+            data_url: "data:image/jpeg;base64,AAAA".into(),
+            thumb_data_url: "data:image/jpeg;base64,BBBB".into(),
+            width: 640,
+            height: 320,
+            screen_rect: crate::platform::display::Rect { x: 10, y: 20, width: 640, height: 320 },
+            source: crate::area::AreaSource::Picker,
+            window_title: Some("VS Code".into()),
+        };
+        let msg = super::build_user_message("что это за ошибка?", &[], Some(&area));
+        assert_eq!(msg.role, Role::User);
+        assert!(msg.has_images());
+        assert!(msg.joined_text().contains("640×320"));
+        assert!(msg.joined_text().contains("VS Code"));
+        assert!(msg.parts.iter().any(|p| matches!(p, crate::ai::types::Part::Image { data_url } if data_url == "data:image/jpeg;base64,AAAA")));
     }
 }

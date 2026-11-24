@@ -19,7 +19,15 @@ pub struct PlanStep {
 pub enum AgentEvent {
     /// `ambient`: a voice phrase heard without the name — the chat shows it
     /// only once the model answers it (it may finish as `ignored`).
-    TurnStarted { turn_id: String, conversation_id: String, user_text: String, voice: bool, ambient: bool },
+    TurnStarted {
+        turn_id: String,
+        conversation_id: String,
+        user_text: String,
+        voice: bool,
+        ambient: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        area: Option<crate::area::PendingAreaPreview>,
+    },
     Phase { turn_id: String, phase: &'static str },
     TextDelta { turn_id: String, text: String },
     #[serde(rename = "plan_updated")]

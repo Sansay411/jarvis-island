@@ -1,0 +1,253 @@
+/* Fullscreen transparent screen-area picker overlay. */
+
+.areapick-root {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  cursor: crosshair;
+  user-select: none;
+  touch-action: none;
+  background: transparent;
+}
+
+.areapick-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+
+/* Top-center hint pill matching the island hardware surface. */
+.areapick-hint {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 15px;
+  border-radius: var(--r-pill);
+  background: rgba(8, 8, 10, 0.9);
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.45),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.13);
+  backdrop-filter: blur(12px);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  font-weight: 520;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: areapick-hint-in 180ms var(--ease-out) both;
+}
+
+.areapick-hint-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 8px var(--amber-glow);
+  flex: none;
+}
+
+.areapick-hint-sep {
+  color: var(--text-3);
+}
+
+.areapick-hint-key {
+  color: var(--text-2);
+}
+
+@keyframes areapick-hint-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+/* Subtle highlight around the hovered window before dragging starts. */
+.areapick-window-hover {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 8px;
+  border: 1.5px dashed rgba(255, 178, 63, 0.72);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 216, 143, 0.14),
+    0 0 0 1px rgba(0, 0, 0, 0.35);
+  transition:
+    left 90ms var(--ease-out),
+    top 90ms var(--ease-out),
+    width 90ms var(--ease-out),
+    height 90ms var(--ease-out),
+    opacity 120ms var(--ease-out);
+}
+
+.areapick-window-tag {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  max-width: min(360px, calc(100% - 20px));
+  height: 24px;
+  padding: 0 10px;
+  border-radius: var(--r-pill);
+  background: rgba(8, 8, 10, 0.88);
+  box-shadow: inset 0 0 0 1px rgba(255, 178, 63, 0.35);
+  color: var(--text-1);
+  font-size: var(--fs-11);
+  font-weight: 540;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.areapick-window-tag-dim {
+  font-family: var(--font-mono);
+  color: var(--amber-hi);
+  font-size: 10.5px;
+  flex: none;
+}
+
+/* Active drag selection frame with amber rim & corner brackets. */
+.areapick-selection {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 4px;
+  box-shadow:
+    0 0 0 1.5px var(--amber),
+    0 0 18px rgba(255, 178, 63, 0.22),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+
+.areapick-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  pointer-events: none;
+}
+
+.areapick-handle::before,
+.areapick-handle::after {
+  content: "";
+  position: absolute;
+  background: var(--amber-hi);
+  border-radius: 1.5px;
+  box-shadow: 0 0 6px var(--amber-glow);
+}
+
+.areapick-handle::before {
+  width: 12px;
+  height: 2.5px;
+}
+
+.areapick-handle::after {
+  width: 2.5px;
+  height: 12px;
+}
+
+.areapick-handle.is-tl {
+  left: -2px;
+  top: -2px;
+}
+.areapick-handle.is-tl::before,
+.areapick-handle.is-tl::after {
+  left: 0;
+  top: 0;
+}
+
+.areapick-handle.is-tr {
+  right: -2px;
+  top: -2px;
+}
+.areapick-handle.is-tr::before {
+  right: 0;
+  top: 0;
+}
+.areapick-handle.is-tr::after {
+  right: 0;
+  top: 0;
+}
+
+.areapick-handle.is-bl {
+  left: -2px;
+  bottom: -2px;
+}
+.areapick-handle.is-bl::before {
+  left: 0;
+  bottom: 0;
+}
+.areapick-handle.is-bl::after {
+  left: 0;
+  bottom: 0;
+}
+
+.areapick-handle.is-br {
+  right: -2px;
+  bottom: -2px;
+}
+.areapick-handle.is-br::before {
+  right: 0;
+  bottom: 0;
+}
+.areapick-handle.is-br::after {
+  right: 0;
+  bottom: 0;
+}
+
+/* Live physical-pixel size readout pill. */
+.areapick-size-pill {
+  position: absolute;
+  z-index: 15;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: var(--r-pill);
+  background: rgba(8, 8, 10, 0.92);
+  box-shadow:
+    0 6px 18px rgba(0, 0, 0, 0.45),
+    inset 0 0 0 1px rgba(255, 178, 63, 0.45);
+  color: var(--amber-hi);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  font-weight: 560;
+  font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.areapick-error {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  padding: 8px 14px;
+  border-radius: var(--r-sm);
+  background: rgba(24, 10, 10, 0.94);
+  box-shadow: inset 0 0 0 1px rgba(255, 107, 90, 0.55);
+  color: #ffb3a9;
+  font-size: var(--fs-12);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .areapick-hint,
+  .areapick-window-hover {
+    animation: none;
+    transition: none;
+  }
+}

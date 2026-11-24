@@ -2,6 +2,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent 
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../ui/Icon";
 import { useAgent, type ChatItem } from "../store/agent";
+import { useArea } from "../store/area";
 import { useIsland } from "../store/island";
 import { usePrefs } from "../store/prefs";
 import {
@@ -17,7 +18,7 @@ import { MissionPlanCard } from "./MissionPlanCard";
 import { RoutinesBar } from "./RoutinesBar";
 import { LiveAudioBars, WsIcon } from "./WorkspaceIcons";
 import { JobsStrip } from "../island/views/JobsStrip";
-import { toggleVoice } from "../store/voice";
+import { toggleVoice, useVoice } from "../store/voice";
 import "./workspace.css";
 
 const PHASE_LABEL = { thinking: "Думает", acting: "Выполняет", verifying: "Проверяет" } as const;
@@ -40,7 +41,12 @@ function Composer({ visible }: { visible: boolean }) {
   const send = useAgent((s) => s.send);
   const cancel = useAgent((s) => s.cancel);
   const attachments = useIsland((s) => s.pendingAttachments);
+  const areaVoiceInvited = useIsland((s) => s.areaVoiceInvited);
   const setIsland = useIsland((s) => s.set);
+  const pendingArea = useArea((s) => s.pending);
+  const clearArea = useArea((s) => s.clear);
+  const voiceState = useVoice((s) => s.state);
+  const listeningInChat = voiceState === "listening" || voiceState === "hearing" || voiceState === "connecting";
 
   useEffect(() => {
     if (!visible) return;
@@ -51,7 +57,7 @@ function Composer({ visible }: { visible: boolean }) {
       window.cancelAnimationFrame(id);
       window.removeEventListener("jarvis:input-ready", focus);
     };
-  }, [visible]);
+  }, [visible, pendingArea?.id]);
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -60,9 +66,19 @@ function Composer({ visible }: { visible: boolean }) {
     el.style.height = `${Math.min(el.scrollHeight, 104)}px`;
   }, [text]);
 
+  const stopInvitedVoice = () => {
+    if (areaVoiceInvited) {
+      setIsland({ areaVoiceInvited: false });
+      if (hasTauri() && listeningInChat) {
+        void invoke("voice_stop");
+      }
+    }
+  };
+
   const submit = () => {
     const t = text.trim();
     if (!t || active) return;
+    stopInvitedVoice();
     void send(t, attachments.map((a) => a.path));
     setText("");
     setIsland({ pendingAttachments: [] });
@@ -77,8 +93,30 @@ function Composer({ visible }: { visible: boolean }) {
 
   return (
     <div className="composer">
-      {attachments.length > 0 && (
+      {(pendingArea || attachments.length > 0) && (
         <div className="attachments">
+          {pendingArea && (
+            <span
+              className="chip chip-area"
+              title={
+                pendingArea.windowTitle
+                  ? `${pendingArea.windowTitle} · ${pendingArea.width}×${pendingArea.height}`
+                  : `Область экрана ${pendingArea.width}×${pendingArea.height}`
+              }
+            >
+              <img className="chip-area-thumb" src={pendingArea.thumbDataUrl} alt="" />
+              <span className="chip-area-text">
+                Область {pendingArea.width}×{pendingArea.height}
+              </span>
+              <button
+                type="button"
+                aria-label="Убрать область"
+                onClick={() => void clearArea()}
+              >
+                <Icon name="close" size={11} />
+              </button>
+            </span>
+          )}
           {attachments.map((a) => (
             <span key={a.path} className="chip" title={a.path}>
               <Icon name="file" size={13} />
@@ -99,12 +137,24 @@ function Composer({ visible }: { visible: boolean }) {
           ref={ref}
           rows={1}
           value={text}
-          placeholder="Вопрос или задача для Джарвиса…"
-          onChange={(e) => setText(e.target.value)}
+          placeholder={pendingArea ? "Что спросить про эту область?" : "Вопрос или задача для Джарвиса…"}
+          onChange={(e) => {
+            if (e.target.value.length > 0) stopInvitedVoice();
+            setText(e.target.value);
+          }}
           onKeyDown={onKey}
           spellCheck
         />
-        <button type="button" className="mic-btn" onClick={() => void toggleVoice()} aria-label="Голосовой режим" title="Голосовой режим">
+        <button
+          type="button"
+          className={`mic-btn${listeningInChat ? " is-listening" : ""}`}
+          onClick={() => {
+            setIsland({ areaVoiceInvited: false });
+            void toggleVoice();
+          }}
+          aria-label={listeningInChat ? "Слушаю — нажмите, чтобы выключить" : "Голосовой режим"}
+          title={listeningInChat ? "Слушаю — можно говорить или печатать" : "Голосовой режим"}
+        >
           <Icon name="mic" size={16} />
         </button>
         {active ? (
@@ -426,8 +476,16 @@ export const WorkspaceView = memo(function WorkspaceView({ visible = true }: { v
                 return (
                   <div key={it.id} className="msg-user">
                     <div className="bubble">{it.text}</div>
-                    {it.attachments.length > 0 && (
+                    {(it.area || it.attachments.length > 0) && (
                       <div className="msg-attachments">
+                        {it.area && (
+                          <span className="chip chip-area is-sent" title={`Область ${it.area.width}×${it.area.height}`}>
+                            <img className="chip-area-thumb" src={it.area.thumbDataUrl} alt="" />
+                            <span className="chip-area-text">
+                              Область {it.area.width}×{it.area.height}
+                            </span>
+                          </span>
+                        )}
                         {it.attachments.map((p) => (
                           <span key={p} className="chip" title={p}>
                             <Icon name="file" size={12} />

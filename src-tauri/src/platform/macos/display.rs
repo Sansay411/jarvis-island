@@ -22,10 +22,14 @@ pub fn monitor_for_window(hwnd: HWND) -> Option<MonitorInfo> {
 pub fn monitor_for_point(x: i32, y: i32) -> Option<MonitorInfo> {
     nearest(list_monitors(), x as f64, y as f64)
 }
-pub fn monitor_for_cursor() -> Option<MonitorInfo> {
+pub fn cursor_position() -> Option<(i32, i32)> {
     let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok()?;
     let point = CGEvent::new(source).ok()?.location();
-    monitor_for_point(point.x.round() as i32, point.y.round() as i32)
+    Some((point.x.round() as i32, point.y.round() as i32))
+}
+pub fn monitor_for_cursor() -> Option<MonitorInfo> {
+    let (x, y) = cursor_position()?;
+    monitor_for_point(x, y)
 }
 pub fn list_monitors() -> Vec<MonitorInfo> {
     let ids = CGDisplay::active_displays().unwrap_or_default();

@@ -11,7 +11,7 @@ use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Shell::{
     SHQueryUserNotificationState, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetForegroundWindow, GetWindowRect, MONITORINFOF_PRIMARY};
+use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowRect, MONITORINFOF_PRIMARY};
 
 use super::from_wide;
 
@@ -55,6 +55,19 @@ pub fn monitor_for_window(hwnd: HWND) -> Option<MonitorInfo> {
 
 pub fn monitor_for_point(x: i32, y: i32) -> Option<MonitorInfo> {
     unsafe { info_for(MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST)) }
+}
+
+/// Current mouse cursor position in physical virtual-screen pixels.
+pub fn cursor_position() -> Option<(i32, i32)> {
+    let mut pt = POINT::default();
+    unsafe { GetCursorPos(&mut pt).ok()? };
+    Some((pt.x, pt.y))
+}
+
+/// Monitor currently containing the mouse cursor.
+pub fn monitor_for_cursor() -> Option<MonitorInfo> {
+    let (x, y) = cursor_position()?;
+    monitor_for_point(x, y)
 }
 
 pub fn list_monitors() -> Vec<MonitorInfo> {

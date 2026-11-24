@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Permissions for the JARVIS island and settings windows",
-  "windows": ["island", "settings", "planner", "reset"],
+  "windows": ["island", "settings", "planner", "reset", "areapick"],
   "permissions": [
     "core:default",
     "core:window:allow-show",

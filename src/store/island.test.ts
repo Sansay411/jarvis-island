@@ -57,3 +57,30 @@ describe("inline input Escape", () => {
     expect(resolveMode(useIsland.getState())).toBe("compact");
   });
 });
+
+describe("area pick invited voice", () => {
+  it("keeps workspace visible while voice is auto-listening for a picked area", () => {
+    expect(
+      resolveMode({
+        hovered: false,
+        dragOver: false,
+        workspaceOpen: true,
+        voiceOpen: true,
+        clipsOpen: false,
+        inputFocused: false,
+        areaVoiceInvited: true,
+      }),
+    ).toBe("workspace");
+    expect(
+      resolveMode({
+        hovered: false,
+        dragOver: false,
+        workspaceOpen: true,
+        voiceOpen: true,
+        clipsOpen: false,
+        inputFocused: false,
+        areaVoiceInvited: false,
+      }),
+    ).toBe("voice");
+  });
+});

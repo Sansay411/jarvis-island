@@ -156,6 +156,17 @@ pub fn list_windows() -> Vec<WindowInfo> {
 pub fn foreground_window() -> Option<WindowInfo> {
     list_windows().into_iter().find(|w| w.foreground)
 }
+pub fn list_visible_windows_with_frames() -> Vec<WindowInfo> {
+    list_windows()
+        .into_iter()
+        .filter(|w| w.state != "minimized" && w.rect.width > 0 && w.rect.height > 0)
+        .collect()
+}
+pub fn window_at_point(x: i32, y: i32) -> Option<WindowInfo> {
+    list_visible_windows_with_frames().into_iter().find(|w| {
+        x >= w.rect.x && y >= w.rect.y && x < w.rect.x + w.rect.width && y < w.rect.y + w.rect.height
+    })
+}
 
 const AX_ACTION: &str = r#"
 const se = Application('System Events');

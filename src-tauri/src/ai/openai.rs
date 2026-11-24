@@ -147,6 +147,19 @@ struct PartialCall {
     args: String,
 }
 
+fn looks_like_vision_unsupported(detail: &str) -> bool {
+    let d = detail.to_lowercase();
+    let mentions_image = d.contains("image_url") || d.contains("image") || d.contains("vision") || d.contains("multimodal");
+    let mentions_reject = d.contains("not support")
+        || d.contains("unsupported")
+        || d.contains("does not accept")
+        || d.contains("cannot process")
+        || d.contains("unknown variant")
+        || d.contains("expected a string")
+        || d.contains("invalid content type");
+    mentions_image && mentions_reject
+}
+
 fn error_from_response(status: reqwest::StatusCode, body: &str, model: &str) -> AppError {
     let parsed: Option<Value> = serde_json::from_str(body).ok();
     let detail = parsed
@@ -154,6 +167,11 @@ fn error_from_response(status: reqwest::StatusCode, body: &str, model: &str) -> 
         .and_then(|v| v.pointer("/error/message").or_else(|| v.get("message")))
         .and_then(Value::as_str)
         .map(|s| s.chars().take(300).collect::<String>());
+    if matches!(status.as_u16(), 400 | 422) && detail.as_deref().is_some_and(looks_like_vision_unsupported) {
+        return AppError::Unsupported(format!(
+            "Модель «{model}» не поддерживает изображения. Укажите модель с поддержкой изображений в Настройках → Модель → «Модель для изображений»."
+        ));
+    }
     match status.as_u16() {
         401 | 403 => AppError::Provider(
             "Провайдер отклонил API-ключ. Проверьте ключ и регион (ключи Model Studio привязаны к региону).".into(),
@@ -748,6 +766,13 @@ mod tests {
         assert!(!e.to_string().contains("sk-123"));
         let e = error_from_response(reqwest::StatusCode::NOT_FOUND, "{\"error\":{\"message\":\"model not found\"}}", "qwen-x");
         assert!(e.to_string().contains("qwen-x"));
+        let e = error_from_response(
+            reqwest::StatusCode::BAD_REQUEST,
+            "{\"error\":{\"message\":\"Model deepseek-chat does not support image_url content\"}}",
+            "deepseek-chat",
+        );
+        assert!(matches!(e, AppError::Unsupported(_)));
+        assert!(e.to_string().contains("Модель для изображений"));
     }
 }
 

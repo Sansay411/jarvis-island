@@ -465,9 +465,18 @@ impl Pipeline {
     }
 
     /// The user was asked for the command (or opened the conversation
-    /// themselves): whatever they say next is it.
+    /// themselves, or has an attached screen area waiting for their question):
+    /// whatever they say next is it.
     fn invite_open(&self) -> bool {
-        !self.turn_active && self.invite_until.is_some_and(|t| Instant::now() < t)
+        if self.turn_active {
+            return false;
+        }
+        let has_area = self
+            .vm
+            .app
+            .try_state::<Arc<crate::area::AreaManager>>()
+            .is_some_and(|a| a.has_pending());
+        has_area || self.invite_until.is_some_and(|t| Instant::now() < t)
     }
 
     /// «Слушаю» (or a greeting back) after the bare name.

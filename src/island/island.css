@@ -2795,6 +2795,52 @@
   animation: timer-urgent 1s var(--ease-out) infinite;
 }
 
+.voice-area-chip {
+  align-self: center;
+  height: 26px;
+  margin-top: 8px;
+  padding: 0 5px 0 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 178, 63, 0.11);
+  box-shadow: inset 0 0 0 1px rgba(255, 178, 63, 0.4);
+  font-size: var(--fs-11);
+  color: var(--amber-hi);
+}
+.voice-area-thumb {
+  width: 24px;
+  height: 18px;
+  border-radius: 999px;
+  object-fit: cover;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14);
+  flex: none;
+}
+.voice-area-label {
+  font-weight: 560;
+  white-space: nowrap;
+}
+.voice-area-dims {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.voice-area-clear {
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--text-2);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.voice-area-clear:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-1);
+}
+
 .voice-confirm {
   margin: 8px 14px 0;
   padding: 6px 6px 6px 12px;

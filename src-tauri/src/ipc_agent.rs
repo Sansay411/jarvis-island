@@ -101,6 +101,7 @@ pub fn settings_save(app: AppHandle, state: State<'_, AppState>, settings: Setti
     if old.shortcuts.workspace != settings.shortcuts.workspace
         || old.shortcuts.voice != settings.shortcuts.voice
         || old.shortcuts.clipboard != settings.shortcuts.clipboard
+        || old.shortcuts.area != settings.shortcuts.area
     {
         crate::shortcuts::apply(&app, &settings.shortcuts);
     }
