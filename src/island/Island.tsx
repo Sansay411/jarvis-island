@@ -17,6 +17,7 @@ import { useHub } from "../store/hub";
 import { useTts } from "../store/tts";
 import { BROW_H, CANVAS_W, bottomRadius, dimsFor, notchLayout, notchPath, shapeRect, shoulderFor, type IslandMode, type NotchGeometry } from "./geometry";
 import { Eyes, type EyeMood } from "./Eyes";
+import { skinCssVars } from "./skins/types";
 import { CompactView } from "./views/CompactView";
 import { PeekView } from "./views/PeekView";
 import { DropView } from "./views/DropView";
@@ -315,6 +316,7 @@ export function Island() {
   const refreshControls = useSystem((s) => s.refreshControls);
   const agentMood = useAgentMood();
   const reduced = useReducedMotion() || usePrefs((p) => p.reduceMotion);
+  const skin = usePrefs((p) => p.skin);
 
   const filesOpen = useFiles((s) => s.open);
   const filesH = useFiles((s) => s.height);
@@ -511,7 +513,7 @@ export function Island() {
     // timeline — washing half the deck in it read as a smear (2026-11-21).
     if (lip || mode === "compact") return "none";
     if (ttsSpeaking || mode === "voice" || missionActive) {
-      return "radial-gradient(46% 14% at 50% 100%, rgba(255, 178, 63, 0.16) 0%, rgba(255, 178, 63, 0.04) 60%, transparent 100%)";
+      return "radial-gradient(46% 14% at 50% 100%, rgba(var(--skin-rgb, 255, 178, 63), 0.16) 0%, rgba(var(--skin-rgb, 255, 178, 63), 0.04) 60%, transparent 100%)";
     }
     return "none";
   }, [lip, mode, ttsSpeaking, missionActive]);
@@ -527,7 +529,13 @@ export function Island() {
   return (
     <div
       className={`stage${notch.hasNotch ? " has-notch" : ""}${st.visible ? "" : " is-hidden"}${withMedia && media?.status === "playing" ? " is-music" : ""}`}
-      style={{ ["--art" as string]: artworkRgb ?? "236, 235, 230", ["--notch-width" as string]: `${notch.exclusion}px`, ["--compact-height" as string]: `${dims.h}px` }}
+      data-skin={skin}
+      style={{
+        ...skinCssVars(skin),
+        ["--art" as string]: artworkRgb ?? "236, 235, 230",
+        ["--notch-width" as string]: `${notch.exclusion}px`,
+        ["--compact-height" as string]: `${dims.h}px`,
+      }}
     >
       <motion.div
         className="island"

@@ -221,3 +221,34 @@ impl Registry {
 pub fn object(props: Value, required: &[&str]) -> Value {
     json!({ "type": "object", "properties": props, "required": required, "additionalProperties": false })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_builtin_tool_is_mapped_in_frontend_emote_table() {
+        let src = include_str!("../../../src/store/emote.ts");
+        let tools = system::tools()
+            .into_iter()
+            .chain(apps::tools())
+            .chain(files::tools())
+            .chain(shell::tools())
+            .chain(memory::tools())
+            .chain(screen::tools())
+            .chain(dev::tools())
+            .chain(browser::tools())
+            .chain(web::tools())
+            .chain(weather::tools())
+            .chain(file_actions::tools())
+            .chain(reminders::tools())
+            .chain(clipboard_history::tools())
+            .chain(executive::tools())
+            .chain(planner::tools());
+        let missing: Vec<&str> = tools
+            .map(|t| t.name)
+            .filter(|name| !src.contains(&format!("{name}:")))
+            .collect();
+        assert!(missing.is_empty(), "Tools missing from TOOL_ACTIVITY in src/store/emote.ts: {missing:?}");
+    }
+}

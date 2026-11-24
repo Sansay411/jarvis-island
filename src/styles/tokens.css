@@ -30,6 +30,13 @@
   --amber-lo: #e2861c;
   --amber-glow: rgba(255, 178, 63, 0.5);
 
+  /* Active skin presence accent (defaults match Amber pixel for pixel) */
+  --skin-accent: var(--amber);
+  --skin-accent-hi: var(--amber-hi);
+  --skin-accent-lo: var(--amber-lo);
+  --skin-glow: var(--amber-glow);
+  --skin-rgb: 255, 178, 63;
+
   /* The island is monochrome: bone for the user's own primary actions and
      selections, amber for JARVIS and for what is live right now. No blue,
      no rainbow task colours (removed 2026-11-18 as noise). */

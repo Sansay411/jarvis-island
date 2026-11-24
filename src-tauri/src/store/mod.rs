@@ -425,9 +425,22 @@ mod tests {
         let s = Store::in_memory().unwrap();
         let mut cfg = s.settings();
         assert_eq!(cfg.provider.model, "deepseek-flash");
+        assert_eq!(cfg.appearance.skin, "amber");
         cfg.provider.model = "qwen3.8-max".into();
+        cfg.appearance.skin = "orb".into();
         s.save_settings(&cfg).unwrap();
-        assert_eq!(s.settings().provider.model, "qwen3.8-max");
+        let loaded = s.settings();
+        assert_eq!(loaded.provider.model, "qwen3.8-max");
+        assert_eq!(loaded.appearance.skin, "orb");
+    }
+
+    #[test]
+    fn settings_saved_before_appearance_default_to_amber_skin() {
+        let s = Store::in_memory().unwrap();
+        s.kv_set("settings", r#"{"persona":{"userName":"Павел","style":"warm"}}"#).unwrap();
+        let cfg = s.settings();
+        assert_eq!(cfg.appearance.skin, "amber");
+        assert_eq!(cfg.persona.user_name, "Павел");
     }
 
     #[test]

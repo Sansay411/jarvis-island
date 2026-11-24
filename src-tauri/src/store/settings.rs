@@ -282,6 +282,20 @@ impl Default for PersonaSettings {
     }
 }
 
+/// Visual look of JARVIS's eyes and matching island accent (Settings → Характер).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AppearanceSettings {
+    /// "amber", "orb", "ice", "pixel" or "minimal".
+    pub skin: String,
+}
+
+impl Default for AppearanceSettings {
+    fn default() -> Self {
+        AppearanceSettings { skin: "amber".into() }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct UpdateSettings {
@@ -418,6 +432,7 @@ pub struct Settings {
     pub provider: ProviderSettings,
     pub voice: VoiceSettings,
     pub persona: PersonaSettings,
+    pub appearance: AppearanceSettings,
     pub shortcuts: ShortcutSettings,
     pub privacy: PrivacySettings,
     pub clipboard: ClipboardSettings,

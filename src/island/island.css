@@ -218,7 +218,7 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--amber);
+  background: var(--skin-accent);
 }
 .deck-tab-dot.is-paused {
   background: var(--text-3);
@@ -259,8 +259,8 @@
   background: var(--graphite-3);
 }
 .brow-live-pill.is-tts {
-  color: var(--amber);
-  box-shadow: inset 0 0 0 1px rgba(255, 178, 63, 0.35);
+  color: var(--skin-accent);
+  box-shadow: inset 0 0 0 1px rgba(var(--skin-rgb), 0.35);
   padding: 0 8px;
 }
 .brow-audio-title {
@@ -399,16 +399,16 @@
   height: 21px;
   padding: 0 7px;
   border-radius: var(--r-pill);
-  background: rgba(255, 178, 63, 0.14);
-  box-shadow: inset 0 0 0 1px rgba(255, 178, 63, 0.36);
-  color: var(--amber);
+  background: rgba(var(--skin-rgb), 0.14);
+  box-shadow: inset 0 0 0 1px rgba(var(--skin-rgb), 0.36);
+  color: var(--skin-accent);
   display: inline-flex;
   align-items: center;
   gap: 5px;
   transition: background var(--dur-fast) var(--ease-out);
 }
 .compact-tts-stop:hover {
-  background: rgba(255, 178, 63, 0.24);
+  background: rgba(var(--skin-rgb), 0.24);
 }
 .compact-focus-ring {
   display: inline-grid;
@@ -481,7 +481,7 @@
   height: 6px;
 }
 .eq-bars.tone-amber .eq-bar {
-  background: var(--amber);
+  background: var(--skin-accent);
 }
 .eq-bars.tone-cobalt .eq-bar {
   background: var(--cobalt-hi);
@@ -491,7 +491,7 @@
   animation: eq-bounce 1.05s ease-in-out infinite;
 }
 .eq-bars.tone-amber.is-playing .eq-bar {
-  background: var(--amber);
+  background: var(--skin-accent);
 }
 .eq-bars.is-playing .eq-bar.b1 {
   animation-delay: 0ms;
@@ -2597,8 +2597,8 @@
   height: 12px;
   flex: none;
   border-radius: 50%;
-  border: 1.6px solid rgba(255, 178, 63, 0.22);
-  border-top-color: var(--amber);
+  border: 1.6px solid rgba(var(--skin-rgb), 0.22);
+  border-top-color: var(--skin-accent);
   animation: spin 1.1s linear infinite;
 }
 @keyframes spin {
@@ -2692,8 +2692,8 @@
   background: var(--text-2);
 }
 .wings.is-speaking .wing-bar {
-  background: var(--amber);
-  box-shadow: 0 0 6px var(--amber-glow);
+  background: var(--skin-accent);
+  box-shadow: 0 0 6px var(--skin-glow);
 }
 .wings.is-thinking .wing-bar {
   background: var(--text-3);
@@ -3034,7 +3034,7 @@
   stroke: var(--graphite-4);
 }
 .timer-ring-fill {
-  stroke: var(--amber);
+  stroke: var(--skin-accent);
   stroke-linecap: round;
   transition: stroke-dashoffset 250ms linear;
 }
@@ -4220,7 +4220,7 @@
   background: var(--text-1);
 }
 .wings.is-speaking .wing-bar {
-  background: var(--amber);
+  background: var(--skin-accent);
   box-shadow: none;
 }
 .wings.is-thinking .wing-bar {
