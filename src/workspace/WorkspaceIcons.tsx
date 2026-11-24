@@ -90,6 +90,12 @@ const glyphs = {
       <circle cx="10" cy="10.5" r="1.2" fill="currentColor" stroke="none" />
     </>
   ),
+  repeat: (
+    <>
+      <path d="M15.8 11a6 6 0 1 1-1.7-5.2" />
+      <path d="M15.4 3.4v3.4H12" />
+    </>
+  ),
 } as const;
 
 export type WsIconName = keyof typeof glyphs;

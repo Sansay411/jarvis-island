@@ -999,6 +999,28 @@
   color: var(--text-3);
   flex: none;
 }
+.agenda-repeat {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 112px;
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  background: var(--graphite-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text-2);
+  font-size: 9.5px;
+  flex: none;
+}
+.agenda-repeat svg {
+  flex: none;
+  color: var(--text-3);
+}
+.agenda-repeat span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .week-quick-add {
   height: 26px;
@@ -3161,6 +3183,34 @@
 .notice-more {
   color: var(--text-3);
   font-size: var(--fs-11);
+}
+.notice-repeat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 210px;
+  padding: 2px 7px;
+  border-radius: var(--r-pill);
+  background: var(--graphite-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text-2);
+  font-size: var(--fs-11);
+}
+.notice-repeat svg {
+  flex: none;
+  color: var(--text-3);
+}
+.notice-repeat span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.notice-stop {
+  margin-right: auto;
+  color: var(--text-3);
+}
+.notice-stop:hover {
+  color: var(--danger);
 }
 .notice-body {
   display: flex;

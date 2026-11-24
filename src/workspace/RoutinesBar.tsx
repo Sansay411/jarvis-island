@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 import { useAgent } from "../store/agent";
 import { usePrefs } from "../store/prefs";
+import { formatNextDue, reminderCancel, useScheduledJobs, type Reminder } from "../store/reminders";
 import { useWorkspaceRoutines, workspaceIpc, type RoutineItem } from "../lib/workspace-ipc";
 import { routineIconName, WsIcon } from "./WorkspaceIcons";
 
@@ -21,6 +22,41 @@ const ICON_OPTIONS = [
 const SPEAK_SELECTION_PROMPT =
   "Захвати выделенный текст в активном окне через selection_grab и озвучь его вслух через speak_aloud.";
 
+function ScheduledList({ jobs, compact = false }: { jobs: Reminder[]; compact?: boolean }) {
+  if (jobs.length === 0) return null;
+  return (
+    <div className={`scheduled-box${compact ? " is-compact" : ""}`} aria-label="Задачи по расписанию">
+      <div className="scheduled-head">
+        <WsIcon name="repeat" size={11} className="scheduled-head-icon" />
+        <span>По расписанию</span>
+        <span className="scheduled-count">{jobs.length}</span>
+      </div>
+      <div className="scheduled-list">
+        {jobs.map((job) => (
+          <div key={job.id} className="scheduled-row">
+            <div className="scheduled-main">
+              <span className="scheduled-text" title={job.text}>{job.text}</span>
+              <span className="scheduled-meta">
+                {job.repeatLabel && <span className="scheduled-rule">{job.repeatLabel}</span>}
+                <span className="scheduled-next">след. {formatNextDue(job.dueAt)}</span>
+              </span>
+            </div>
+            <button
+              type="button"
+              className="scheduled-cancel"
+              aria-label={`Отменить задачу «${job.text}»`}
+              title="Остановить серию"
+              onClick={() => void reminderCancel(job.id)}
+            >
+              <WsIcon name="close" size={11} />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function RoutinesBar({ variant = "empty" }: { variant?: "empty" | "strip" }) {
   const routines = useWorkspaceRoutines((s) => s.routines);
   const loaded = useWorkspaceRoutines((s) => s.loaded);
@@ -29,8 +65,10 @@ export function RoutinesBar({ variant = "empty" }: { variant?: "empty" | "strip"
   const activeTurn = useAgent((s) => s.activeTurn);
   const send = useAgent((s) => s.send);
   const fullControl = usePrefs((s) => s.fullControl);
+  const scheduled = useScheduledJobs();
 
   const [creating, setCreating] = useState(false);
+  const [showScheduled, setShowScheduled] = useState(false);
   const [title, setTitle] = useState("");
   const [subtitle, setSubtitle] = useState("");
   const [icon, setIcon] = useState<string>("bolt");
@@ -102,6 +140,17 @@ export function RoutinesBar({ variant = "empty" }: { variant?: "empty" | "strip"
             <WsIcon name="selection" size={12} />
             <span>Озвучить выделенное</span>
           </button>
+          {scheduled.length > 0 && (
+            <button
+              type="button"
+              className={`routine-chip${showScheduled ? " is-open" : ""}`}
+              title="Регулярные задачи по расписанию"
+              onClick={() => setShowScheduled((v) => !v)}
+            >
+              <WsIcon name="repeat" size={11} className="routine-chip-icon" />
+              <span>По расписанию · {scheduled.length}</span>
+            </button>
+          )}
           <button
             type="button"
             className={`routine-chip is-add${creating ? " is-open" : ""}`}
@@ -112,6 +161,8 @@ export function RoutinesBar({ variant = "empty" }: { variant?: "empty" | "strip"
             <span>{creating ? "Закрыть" : "Сценарий"}</span>
           </button>
         </div>
+
+        {showScheduled && <ScheduledList jobs={scheduled} compact />}
 
         {creating && (
           <div className="routine-inline-form">
@@ -238,6 +289,8 @@ export function RoutinesBar({ variant = "empty" }: { variant?: "empty" | "strip"
           <span>{creating ? "Отмена" : "Новый сценарий"}</span>
         </button>
       </div>
+
+      <ScheduledList jobs={scheduled} />
 
       {creating && (
         <div className="routine-inline-form">

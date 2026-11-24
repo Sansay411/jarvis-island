@@ -8,7 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../../ui/Icon";
 import { isTauri } from "../../lib/ipc";
 import { localDateIso, useHub } from "../../store/hub";
-import { reminderDone, useReminders } from "../../store/reminders";
+import { reminderCancel, reminderDone, useReminders } from "../../store/reminders";
 import { useTick } from "../../store/stopwatch";
 import { dayRows, eventsOn, focusable, inLabel, useAgenda, type AgendaRow } from "../../store/agenda";
 import { durationLabel, parseLocal } from "../../planner/dates";
@@ -214,14 +214,21 @@ export function WeekCalendar() {
                 <button
                   type="button"
                   className="task-ring ring-amber"
-                  aria-label="Завершить напоминание"
-                  onClick={() => void reminderDone(row.reminder.id)}
+                  aria-label={row.reminder.repeatLabel ? "Отменить серию напоминаний" : "Завершить напоминание"}
+                  title={row.reminder.repeatLabel ? `Отменить серию (${row.reminder.repeatLabel})` : "Завершить напоминание"}
+                  onClick={() => void (row.reminder.repeatLabel ? reminderCancel(row.reminder.id) : reminderDone(row.reminder.id))}
                 >
-                  <Icon name="check" size={10} />
+                  <Icon name={row.reminder.repeatLabel ? "close" : "check"} size={10} />
                 </button>
                 <span className="agenda-title" title={row.reminder.text}>
                   {row.reminder.text || "Напоминание"}
                 </span>
+                {row.reminder.repeatLabel && (
+                  <span className="agenda-repeat" title={`${row.reminder.repeatLabel} · след. ${row.time}`}>
+                    <Icon name="restart" size={10} />
+                    <span>{row.reminder.repeatLabel}</span>
+                  </span>
+                )}
                 <span className="agenda-time">{row.time}</span>
               </div>
             ),

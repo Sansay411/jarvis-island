@@ -35,6 +35,7 @@ mod ipc_agent;
 pub mod planner;
 pub mod platform;
 pub mod reminders;
+pub mod repeat;
 pub mod stopwatch;
 pub mod telegram;
 mod shortcuts;
@@ -391,6 +392,8 @@ pub fn run() {
             ipc_files::files_clear,
             ipc_files::reminders_list,
             ipc_files::reminder_done,
+            ipc_files::reminder_cancel,
+            ipc_files::reminder_skip,
             ipc_files::reminder_snooze,
             ipc_files::reminder_extend,
             ipc_files::stopwatch_get,
