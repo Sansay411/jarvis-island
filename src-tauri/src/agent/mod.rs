@@ -223,15 +223,12 @@ fn ext_of(p: &str) -> String {
     Path::new(p).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
 }
 
-/// What stays confirmed even in «Полное управление»: these tools are rated
-/// high only for pressing «Отправить», «Удалить», «Купить» (a click, a key
-/// in a messenger, a UI action) or for a destructive shell command — things
-/// that cannot be taken back or reach other people.
+/// Which high-risk tool calls still require confirmation in «Полное управление».
 fn still_confirmed(tool: &str, args: &Value) -> bool {
     // An MCP tool is high only when its server calls it destructive. Sending
     // a file to Telegram leaves the computer, so it is always asked about.
     // Installing a remote skill requires reviewing its preview every time.
-    matches!(tool, "input_key" | "input_click" | "ui_act" | "shell_run" | "connect_service" | "skill_install")
+    matches!(tool, "input_key" | "input_click" | "ui_act" | "shell_run" | "connect_service" | "skill_install" | "open_target")
         || tool.starts_with(crate::mcp::PREFIX)
         || (tool == "file_action" && args.get("action").and_then(Value::as_str) == Some("telegram"))
 }
@@ -1424,8 +1421,13 @@ impl Agent {
 
 #[cfg(test)]
 mod tests {
-    use super::{answer_dangling_calls, truncate_chars, NOT_EXECUTED};
+    use super::{answer_dangling_calls, still_confirmed, truncate_chars, NOT_EXECUTED};
     use crate::ai::types::{ChatMessage, Role, ToolCall};
+
+    #[test]
+    fn high_risk_open_target_stays_confirmed_in_full_control() {
+        assert!(still_confirmed("open_target", &serde_json::json!({"target": "C:\\tools\\setup.exe"})));
+    }
 
     #[test]
     fn calls_without_results_are_answered_not_executed() {
