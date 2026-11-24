@@ -40,7 +40,7 @@ export type ChatItem =
       /** Last lines of live output while running. */
       progress?: string[];
     }
-  | { kind: "notice"; id: string; tone: "error" | "info"; text: string };
+  | { kind: "notice"; id: string; tone: "error" | "info" | "warn"; text: string };
 
 export interface AgentStore {
   items: ChatItem[];
@@ -335,6 +335,9 @@ export function applyAgentEvent(ev: AgentEvent) {
       flashTimer = window.setTimeout(() => set({ flash: null }), 2200);
       break;
     }
+    case "notice":
+      set((s) => ({ items: [...s.items, { kind: "notice", id: uid(), tone: ev.tone, text: ev.text }] }));
+      break;
     case "turnFinished":
     case "turn_done": {
       const status = ev.status ?? "completed";

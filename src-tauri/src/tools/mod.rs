@@ -154,28 +154,40 @@ pub struct ToolMeta {
     pub parallel_safe: bool,
 }
 
+fn builtin_tools() -> Vec<Tool> {
+    system::tools()
+        .into_iter()
+        .chain(apps::tools())
+        .chain(files::tools())
+        .chain(shell::tools())
+        .chain(memory::tools())
+        .chain(screen::tools())
+        .chain(dev::tools())
+        .chain(browser::tools())
+        .chain(web::tools())
+        .chain(weather::tools())
+        .chain(file_actions::tools())
+        .chain(reminders::tools())
+        .chain(clipboard_history::tools())
+        .chain(executive::tools())
+        .chain(planner::tools())
+        .chain(connect::tools())
+        .chain(skills::tools())
+        .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn builtin_specs() -> Vec<ToolSpec> {
+    builtin_tools()
+        .into_iter()
+        .map(|t| ToolSpec { name: t.name.to_string(), description: t.description.to_string(), parameters: t.schema })
+        .collect()
+}
+
 impl Registry {
     pub fn new(mcp: Arc<crate::mcp::Hub>) -> Self {
         let mut tools = BTreeMap::new();
-        for t in system::tools()
-            .into_iter()
-            .chain(apps::tools())
-            .chain(files::tools())
-            .chain(shell::tools())
-            .chain(memory::tools())
-            .chain(screen::tools())
-            .chain(dev::tools())
-            .chain(browser::tools())
-            .chain(web::tools())
-            .chain(weather::tools())
-            .chain(file_actions::tools())
-            .chain(reminders::tools())
-            .chain(clipboard_history::tools())
-            .chain(executive::tools())
-            .chain(planner::tools())
-            .chain(connect::tools())
-            .chain(skills::tools())
-        {
+        for t in builtin_tools() {
             tools.insert(t.name, t);
         }
         Registry { tools, mcp }

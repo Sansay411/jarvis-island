@@ -83,6 +83,14 @@ pub const PRESETS: &[ProviderPreset] = &[
         dashscope: false,
     },
     ProviderPreset {
+        id: "lmstudio",
+        label: "LM Studio (локально)",
+        base_url: "http://localhost:1234/v1",
+        default_model: "",
+        needs_key: false,
+        dashscope: false,
+    },
+    ProviderPreset {
         id: "custom",
         label: "Другой OpenAI-совместимый",
         base_url: "",
@@ -94,6 +102,12 @@ pub const PRESETS: &[ProviderPreset] = &[
 
 pub fn preset(id: &str) -> &'static ProviderPreset {
     PRESETS.iter().find(|p| p.id == id).unwrap_or(&PRESETS[0])
+}
+
+/// Presets that point at a user-hosted or local OpenAI-compatible server
+/// rather than a known cloud API.
+pub fn is_local_or_custom(preset_id: &str) -> bool {
+    matches!(preset_id, "ollama" | "lmstudio" | "custom")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

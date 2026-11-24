@@ -176,6 +176,13 @@ fn retryable(e: &AppError) -> bool {
     }
 }
 
+pub(crate) fn tool_wire_json(tools: &[ToolSpec]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|t| json!({ "type": "function", "function": { "name": t.name, "description": t.description, "parameters": t.parameters } }))
+        .collect()
+}
+
 impl OpenAiCompatible {
     pub fn supports_web(&self) -> bool {
         super::origin_of(&self.base_url) == "https://api.deepseek.com" || self.is_cloud()
@@ -284,10 +291,7 @@ impl OpenAiCompatible {
             "temperature": self.temperature,
         });
         if !tools.is_empty() {
-            body["tools"] = tools
-                .iter()
-                .map(|t| json!({ "type": "function", "function": { "name": t.name, "description": t.description, "parameters": t.parameters } }))
-                .collect();
+            body["tools"] = Value::Array(tool_wire_json(tools));
             // Qwen does not support tool_choice "required"; "auto" is the default.
             body["parallel_tool_calls"] = Value::Bool(true);
         }
