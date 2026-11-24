@@ -20,7 +20,7 @@ import { WeatherGlyph } from "./ui/WeatherGlyph";
 import { Group, Row, Segmented, Switch } from "./settings/controls";
 import { JarvisFace } from "./island/skins/JarvisFace";
 import { SKINS, type EyeMood, type SkinId } from "./island/skins/types";
-import type { Activity, Emote } from "./store/emote";
+import { DURATION as EMOTE_MS, type Activity, type Emote } from "./store/emote";
 import type { WeatherKind } from "./store/weather";
 import { groupTokens, parseIconNames, parseTokens, resolveToken, tokenKind, type Token } from "./specimen/parse";
 
@@ -621,6 +621,12 @@ function Face() {
   const [mood, setMood] = useState<EyeMood>("attentive");
   const [emote, setEmote] = useState<Emote | null>(null);
   const [seq, setSeq] = useState(0);
+  // Like the island, a one-shot emote clears itself once it has played.
+  useEffect(() => {
+    if (!emote) return;
+    const id = window.setTimeout(() => setEmote(null), EMOTE_MS[emote]);
+    return () => window.clearTimeout(id);
+  }, [emote, seq]);
   const [activity, setActivity] = useState<Activity | null>(null);
   const level = useDemoLevel(mood === "listening" || mood === "speaking");
   const props = [`skin="${skin}"`, `mood="${mood}"`, ...(mood === "listening" || mood === "speaking" ? ["level={audioLevel}"] : []), ...(activity ? [`activity="${activity}"`] : []), ...(emote ? [`emote="${emote}"`, "emoteSeq={seq}"] : [])];
