@@ -81,19 +81,20 @@ async fn explain_card(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
 
     crate::overlay::draw(&ctx.app, vec![item], !keep)?;
 
-    let summary = cards::card_summary(&spec);
+    // The model already has the card in its own call: echo only what it
+    // cannot know (what survived validation, where it went).
+    let kinds: Vec<&str> = spec.blocks.iter().map(cards::Block::kind).collect();
     let mut data = json!({
         "id": id,
-        "spec": spec,
+        "title": spec.title,
+        "blocks": kinds,
         "replaced": !keep,
+        "anchored": anchor.is_some(),
     });
-    if let Some(a) = anchor {
-        data["anchor"] = json!(a);
-    }
     if let Some(w) = anchor_warning {
         data["anchorWarning"] = json!(w);
     }
-    Ok(ToolOutput::ok(summary, data))
+    Ok(ToolOutput::ok(cards::card_summary(&spec), data))
 }
 
 async fn explain_clear(ctx: ToolCtx, _args: Value) -> AppResult<ToolOutput> {
@@ -122,7 +123,7 @@ fn card_schema() -> Value {
             "keep": { "type": "boolean", "description": "Set true to keep existing cards on screen; default false replaces them" },
             "anchor": {
                 "type": "object",
-                "description": "Optional screen region to place the card beside. Pass either {snapshot_id, element_id} from ui_inspect, {x, y, w?, h?, space: 'image', capture_id?} from screen_capture, or physical screen pixels {x, y, w?, h?, space: 'screen'}.",
+                "description": "Optional region the card is placed beside: {snapshot_id, element_id} of a ui_inspect element, {x, y, w?, h?, space: 'image', capture_id?} in screenshot pixels from screen_capture, or physical screen pixels {x, y, w?, h?, space: 'screen'}. Without it the card goes to the default corner.",
                 "properties": {
                     "x": { "type": "number" },
                     "y": { "type": "number" },
@@ -138,18 +139,18 @@ fn card_schema() -> Value {
                 "type": "array",
                 "minItems": 1,
                 "maxItems": 8,
-                "description": "1 to 8 visual blocks. Each object has `kind`:\n\
+                "description": "1 to 8 visual blocks, best 1 to 4. Write all texts in the user's language, short. Each object has `kind`:\n\
                     - text: {kind:'text', text} (short markdown: **bold**, *italic*, `code`, lists)\n\
                     - steps: {kind:'steps', items:[{title, note?}]}\n\
-                    - table: {kind:'table', headers:[...], rows:[[...]], highlightCol?}\n\
-                    - bars: {kind:'bars', title?, unit?, items:[{label, value, highlight?}]}\n\
+                    - table: {kind:'table', headers:[...], rows:[[...]] (<=12 rows, <=6 columns), highlightCol?: 0-based column to stress}\n\
+                    - bars: {kind:'bars', title?, unit?, items:[{label, value: number, highlight?}]} (<=10 bars)\n\
                     - line: {kind:'line', title?, unit?, xLabels:[...], series:[{name?, values:[...]}]}\n\
                     - timeline: {kind:'timeline', items:[{date, label, note?}]}\n\
-                    - flow: {kind:'flow', direction?:'lr'|'td', nodes:[{id, label, note?, tone?:'default'|'accent'|'muted'}], edges:[{from, to, label?}]}\n\
+                    - flow: {kind:'flow', direction?:'lr'|'td', nodes:[{id, label, note?, tone?:'default'|'accent'|'muted'}], edges:[{from: node id, to: node id, label?}]} (<=12 nodes, laid out automatically)\n\
                     - compare: {kind:'compare', columns:[{title, subtitle?, accent?, items:[{text, kind?:'pro'|'con'|'neutral'}]}]}\n\
-                    - math: {kind:'math', lines:[{expr, note?}], result?}\n\
+                    - math: {kind:'math', lines:[{expr, note?}], result?} (plain text maths: x^2, sqrt(x), <=, *; one transformation per line)\n\
                     - definition: {kind:'definition', term, meaning, example?}\n\
-                    - quiz: {kind:'quiz', question, options:[...], correct, explanation?}\n\
+                    - quiz: {kind:'quiz', question, options:[2-6 strings], correct: 0-based index of the right option, explanation?} (the user clicks an option and sees right/wrong locally)\n\
                     - callout: {kind:'callout', tone?:'idea'|'tip'|'warning', title?, text}\n\
                     - kv: {kind:'kv', items:[{key, value}]}",
                 "items": {
@@ -172,9 +173,10 @@ pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "explain_card",
-            description: "Show a compact visual explanation card next to what the user is reading (and inline in chat). \
-                Use whenever a diagram, table, chart, timeline, comparison, step list, worked formula, definition, or \
-                interactive quiz communicates faster than prose. Keep your spoken/text reply brief when showing a card.",
+            description: "Show a compact visual explanation card beside what the user is reading (also shown in the chat). \
+                Use when a picture explains faster than prose: a diagram of a process, a table, a chart, a timeline, a comparison, \
+                numbered steps, a worked formula, a definition or a one-question quiz. Pass `anchor` to place it next to the thing \
+                being explained. Keep the spoken/text reply to one or two sentences when a card is shown.",
             schema: card_schema(),
             risk: low,
             title: card_title,

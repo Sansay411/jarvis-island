@@ -8,6 +8,7 @@ import "@fontsource-variable/jetbrains-mono";
 import "./styles/tokens.css";
 import "./styles/base.css";
 import { CardView } from "./overlay/cards/CardView";
+import { normalizeCard } from "./overlay/cards/normalize";
 import type { CardSpec } from "./overlay/cards/types";
 
 interface DemoCard {
@@ -187,13 +188,14 @@ const DEMO_CARDS: DemoCard[] = [
         {
           kind: "math",
           lines: [
-            { expr: "2x² − 5x + 2 = 0", note: "исходное уравнение" },
-            { expr: "D = (−5)² − 4 · 2 · 2 = 25 − 16 = 9", note: "дискриминант" },
-            { expr: "√D = 3", note: "два вещественных корня" },
-            { expr: "x₁ = (5 + 3) / 4 = 2", note: "первый корень" },
-            { expr: "x₂ = (5 − 3) / 4 = 0.5", note: "второй корень" },
+            // Written the way the model types it: prettyMath sets it.
+            { expr: "2x^2 - 5x + 2 = 0", note: "исходное уравнение" },
+            { expr: "D = (-5)^2 - 4*2*2 = 25 - 16 = 9", note: "дискриминант" },
+            { expr: "sqrt(D) = 3", note: "два вещественных корня" },
+            { expr: "x_1 = (5 + 3)/4 = 2", note: "первый корень" },
+            { expr: "x_2 = (5 - 3)/4 = 0.5", note: "второй корень" },
           ],
-          result: "x₁ = 2,  x₂ = 0.5",
+          result: "x_1 = 2, x_2 = 0.5",
         },
         {
           kind: "quiz",
@@ -233,6 +235,19 @@ const DEMO_CARDS: DemoCard[] = [
         },
       ],
     },
+  },
+  {
+    id: "sloppy",
+    tag: "небрежный ответ модели → normalizeCard",
+    spec: normalizeCard({
+      heading: "Как устроен TLS",
+      blocks: JSON.stringify([
+        { type: "diagram", edges: ["Клиент -> Сервер: ClientHello", "Сервер -> Клиент: сертификат", "Клиент -> Ключи: обмен"] },
+        { type: "facts", items: [["Порт", 443], { label: "Версия", value: "1.3" }] },
+        { type: "chart", data: [{ name: "TLS 1.2", value: "2 RTT" }, { name: "TLS 1.3", value: "1 RTT", highlight: "true" }], unit: "RTT" },
+        { question: "Сколько обменов нужно TLS 1.3?", options: ["Один", "Два", "Три"], answer: "Один" },
+      ]),
+    })!,
   },
 ];
 

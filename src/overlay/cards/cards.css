@@ -1047,11 +1047,14 @@
 }
 
 .jcard-kv-key {
+  min-width: 0;
+  max-width: 48%;
   color: var(--text-3);
-  flex-shrink: 0;
+  word-break: break-word;
 }
 
 .jcard-kv-val {
+  min-width: 0;
   margin: 0;
   text-align: right;
   font-family: var(--font-mono);
@@ -1059,4 +1062,15 @@
   font-variant-numeric: tabular-nums;
   color: var(--text-1);
   word-break: break-word;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jcard,
+  .jcard * {
+    transition: none !important;
+  }
+
+  .jcard-close:active {
+    transform: none;
+  }
 }

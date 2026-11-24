@@ -312,6 +312,13 @@ impl Agent {
     pub fn history(&self) -> Vec<HistoryItem> {
         let conv = self.inner.lock().conversation_id.clone();
         let stored = self.state().store.messages(&conv).unwrap_or_default();
+        // Cards are rebuilt from the model's own `explain_card` arguments.
+        let card_args: HashMap<String, String> = stored
+            .iter()
+            .flat_map(|m| m.message.tool_calls.iter())
+            .filter(|c| c.name == "explain_card")
+            .map(|c| (c.id.clone(), c.arguments.clone()))
+            .collect();
         stored
             .into_iter()
             .filter_map(|m| {
@@ -324,16 +331,17 @@ impl Agent {
                         Some(HistoryItem { role: "assistant", text, tool_title: None, tool_ok: None, card: None, created_at: m.created_at })
                     }
                     Role::Tool => {
-                        let parsed = serde_json::from_str::<Value>(&text).ok();
-                        let summary = parsed
-                            .as_ref()
+                        let summary = serde_json::from_str::<Value>(&text)
+                            .ok()
                             .and_then(|v| v.get("summary").or_else(|| v.get("error")).and_then(Value::as_str).map(str::to_string))
                             .unwrap_or_default();
-                        let card = if m.tool_ok == Some(true) {
-                            parsed.as_ref().and_then(|v| v.get("data")).and_then(|d| d.get("spec")).cloned()
-                        } else {
-                            None
-                        };
+                        let card = m
+                            .message
+                            .tool_call_id
+                            .as_ref()
+                            .filter(|_| m.tool_ok == Some(true))
+                            .and_then(|id| card_args.get(id))
+                            .and_then(|args| crate::cards::card_json(args));
                         Some(HistoryItem { role: "tool", text: summary, tool_title: m.tool_title, tool_ok: m.tool_ok, card, created_at: m.created_at })
                     }
                     _ => None,
@@ -1146,11 +1154,7 @@ impl Agent {
         if risk >= Risk::Moderate {
             store.audit(Some(&turn.id), &tool.name, risk.as_str(), &args_text, "executed", Some(if ok { &summary } else { error.as_deref().unwrap_or(&summary) }));
         }
-        let card = if call.name == "explain_card" {
-            res.as_ref().ok().filter(|o| o.ok).and_then(|o| o.data.get("spec").cloned())
-        } else {
-            None
-        };
+        let card = if call.name == "explain_card" && ok { crate::cards::card_json(&call.arguments) } else { None };
         self.emit(AgentEvent::ToolFinished { turn_id: turn.id.clone(), call_id: call.id.clone(), ok, summary, error, card });
         res
     }

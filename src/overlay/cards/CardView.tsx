@@ -1,11 +1,13 @@
 // Interactive explanation card rendered both in the desktop overlay window
 // and inline inside the workspace chat transcript.
 
-import { memo, useEffect, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import { Icon } from "../../ui/Icon";
 import { Markdown } from "../../workspace/Markdown";
 import { BarsChart, FlowDiagram, LineChart } from "./Charts";
+import { prettyMath } from "./math";
+import { normalizeCard } from "./normalize";
 import type {
   Block,
   CalloutBlock,
@@ -22,6 +24,7 @@ import type {
 import "./cards.css";
 
 export interface CardViewProps {
+  /** Rendered as given after a defensive `normalizeCard` pass (idempotent). */
   spec: CardSpec;
   onClose?: () => void;
   /** Tighter surface for inline rendering inside the chat transcript. */
@@ -63,15 +66,17 @@ function TableView({ block }: { block: TableBlock }) {
   return (
     <div className="jcard-table-wrap">
       <table className="jcard-table">
-        <thead>
-          <tr>
-            {block.headers.map((h, ci) => (
-              <th key={ci} className={block.highlightCol === ci ? "is-hl" : undefined}>
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
+        {block.headers.some(Boolean) && (
+          <thead>
+            <tr>
+              {block.headers.map((h, ci) => (
+                <th key={ci} className={block.highlightCol === ci ? "is-hl" : undefined}>
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+        )}
         <tbody>
           {block.rows.map((row, ri) => (
             <tr key={ri}>
@@ -143,7 +148,7 @@ function MathView({ block }: { block: MathBlock }) {
       <div className="jcard-math-lines">
         {block.lines.map((line, i) => (
           <div key={i} className="jcard-math-line">
-            <code className="jcard-math-expr">{line.expr}</code>
+            <code className="jcard-math-expr">{prettyMath(line.expr)}</code>
             {line.note && <span className="jcard-math-note">{line.note}</span>}
           </div>
         ))}
@@ -151,7 +156,7 @@ function MathView({ block }: { block: MathBlock }) {
       {block.result && (
         <div className="jcard-math-result">
           <span className="jcard-math-result-label">Ответ</span>
-          <code className="jcard-math-result-val">{block.result}</code>
+          <code className="jcard-math-result-val">{prettyMath(block.result)}</code>
         </div>
       )}
     </div>
@@ -176,11 +181,6 @@ function DefinitionView({ block }: { block: DefinitionBlock }) {
 function QuizView({ block }: { block: QuizBlock }) {
   const [picked, setPicked] = useState<number | null>(null);
   const reduced = useReducedMotion();
-
-  useEffect(() => {
-    setPicked(null);
-  }, [block.question, block.correct]);
-
   const answered = picked !== null;
   const isRight = picked === block.correct;
 
@@ -222,6 +222,7 @@ function QuizView({ block }: { block: QuizBlock }) {
       {answered && (
         <motion.div
           className={`jcard-quiz-feedback ${isRight ? "is-ok" : "is-bad"}`}
+          role="status"
           initial={reduced ? false : { opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
           transition={reduced ? { duration: 0 } : { duration: 0.18, ease: EASE_OUT }}
@@ -294,7 +295,8 @@ function BlockView({ block }: { block: Block }) {
     case "definition":
       return <DefinitionView block={block} />;
     case "quiz":
-      return <QuizView block={block} />;
+      // A new question starts unanswered.
+      return <QuizView key={`${block.question}|${block.options.join("|")}`} block={block} />;
     case "callout":
       return <CalloutView block={block} />;
     case "kv":
@@ -302,8 +304,11 @@ function BlockView({ block }: { block: Block }) {
   }
 }
 
-export const CardView = memo(function CardView({ spec, onClose, compact = false }: CardViewProps) {
+export const CardView = memo(function CardView({ spec: input, onClose, compact = false }: CardViewProps) {
   const reduced = useReducedMotion();
+  // The overlay may hand over whatever arrived on the event bus.
+  const spec = useMemo(() => normalizeCard(input), [input]);
+  if (!spec) return null;
 
   return (
     <motion.section

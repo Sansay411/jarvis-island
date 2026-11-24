@@ -1066,6 +1066,7 @@
   color: #ffb3a9;
 }
 .tool-inline-card {
+  max-width: 460px;
   margin: 5px 0 4px;
 }
 

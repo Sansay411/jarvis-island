@@ -3,7 +3,8 @@
 
 import { useId, useMemo } from "react";
 import { motion, useReducedMotion } from "motion/react";
-import { layoutFlow } from "./flowLayout";
+import { edgeLabelWidth, layoutFlow } from "./flowLayout";
+import { niceScale } from "./scale";
 import type { BarsBlock, FlowBlock, LineBlock } from "./types";
 
 const NUM_FMT = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 });
@@ -49,6 +50,12 @@ function wrapSvgText(text: string, maxChars: number, maxLines: number): string[]
   return lines;
 }
 
+/** Cuts text to `maxChars` characters with an ellipsis. */
+function fitText(text: string, maxChars: number): string {
+  const chars = Array.from(text);
+  return chars.length <= maxChars ? text : `${chars.slice(0, Math.max(1, maxChars - 1)).join("").trimEnd()}…`;
+}
+
 export function BarsChart({ block }: { block: BarsBlock }) {
   const reduced = useReducedMotion();
   const uid = useId().replace(/[^a-zA-Z0-9]/g, "");
@@ -70,10 +77,9 @@ export function BarsChart({ block }: { block: BarsBlock }) {
 
   return (
     <div className="jcard-chart">
-      {(block.title || block.unit) && (
+      {block.title && (
         <div className="jcard-chart-head">
-          {block.title && <span className="jcard-chart-title">{block.title}</span>}
-          {block.unit && <span className="jcard-chart-unit">{block.unit}</span>}
+          <span className="jcard-chart-title">{block.title}</span>
         </div>
       )}
       <svg
@@ -110,24 +116,24 @@ export function BarsChart({ block }: { block: BarsBlock }) {
           const fillX = item.value >= 0 ? zeroX : Math.max(0, zeroX - fillW);
           const isAccent = hasExplicitHighlight ? !!item.highlight : true;
           const valText = block.unit ? `${fmtNum(item.value)} ${block.unit}` : fmtNum(item.value);
+          const labelChars = Math.max(6, Math.floor((width - Array.from(valText).length * 6.8 - 14) / 6.3));
 
           return (
             <g key={`${item.label}-${idx}`}>
               <text x={0} y={y + 12} className={`jcard-bar-label${isAccent && hasExplicitHighlight ? " is-accent" : ""}`}>
-                {item.label}
+                {fitText(item.label, labelChars)}
               </text>
               <text x={width} y={y + 12} textAnchor="end" className={`jcard-bar-val${isAccent && hasExplicitHighlight ? " is-accent" : ""}`}>
                 {valText}
               </text>
               <rect x={barX} y={trackY} width={barW} height={trackH} rx={4} className="jcard-bar-track" />
               <motion.rect
-                x={fillX}
                 y={trackY}
                 height={trackH}
                 rx={4}
                 fill={isAccent ? `url(#${gradId})` : "rgba(236, 235, 230, 0.36)"}
-                initial={reduced ? { width: fillW } : { width: 0 }}
-                animate={{ width: fillW }}
+                initial={reduced ? { width: fillW, x: fillX } : { width: 0, x: zeroX }}
+                animate={{ width: fillW, x: fillX }}
                 transition={reduced ? { duration: 0 } : { duration: 0.45, delay: idx * 0.045, ease: EASE_OUT }}
               >
                 <title>{`${item.label}: ${valText}`}</title>
@@ -140,7 +146,7 @@ export function BarsChart({ block }: { block: BarsBlock }) {
   );
 }
 
-const LINE_COLORS = ["var(--amber)", "var(--bone)", "var(--ok)", "#9aa8c2"] as const;
+const LINE_COLORS = ["var(--amber)", "var(--bone)", "var(--ok)", "var(--text-3)"] as const;
 
 export function LineChart({ block }: { block: LineBlock }) {
   const reduced = useReducedMotion();
@@ -148,12 +154,9 @@ export function LineChart({ block }: { block: LineBlock }) {
   const areaGrad = `jline-area-${uid}`;
 
   const allVals = block.series.flatMap((s) => s.values);
-  const rawMin = Math.min(...allVals);
-  const rawMax = Math.max(...allVals);
-  const padVal = rawMax === rawMin ? Math.max(1, Math.abs(rawMax) * 0.15) : (rawMax - rawMin) * 0.12;
-  const minY = rawMin >= 0 && rawMin - padVal < 0 ? 0 : rawMin - padVal;
-  const maxY = rawMax + padVal;
-  const spanY = maxY - minY || 1;
+  const scale = niceScale(Math.min(...allVals), Math.max(...allVals));
+  const minY = scale.min;
+  const spanY = scale.max - scale.min || 1;
 
   const W = 368;
   const H = 152;
@@ -168,12 +171,11 @@ export function LineChart({ block }: { block: LineBlock }) {
   const xAt = (i: number) => padL + (i / (nX - 1)) * plotW;
   const yAt = (v: number) => padT + (1 - (v - minY) / spanY) * plotH;
 
-  const ticks = [0, 0.5, 1].map((t) => ({
-    y: padT + (1 - t) * plotH,
-    label: fmtNum(minY + t * spanY),
-  }));
+  const ticks = scale.ticks.map((v) => ({ y: yAt(v), label: fmtNum(v) }));
 
   const labelStep = nX > 8 ? Math.ceil(nX / 6) : 1;
+  const shownLabels = Math.ceil(nX / labelStep);
+  const xLabelChars = Math.max(3, Math.floor(plotW / shownLabels / 6.2));
   const showLegend = block.series.length > 1 || block.series.some((s) => !!s.name);
 
   return (
@@ -231,7 +233,7 @@ export function LineChart({ block }: { block: LineBlock }) {
           const anchor = i === 0 ? "start" : i === nX - 1 ? "end" : "middle";
           return (
             <text key={i} x={xAt(i)} y={H - 6} textAnchor={anchor} className="jcard-axis-text">
-              {lbl}
+              {fitText(lbl, xLabelChars)}
             </text>
           );
         })}
@@ -304,7 +306,7 @@ export function FlowDiagram({ block }: { block: FlowBlock }) {
       <svg
         className="jcard-svg jcard-flow-svg"
         viewBox={`0 0 ${layout.width} ${layout.height}`}
-        style={{ maxHeight: 320 }}
+        style={{ width: layout.width, maxWidth: "100%" }}
         role="img"
         aria-label="Схема процесса"
       >
@@ -338,7 +340,7 @@ export function FlowDiagram({ block }: { block: FlowBlock }) {
             {edge.label && edge.labelPos && (
               <g transform={`translate(${edge.labelPos.x}, ${edge.labelPos.y})`}>
                 {(() => {
-                  const pillW = Math.min(130, Math.max(28, Array.from(edge.label).length * 5.6 + 12));
+                  const pillW = edgeLabelWidth(edge.label);
                   return (
                     <>
                       <rect
@@ -369,12 +371,8 @@ export function FlowDiagram({ block }: { block: FlowBlock }) {
           const totalTextH = labelLines.length * 14 + (noteLines.length > 0 ? 4 + noteLines.length * 12 : 0);
           const startY = node.y + (node.h - totalTextH) / 2 + 11;
 
-          const fill =
-            node.tone === "accent"
-              ? "rgba(255, 178, 63, 0.12)"
-              : node.tone === "muted"
-                ? "rgba(255, 255, 255, 0.025)"
-                : "rgba(255, 255, 255, 0.055)";
+          // Opaque fills: an edge passing behind a box never shows through its text.
+          const fill = node.tone === "accent" ? "#2a2015" : node.tone === "muted" ? "#121215" : "#1a1a1f";
           const stroke =
             node.tone === "accent"
               ? "rgba(255, 178, 63, 0.52)"

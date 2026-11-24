@@ -42,6 +42,11 @@ const LAYER_GAP_TD = 34;
 const LAYER_GAP_LR = 40;
 const LABEL_GAP_BONUS = 14;
 
+/** Width of the pill an edge label is drawn in (SVG units). */
+export function edgeLabelWidth(label: string): number {
+  return Math.round(Math.min(130, Math.max(28, Array.from(label).length * 5.6 + 12)));
+}
+
 /** Approximate box dimensions from label and optional sub-note length. */
 function measureNode(label: string, note: string | undefined, direction: FlowDirection): { w: number; h: number } {
   const maxW = direction === "lr" ? 132 : 176;
@@ -156,11 +161,28 @@ function cubicPoint(
   return { x: round1(x), y: round1(y) };
 }
 
-export function layoutFlow(block: FlowBlock): FlowLayout {
-  const nodesInput = block.nodes;
-  if (nodesInput.length === 0) {
+/** Widest diagram (SVG units = CSS px) that fits a card without shrinking. */
+export const FLOW_MAX_WIDTH = 384;
+
+/**
+ * Lays the flow out in its requested direction (or the one that suits its
+ * shape). When that comes out wider than `maxWidth` and the other direction
+ * would shrink less, the other one wins: the direction is a hint, legible
+ * text matters more.
+ */
+export function layoutFlow(block: FlowBlock, maxWidth: number = FLOW_MAX_WIDTH): FlowLayout {
+  if (block.nodes.length === 0) {
     return { direction: block.direction ?? "td", width: 0, height: 0, nodes: [], edges: [] };
   }
+  const first = layoutDirected(block, block.direction);
+  if (first.width <= maxWidth) return first;
+  const other = layoutDirected(block, first.direction === "lr" ? "td" : "lr");
+  const scale = (l: FlowLayout) => Math.min(1, maxWidth / Math.max(1, l.width));
+  return scale(other) > scale(first) + 0.05 ? other : first;
+}
+
+function layoutDirected(block: FlowBlock, requested: FlowDirection | undefined): FlowLayout {
+  const nodesInput = block.nodes;
 
   const indexOf = new Map<string, number>();
   const nodeIds: string[] = [];
@@ -223,8 +245,7 @@ export function layoutFlow(block: FlowBlock): FlowLayout {
   }
 
   const maxLayerSize = Math.max(...layers.map((l) => l.length));
-  const direction: FlowDirection =
-    block.direction ?? (layers.length <= 3 && maxLayerSize <= 3 ? "lr" : "td");
+  const direction: FlowDirection = requested ?? (layers.length <= 3 && maxLayerSize <= 3 ? "lr" : "td");
 
   const nodeById = new Map(nodesInput.map((n) => [n.id, n]));
   const sizes = new Map<string, { w: number; h: number }>();
@@ -233,16 +254,17 @@ export function layoutFlow(block: FlowBlock): FlowLayout {
     sizes.set(id, measureNode(n.label, n.note, direction));
   }
 
-  // Check if any edge crossing a gap between layer l and l+1 carries a label.
-  const gapHasLabel = new Array<boolean>(Math.max(0, layers.length - 1)).fill(false);
+  // Labels on edges leaving layer l sit in the gap after it: widest label per gap.
+  const gapLabelW = new Array<number>(Math.max(0, layers.length - 1)).fill(0);
   validEdges.forEach((e, idx) => {
     if (backEdges.has(idx) || !e.label) return;
     const lf = layerMap.get(e.from) ?? 0;
     const lt = layerMap.get(e.to) ?? 0;
-    if (lt > lf && lf < gapHasLabel.length) {
-      gapHasLabel[lf] = true;
+    if (lt === lf + 1 && lf < gapLabelW.length) {
+      gapLabelW[lf] = Math.max(gapLabelW[lf]!, edgeLabelWidth(e.label));
     }
   });
+  const gapHasLabel = gapLabelW.map((w) => w > 0);
 
   const boxes = new Map<string, FlowNodeBox>();
   let totalW = 0;
@@ -315,7 +337,8 @@ export function layoutFlow(block: FlowBlock): FlowLayout {
         y += sz.h + SIBLING_GAP_LR;
       });
 
-      x += layerW + (l < layers.length - 1 ? LAYER_GAP_LR + (gapHasLabel[l] ? LABEL_GAP_BONUS : 0) : 0);
+      // Side by side the pill has to fit between the boxes, with room for the arrow.
+      x += layerW + (l < layers.length - 1 ? Math.max(LAYER_GAP_LR, gapLabelW[l]! + 22) : 0);
     });
 
     totalW = x + PAD;
@@ -389,24 +412,42 @@ export function layoutFlow(block: FlowBlock): FlowLayout {
 
     // Forward DAG edge.
     const span = b.layer - a.layer;
+    const between = span > 1 ? Array.from(boxes.values()).filter((n) => n.layer > a.layer && n.layer < b.layer) : [];
+    const pillW = e.label ? edgeLabelWidth(e.label) : 0;
     if (direction === "td") {
       const sx = round1(a.x + a.w / 2);
       const sy = round1(a.y + a.h);
       const ex = round1(b.x + b.w / 2);
       const ey = round1(b.y);
+      const lo = Math.min(sx, ex) - 8;
+      const hi = Math.max(sx, ex) + 8;
+      const blockers = between.filter((n) => n.x < hi && n.x + n.w > lo);
+      if (blockers.length > 0) {
+        // A skip edge would cut through the layers between: go round them.
+        const gap = 16 + pillW / 2;
+        const leftX = Math.min(...blockers.map((n) => n.x)) - gap;
+        const rightX = Math.max(...blockers.map((n) => n.x + n.w)) + gap;
+        const dx = round1(leftX - pillW / 2 >= 2 ? leftX : rightX);
+        if (dx === round1(rightX)) extraRight = Math.max(extraRight, rightX + pillW / 2 + 6 - totalW);
+        const g = 22;
+        return {
+          from: e.from,
+          to: e.to,
+          label: e.label,
+          path: `M ${sx} ${sy} C ${sx} ${round1(sy + g)}, ${dx} ${sy}, ${dx} ${round1(sy + g)} L ${dx} ${round1(ey - g)} C ${dx} ${ey}, ${ex} ${round1(ey - g)}, ${ex} ${ey}`,
+          labelPos: e.label ? { x: dx, y: round1((sy + ey) / 2) } : undefined,
+          backEdge: false,
+        };
+      }
       const dy = Math.max(16, (ey - sy) * 0.45);
-      // Long skip edges bow slightly outward to clear intermediate nodes.
-      const bow = span > 1 ? (sx <= totalW / 2 ? -24 : 24) : 0;
-      const c1x = round1(sx + bow);
       const c1y = round1(sy + dy);
-      const c2x = round1(ex + bow);
       const c2y = round1(ey - dy);
       return {
         from: e.from,
         to: e.to,
         label: e.label,
-        path: `M ${sx} ${sy} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${ex} ${ey}`,
-        labelPos: e.label ? cubicPoint(0.5, sx, sy, c1x, c1y, c2x, c2y, ex, ey) : undefined,
+        path: `M ${sx} ${sy} C ${sx} ${c1y}, ${ex} ${c2y}, ${ex} ${ey}`,
+        labelPos: e.label ? cubicPoint(0.5, sx, sy, sx, c1y, ex, c2y, ex, ey) : undefined,
         backEdge: false,
       };
     } else {
@@ -414,18 +455,34 @@ export function layoutFlow(block: FlowBlock): FlowLayout {
       const sy = round1(a.y + a.h / 2);
       const ex = round1(b.x);
       const ey = round1(b.y + b.h / 2);
+      const lo = Math.min(sy, ey) - 8;
+      const hi = Math.max(sy, ey) + 8;
+      const blockers = between.filter((n) => n.y < hi && n.y + n.h > lo);
+      if (blockers.length > 0) {
+        const gap = 14 + (e.label ? 10 : 0);
+        const topY = Math.min(...blockers.map((n) => n.y)) - gap;
+        const bottomY = Math.max(...blockers.map((n) => n.y + n.h)) + gap;
+        const dy = round1(topY - (e.label ? 9 : 0) >= 2 ? topY : bottomY);
+        if (dy === round1(bottomY)) extraBottom = Math.max(extraBottom, bottomY + 16 - totalH);
+        const g = 22;
+        return {
+          from: e.from,
+          to: e.to,
+          label: e.label,
+          path: `M ${sx} ${sy} C ${round1(sx + g)} ${sy}, ${sx} ${dy}, ${round1(sx + g)} ${dy} L ${round1(ex - g)} ${dy} C ${ex} ${dy}, ${round1(ex - g)} ${ey}, ${ex} ${ey}`,
+          labelPos: e.label ? { x: round1((sx + ex) / 2), y: dy } : undefined,
+          backEdge: false,
+        };
+      }
       const dx = Math.max(18, (ex - sx) * 0.45);
-      const bow = span > 1 ? (sy <= totalH / 2 ? -22 : 22) : 0;
       const c1x = round1(sx + dx);
-      const c1y = round1(sy + bow);
       const c2x = round1(ex - dx);
-      const c2y = round1(ey + bow);
       return {
         from: e.from,
         to: e.to,
         label: e.label,
-        path: `M ${sx} ${sy} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${ex} ${ey}`,
-        labelPos: e.label ? cubicPoint(0.5, sx, sy, c1x, c1y, c2x, c2y, ex, ey) : undefined,
+        path: `M ${sx} ${sy} C ${c1x} ${sy}, ${c2x} ${ey}, ${ex} ${ey}`,
+        labelPos: e.label ? cubicPoint(0.5, sx, sy, c1x, sy, c2x, ey, ex, ey) : undefined,
         backEdge: false,
       };
     }

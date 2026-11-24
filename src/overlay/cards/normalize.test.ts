@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { normalizeCard } from "./normalize";
+import { FALLBACK_TITLE, normalizeCard, parseNumber } from "./normalize";
 import { CARD_LIMITS } from "./types";
 
 describe("normalizeCard", () => {
-  it("returns null for invalid root, empty title, or empty blocks", () => {
+  it("returns null for an invalid root or no usable blocks; a missing title falls back", () => {
     expect(normalizeCard(null)).toBeNull();
     expect(normalizeCard("text")).toBeNull();
-    expect(normalizeCard({ title: "   ", blocks: [{ kind: "text", text: "ok" }] })).toBeNull();
+    expect(normalizeCard({ title: "   ", blocks: [{ kind: "text", text: "ok" }] })?.title).toBe(FALLBACK_TITLE);
     expect(normalizeCard({ title: "Нет блоков", blocks: [] })).toBeNull();
     expect(normalizeCard({ title: "Только мусор", blocks: [{ kind: "unknown" }, 42] })).toBeNull();
   });
@@ -162,5 +162,130 @@ describe("normalizeCard", () => {
     expect(card).not.toBeNull();
     expect(card!.blocks).toHaveLength(1);
     expect(card!.blocks[0]!.kind).toBe("text");
+  });
+
+  it("reads numbers the way people write them", () => {
+    expect(parseNumber("42,5")).toBe(42.5);
+    expect(parseNumber("1 200 ₽")).toBe(1200);
+    expect(parseNumber("$1,234.5")).toBe(1234.5);
+    expect(parseNumber("1.234,5")).toBe(1234.5);
+    expect(parseNumber("1,500")).toBe(1500);
+    expect(parseNumber("0,125")).toBe(0.125);
+    expect(parseNumber("−7 %")).toBe(-7);
+    expect(parseNumber("около 15 мс")).toBe(15);
+    expect(parseNumber("abc")).toBeNull();
+    expect(parseNumber(Number.NaN)).toBeNull();
+    expect(parseNumber(true)).toBeNull();
+  });
+
+  it("accepts stringified blocks, kind aliases and shapes without a kind", () => {
+    const card = normalizeCard({
+      title: "Небрежная карточка",
+      blocks: JSON.stringify([
+        "Просто строка становится текстом",
+        { type: "bar_chart", data: { Январь: "10", Февраль: 12 } },
+        { type: "warning", text: "Осторожно" },
+        { type: "key-value", facts: { Порт: 443, Протокол: "HTTPS" } },
+        { headers: ["", "A"], rows: [{ "": "x", a: 1 }] },
+        { nodes: ["Запрос", "Ответ"] },
+        { question: "2 + 2?", options: ["3", "4"], answer: "4" },
+        { type: "chart", series: [{ name: "S", data: [{ x: "Пн", y: 1 }, { x: "Вт", y: 2 }] }] },
+      ]),
+    });
+    expect(card).not.toBeNull();
+    const kinds = card!.blocks.map((b) => b.kind);
+    expect(kinds).toEqual(["text", "bars", "callout", "kv", "table", "flow", "quiz", "line"]);
+    const [, bars, callout, kv, table, flow, quiz, line] = card!.blocks;
+    expect(bars).toMatchObject({ items: [{ label: "Январь", value: 10 }, { label: "Февраль", value: 12 }] });
+    expect(callout).toMatchObject({ tone: "warning" });
+    expect(kv).toMatchObject({ items: [{ key: "Порт", value: "443" }, { key: "Протокол", value: "HTTPS" }] });
+    expect(table).toMatchObject({ headers: ["", "A"], rows: [["x", "1"]] });
+    // Nodes without arrows read as a chain.
+    expect(flow).toMatchObject({ edges: [{ from: "Запрос", to: "Ответ" }] });
+    expect(quiz).toMatchObject({ correct: 1 });
+    expect(line).toMatchObject({ xLabels: ["Пн", "Вт"], series: [{ name: "S", values: [1, 2] }] });
+  });
+
+  it("resolves quiz answers by index, text, letter or flag and drops unknown ones", () => {
+    const quiz = (extra: Record<string, unknown>, options: unknown[] = ["3", "4", "5"]) =>
+      normalizeCard({ title: "Q", blocks: [{ kind: "quiz", question: "2 + 2?", options, ...extra }] })?.blocks[0];
+    expect(quiz({ correct: 1 })).toMatchObject({ correct: 1 });
+    expect(quiz({ correct: "4" })).toMatchObject({ correct: 1 });
+    expect(quiz({ answer: "Б" })).toMatchObject({ correct: 1 });
+    expect(quiz({ answer: "b)" })).toMatchObject({ correct: 1 });
+    expect(quiz({}, ["3", { text: "4", correct: true }, "5"])).toMatchObject({ correct: 1 });
+    expect(quiz({ answer: "не знаю" })).toBeUndefined();
+    expect(quiz({})).toBeUndefined();
+  });
+
+  it("reads flow edges written as arrows, tuples and labels", () => {
+    const card = normalizeCard({
+      title: "Схема",
+      blocks: [
+        {
+          kind: "flow",
+          direction: "horizontal",
+          nodes: [{ id: "a", label: "Клиент", tone: "highlight" }, { id: "b", label: "Сервер" }, "База"],
+          edges: ["Клиент -> b: HTTP", ["b", "База"], { source: "a", target: "nowhere" }],
+        },
+        { kind: "flow", edges: ["Идея → Прототип", "Прототип ==> Релиз"] },
+      ],
+    });
+    expect(card!.blocks[0]).toEqual({
+      kind: "flow",
+      direction: "lr",
+      nodes: [
+        { id: "a", label: "Клиент", tone: "accent" },
+        { id: "b", label: "Сервер" },
+        { id: "База", label: "База" },
+      ],
+      edges: [
+        { from: "a", to: "b", label: "HTTP" },
+        { from: "b", to: "База" },
+      ],
+    });
+    // No nodes listed: they come from the arrows.
+    expect(card!.blocks[1]).toMatchObject({ nodes: [{ id: "Идея" }, { id: "Прототип" }, { id: "Релиз" }] });
+  });
+
+  it("reads compare prefixes, joins list values and strips control characters", () => {
+    const card = normalizeCard({
+      title: "Сравнение\u0007",
+      blocks: [
+        { kind: "compare", columns: [{ title: "A", items: ["+ Быстро", "− Дорого", "Просто"], recommended: "yes" }] },
+        { kind: "definition", term: "Кэш", meaning: "Быстрая память", examples: ["L1", "L2"] },
+      ],
+    });
+    expect(card!.title).toBe("Сравнение");
+    expect(card!.blocks[0]).toEqual({
+      kind: "compare",
+      columns: [
+        {
+          title: "A",
+          accent: true,
+          items: [{ text: "Быстро", kind: "pro" }, { text: "Дорого", kind: "con" }, { text: "Просто" }],
+        },
+      ],
+    });
+    expect(card!.blocks[1]).toMatchObject({ example: "L1; L2" });
+  });
+
+  it("is idempotent, so the overlay may normalize an already clean card again", () => {
+    const once = normalizeCard({
+      title: "Всё сразу",
+      subtitle: "s",
+      blocks: [
+        { kind: "table", headers: ["", "B"], rows: [["a", 1]], highlightCol: 1 },
+        { kind: "flow", nodes: [{ id: "x", label: "X", tone: "muted", note: "n" }, "Y"], edges: [] },
+        { kind: "callout", tone: "tip", title: "t", text: "c" },
+        { kind: "quiz", question: "?", options: ["a", "b"], correct: 1, explanation: "e" },
+        { kind: "line", values: [1, 2, 3] },
+        { kind: "compare", columns: [{ title: "A", pros: ["p"], cons: ["c"] }] },
+        { kind: "math", lines: ["x = 1"], result: "1" },
+        { kind: "kv", items: [{ key: "k", value: "v" }] },
+      ],
+    });
+    expect(once).not.toBeNull();
+    expect(normalizeCard(once)).toEqual(once);
   });
 });

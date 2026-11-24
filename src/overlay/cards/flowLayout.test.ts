@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { layoutFlow, type FlowNodeBox } from "./flowLayout";
+import { FLOW_MAX_WIDTH, layoutFlow, type FlowNodeBox } from "./flowLayout";
 
 function overlaps(a: FlowNodeBox, b: FlowNodeBox): boolean {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
@@ -126,5 +126,54 @@ describe("layoutFlow", () => {
     expect(empty.nodes).toEqual([]);
     expect(empty.edges).toEqual([]);
     expect(empty.width).toBe(0);
+  });
+
+  it("turns a requested left-to-right chain top-down when it would not fit the card", () => {
+    const ids = ["a", "b", "c", "d", "e", "f"];
+    const block = {
+      kind: "flow" as const,
+      direction: "lr" as const,
+      nodes: ids.map((id) => ({ id, label: `Этап ${id.toUpperCase()}` })),
+      edges: ids.slice(1).map((id, i) => ({ from: ids[i]!, to: id })),
+    };
+    const fitted = layoutFlow(block);
+    expect(fitted.direction).toBe("td");
+    expect(fitted.width).toBeLessThanOrEqual(FLOW_MAX_WIDTH);
+    assertNoOverlaps(fitted.nodes);
+    // With room enough the requested direction stays.
+    expect(layoutFlow(block, 2000).direction).toBe("lr");
+  });
+
+  it("turns a wide fan-out sideways instead of shrinking it", () => {
+    const leaves = ["Почта", "Чат", "Звонок", "Форма", "Бот", "Офис"];
+    const layout = layoutFlow({
+      kind: "flow",
+      direction: "td",
+      nodes: [{ id: "root", label: "Клиент" }, ...leaves.map((l) => ({ id: l, label: l }))],
+      edges: leaves.map((l) => ({ from: "root", to: l })),
+    });
+    expect(layout.direction).toBe("lr");
+    expect(layout.width).toBeLessThanOrEqual(FLOW_MAX_WIDTH);
+    assertNoOverlaps(layout.nodes);
+  });
+
+  it("keeps every edge path finite and inside the drawing", () => {
+    const layout = layoutFlow({
+      kind: "flow",
+      nodes: ["a", "b", "c", "d"].map((id) => ({ id, label: id })),
+      edges: [
+        { from: "a", to: "b", label: "да" },
+        { from: "b", to: "c" },
+        { from: "c", to: "a", label: "повтор" },
+        { from: "d", to: "d" },
+        { from: "a", to: "d" },
+      ],
+    });
+    for (const e of layout.edges) {
+      const nums = e.path.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+      expect(nums.every(Number.isFinite)).toBe(true);
+      expect(Math.min(...nums)).toBeGreaterThanOrEqual(0);
+      expect(Math.max(...nums.filter((_, i) => i % 2 === 0))).toBeLessThanOrEqual(layout.width);
+    }
   });
 });
