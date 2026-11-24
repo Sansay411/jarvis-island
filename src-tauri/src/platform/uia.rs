@@ -282,7 +282,184 @@ pub fn element_name(snapshot_id: u64, id: usize) -> Option<String> {
     (s.id == snapshot_id).then(|| s.infos.get(id).map(|i| i.name.clone())).flatten()
 }
 
-pub use super::data_uia::ActOutcome;
+pub use super::data_uia::{ActOutcome, ElementMatch, ElementQuery};
+
+/// Normalise a caller-supplied control type name to match [`role_name`].
+pub fn normalize_role(raw: &str) -> String {
+    let cleaned: String = raw
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    match cleaned.as_str() {
+        "btn" | "pushbutton" => "button".into(),
+        "textbox" | "textfield" | "input" | "textinput" | "searchbox" => "edit".into(),
+        "hyperlink" | "anchor" => "link".into(),
+        "check" | "toggle" => "checkbox".into(),
+        "dropdown" | "select" | "combo" => "combobox".into(),
+        "radiobutton" => "radio".into(),
+        "menu" | "popupmenu" => "menu".into(),
+        "menuitem" | "option" => "menuitem".into(),
+        "tab" => "tabitem".into(),
+        "label" | "static" => "text".into(),
+        "list" => "list".into(),
+        "item" => "listitem".into(),
+        other => other.to_string(),
+    }
+}
+
+/// Score a UIA element candidate against `query`. Returns `None` if it fails
+/// any supplied criterion.
+pub fn score_element_match(
+    role: &str,
+    name: &str,
+    automation_id: &str,
+    enabled: bool,
+    rect: Rect,
+    query: &ElementQuery,
+) -> Option<i32> {
+    if rect.width <= 1 || rect.height <= 1 {
+        return None;
+    }
+    let want_id = query.automation_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let want_type = query.control_type.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let want_name = query.name.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if want_id.is_none() && want_type.is_none() && want_name.is_none() {
+        return None;
+    }
+
+    let mut score = 0i32;
+
+    if let Some(target_id) = want_id {
+        let aid = automation_id.trim();
+        if aid.eq_ignore_ascii_case(target_id) {
+            score += 120;
+        } else if aid.to_lowercase().contains(&target_id.to_lowercase()) {
+            score += 70;
+        } else {
+            return None;
+        }
+    }
+
+    if let Some(target_type) = want_type {
+        let norm = normalize_role(target_type);
+        let role_matches = role == norm
+            || (norm == "tabitem" && role == "tab")
+            || (norm == "button" && role == "splitbutton")
+            || (norm == "listitem" && matches!(role, "dataitem" | "treeitem"));
+        if !role_matches {
+            return None;
+        }
+        score += 45;
+    }
+
+    if let Some(target_name) = want_name {
+        let n_low = name.trim().to_lowercase();
+        let q_low = target_name.to_lowercase();
+        if n_low.is_empty() {
+            return None;
+        }
+        if n_low == q_low {
+            score += 100;
+        } else if n_low.starts_with(&q_low) {
+            score += 75;
+        } else if n_low.contains(&q_low) {
+            score += 55;
+        } else {
+            let words: Vec<&str> = q_low.split_whitespace().collect();
+            if !words.is_empty() && words.iter().all(|w| n_low.contains(w)) {
+                score += 45;
+            } else {
+                return None;
+            }
+        }
+    }
+
+    if interactive(role) {
+        score += 15;
+    }
+    if enabled {
+        score += 5;
+    }
+    // Prefer compact controls over giant enclosing containers of the same name.
+    let area = (rect.width as i64).saturating_mul(rect.height as i64);
+    if area > 400_000 {
+        score -= 20;
+    }
+    Some(score)
+}
+
+/// Re-read the live bounding rectangle of an element from the latest `ui_inspect` snapshot.
+pub fn element_rect(snapshot_id: u64, id: usize) -> AppResult<ElementMatch> {
+    let (el, info) = {
+        let last = LAST.lock();
+        let s = last.as_ref().ok_or_else(|| AppError::invalid("Сначала нужен снимок интерфейса (ui_inspect)"))?;
+        if s.id != snapshot_id {
+            return Err(AppError::invalid("Снимок интерфейса устарел — сделайте новый ui_inspect"));
+        }
+        let el = s.elements.get(id).ok_or_else(|| AppError::invalid(format!("Элемента [{id}] нет в снимке")))?;
+        (el.0.clone(), s.infos[id].clone())
+    };
+    unsafe {
+        let current = el
+            .CurrentBoundingRectangle()
+            .map_err(|_| AppError::not_found(format!("{} «{}» больше не существует", info.role, info.name)))?;
+        let rect: Rect = current.into();
+        if rect.width <= 1 || rect.height <= 1 {
+            return Err(AppError::not_found(format!("{} «{}» не видно на экране", info.role, info.name)));
+        }
+        let automation_id = el.CurrentAutomationId().map(|b| b.to_string()).unwrap_or_default();
+        Ok(ElementMatch {
+            role: info.role,
+            name: info.name,
+            automation_id,
+            rect,
+        })
+    }
+}
+
+/// Find the best matching on-screen UIA element inside `hwnd`.
+pub fn find_element(hwnd: HWND, query: &ElementQuery) -> AppResult<ElementMatch> {
+    let uia = automation()?;
+    unsafe {
+        let root = uia
+            .ElementFromHandle(hwnd)
+            .map_err(|_| AppError::not_found("Окно недоступно для UI Automation"))?;
+        let cache = uia.CreateCacheRequest()?;
+        for p in [
+            UIA_NamePropertyId,
+            UIA_ControlTypePropertyId,
+            UIA_AutomationIdPropertyId,
+            UIA_BoundingRectanglePropertyId,
+            UIA_IsEnabledPropertyId,
+        ] {
+            cache.AddProperty(p)?;
+        }
+        let on_screen = uia.CreatePropertyCondition(UIA_IsOffscreenPropertyId, &VARIANT::from(false))?;
+        let control = uia.ControlViewCondition()?;
+        let cond = uia.CreateAndCondition(&on_screen, &control)?;
+        let found = root.FindAllBuildCache(TreeScope_Descendants, &cond, &cache)?;
+        let total = found.Length()? as i32;
+
+        let mut best: Option<(i32, ElementMatch)> = None;
+        for i in 0..total {
+            let Ok(e) = found.GetElement(i) else { continue };
+            let role = role_name(e.CachedControlType().unwrap_or_default());
+            let name = e.CachedName().map(|b| b.to_string()).unwrap_or_default().trim().to_string();
+            let automation_id = e.CachedAutomationId().map(|b| b.to_string()).unwrap_or_default().trim().to_string();
+            let rect: Rect = e.CachedBoundingRectangle().unwrap_or_default().into();
+            let enabled = cached_bool(&e, UIA_IsEnabledPropertyId);
+            if let Some(score) = score_element_match(role, &name, &automation_id, enabled, rect, query) {
+                if best.as_ref().is_none_or(|(s, _)| score > *s) {
+                    best = Some((score, ElementMatch { role, name, automation_id, rect }));
+                }
+            }
+        }
+        best.map(|(_, m)| m)
+            .ok_or_else(|| AppError::not_found("Элемент интерфейса не найден в активном окне"))
+    }
+}
 
 pub fn act(snapshot_id: u64, id: usize, action: &str, value: Option<&str>) -> AppResult<ActOutcome> {
     let (el, info) = {
@@ -349,5 +526,41 @@ pub fn act(snapshot_id: u64, id: usize, action: &str, value: Option<&str>) -> Ap
             other => return Err(AppError::invalid(format!("Неизвестное действие «{other}»"))),
         };
         Ok(ActOutcome { action: action.to_string(), element: label, after })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uia_role_normalization_handles_common_aliases() {
+        assert_eq!(normalize_role("Button"), "button");
+        assert_eq!(normalize_role("push_button"), "button");
+        assert_eq!(normalize_role("TextBox"), "edit");
+        assert_eq!(normalize_role("menu_item"), "menuitem");
+        assert_eq!(normalize_role("Check_Box"), "checkbox");
+        assert_eq!(normalize_role("tab"), "tabitem");
+    }
+
+    #[test]
+    fn uia_element_scoring_prefers_exact_id_and_name_over_containers() {
+        let btn_rect = Rect { x: 200, y: 120, width: 96, height: 32 };
+        let pane_rect = Rect { x: 0, y: 0, width: 1200, height: 800 };
+
+        let q_name = ElementQuery { name: Some("Сохранить".into()), control_type: Some("button".into()), automation_id: None };
+        let exact = score_element_match("button", "Сохранить", "", true, btn_rect, &q_name).unwrap();
+        let partial = score_element_match("button", "Сохранить как…", "", true, btn_rect, &q_name).unwrap();
+        assert!(exact > partial);
+        assert!(score_element_match("text", "Сохранить", "", true, btn_rect, &q_name).is_none());
+
+        let q_any = ElementQuery { name: Some("Настройки".into()), control_type: None, automation_id: None };
+        let small_btn = score_element_match("button", "Настройки", "", true, btn_rect, &q_any).unwrap();
+        let huge_pane = score_element_match("pane", "Настройки", "", true, pane_rect, &q_any).unwrap();
+        assert!(small_btn > huge_pane);
+
+        let q_id = ElementQuery { name: None, control_type: None, automation_id: Some("SaveButton".into()) };
+        assert!(score_element_match("button", "", "savebutton", true, btn_rect, &q_id).unwrap() >= 120);
+        assert!(score_element_match("button", "SaveButton", "OtherId", true, btn_rect, &q_id).is_none());
     }
 }

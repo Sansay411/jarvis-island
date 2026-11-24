@@ -25,8 +25,9 @@ body {
   cursor: default;
 }
 
-/* The island canvas is a transparent overlay window. */
-body.island-window {
+/* The island and screen overlay canvases are transparent windows. */
+body.island-window,
+body.overlay-window {
   background: transparent;
 }
 

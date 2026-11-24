@@ -9,7 +9,17 @@ import "./styles/base.css";
 const label = getCurrentWebviewWindow().label;
 const root = createRoot(document.getElementById("root")!);
 
-if (label === "reset") {
+if (label === "overlay") {
+  const Overlay = lazy(() => import("./overlay/OverlayApp"));
+  document.body.classList.add("overlay-window");
+  root.render(
+    <StrictMode>
+      <Suspense fallback={null}>
+        <Overlay />
+      </Suspense>
+    </StrictMode>,
+  );
+} else if (label === "reset") {
   const Reset = lazy(() => import("./mentor/ResetApp"));
   document.body.classList.add("reset-window");
   root.render(

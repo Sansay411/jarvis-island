@@ -32,6 +32,7 @@ pub mod ipc_tts;
 pub mod mcp;
 pub mod mentor;
 mod ipc_agent;
+pub mod overlay;
 pub mod planner;
 pub mod platform;
 pub mod reminders;
@@ -483,6 +484,10 @@ pub fn run() {
             ipc_mentor::telegram_set_token,
             ipc_mentor::telegram_pair,
             ipc_mentor::telegram_unbind,
+            overlay::overlay_ready,
+            overlay::overlay_set_interactive_rects,
+            overlay::overlay_dismiss_item,
+            overlay::overlay_cancel_guide,
         ])
         .run(tauri::generate_context!())
         .expect("error while running JARVIS");

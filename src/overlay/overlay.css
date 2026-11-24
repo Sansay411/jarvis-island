@@ -1,0 +1,455 @@
+/*
+ * JARVIS screen overlay styles.
+ * Uses tokens from styles/tokens.css: amber presence ink, dark-glass surfaces,
+ * crisp vectors at 100–200% DPI, and full reduced-motion support.
+ */
+
+body.overlay-window {
+  background: transparent;
+}
+
+.ov-root {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  --ov-ink: var(--amber);
+  --ov-ink-hi: var(--amber-hi);
+  --ov-ink-glow: rgba(255, 178, 63, 0.48);
+}
+
+.ov-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* ---------- Ring ---------- */
+
+.ov-ring-halo {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  animation: ov-ring-breathe 3s ease-in-out infinite;
+}
+
+.ov-ring-underlay {
+  fill: none;
+  stroke: rgba(4, 4, 6, 0.56);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ov-ring-stroke {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+  animation: ov-ring-draw 380ms var(--ease-out) both;
+}
+
+.ov-ring-inner {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.34;
+}
+
+.ov-ring-ripple {
+  fill: none;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: ov-ripple 540ms var(--ease-out) forwards;
+}
+
+@keyframes ov-ring-draw {
+  from {
+    stroke-dashoffset: 1;
+    opacity: 0.4;
+  }
+  to {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+}
+
+@keyframes ov-ring-breathe {
+  0%,
+  100% {
+    opacity: 0.32;
+    stroke-width: 9px;
+  }
+  50% {
+    opacity: 0.62;
+    stroke-width: 13px;
+  }
+}
+
+@keyframes ov-ripple {
+  0% {
+    opacity: 0.85;
+    transform: scale(1);
+    stroke-width: 3px;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.18);
+    stroke-width: 1px;
+  }
+}
+
+/* Ring tag label */
+.ov-ring-label {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 5px 10px;
+  border-radius: var(--r-pill);
+  background: rgba(10, 10, 13, 0.9);
+  border: 1px solid var(--rim);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(12px);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  font-weight: 560;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  animation: ov-fade-up 220ms var(--ease-out) both;
+}
+
+.ov-ring-label-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  box-shadow: 0 0 8px currentColor;
+}
+
+/* ---------- Curved Arrow ---------- */
+
+.ov-arrow-group {
+  animation: ov-arrow-in 320ms var(--ease-out) both;
+}
+
+.ov-arrow-underlay {
+  fill: none;
+  stroke: rgba(4, 4, 6, 0.52);
+  stroke-width: 5.5px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ov-arrow-path {
+  fill: none;
+  stroke-width: 2.5px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+  animation: ov-ring-draw 380ms var(--ease-out) both;
+}
+
+.ov-arrow-head {
+  fill: none;
+  stroke-width: 2.5px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@keyframes ov-arrow-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ---------- Caption Pill ---------- */
+
+.ov-caption {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 220px;
+  max-width: 390px;
+  padding: 12px 14px;
+  border-radius: var(--r-lg);
+  background: rgba(10, 10, 13, 0.91);
+  border: 1px solid var(--rim);
+  box-shadow:
+    0 14px 40px rgba(0, 0, 0, 0.56),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(16px);
+  color: var(--text-1);
+  pointer-events: none;
+  animation: ov-fade-up 240ms var(--ease-out) both;
+}
+
+.ov-caption--ok {
+  border-color: rgba(124, 217, 146, 0.36);
+}
+
+.ov-caption-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ov-caption-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ov-step-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ov-step-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--r-pill);
+  background: var(--graphite-4);
+  transition: width var(--dur-med) var(--ease-out), background var(--dur-med) var(--ease-out);
+}
+
+.ov-step-dot--done {
+  background: rgba(255, 178, 63, 0.45);
+}
+
+.ov-step-dot--active {
+  width: 14px;
+  background: var(--amber);
+  box-shadow: 0 0 10px rgba(255, 178, 63, 0.55);
+}
+
+.ov-caption-step {
+  font-size: var(--fs-11);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--amber-hi);
+  font-variant-numeric: tabular-nums;
+}
+
+.ov-caption-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  background: rgba(124, 217, 146, 0.16);
+  color: var(--ok);
+}
+
+.ov-caption-close {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-xs);
+  color: var(--text-3);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.ov-caption-close:hover {
+  background: var(--graphite-3);
+  color: var(--text-1);
+}
+
+.ov-caption-text {
+  margin: 0;
+  font-size: var(--fs-14);
+  font-weight: 540;
+  line-height: 1.4;
+  color: var(--text-1);
+}
+
+.ov-caption-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-11);
+  color: var(--text-2);
+}
+
+.ov-kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-1);
+  background: var(--graphite-3);
+  border: 1px solid var(--line-strong);
+}
+
+/* ---------- Interactive Draggable Cards ---------- */
+
+.ov-card-shell {
+  position: absolute;
+  width: 316px;
+  max-width: calc(100vw - 32px);
+  border-radius: var(--r-lg);
+  background: rgba(12, 12, 15, 0.94);
+  border: 1px solid var(--rim);
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px);
+  pointer-events: auto;
+  animation: ov-fade-up 240ms var(--ease-out) both;
+}
+
+.ov-card-shell--dragging {
+  cursor: grabbing;
+  box-shadow:
+    0 24px 60px rgba(0, 0, 0, 0.72),
+    0 0 0 1px rgba(255, 178, 63, 0.35);
+}
+
+.ov-card-grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  cursor: grab;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+}
+
+.ov-card-grip:active {
+  cursor: grabbing;
+}
+
+.ov-card-grip-bar {
+  width: 32px;
+  height: 3px;
+  border-radius: var(--r-pill);
+  background: var(--graphite-4);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.ov-card-grip:hover .ov-card-grip-bar {
+  background: var(--text-3);
+}
+
+.ov-card-inner {
+  padding: 2px 14px 14px;
+}
+
+.ov-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ov-card-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 8px var(--amber-glow);
+  flex: 0 0 auto;
+}
+
+.ov-card-title {
+  flex: 1 1 auto;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ov-card-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-xs);
+  color: var(--text-3);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.ov-card-close:hover {
+  background: var(--graphite-3);
+  color: var(--text-1);
+}
+
+.ov-card-body {
+  margin: 0;
+  font-size: var(--fs-13);
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+@keyframes ov-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Reduced motion (OS setting or JARVIS settings preference) */
+@media (prefers-reduced-motion: reduce) {
+  .ov-ring-halo,
+  .ov-ring-stroke,
+  .ov-ring-ripple,
+  .ov-arrow-group,
+  .ov-arrow-path,
+  .ov-ring-label,
+  .ov-caption,
+  .ov-card-shell {
+    animation: none !important;
+  }
+  .ov-ring-halo {
+    opacity: 0.42;
+    stroke-width: 10px;
+  }
+}
+
+.ov-root[data-reduced-motion="true"] .ov-ring-halo,
+.ov-root[data-reduced-motion="true"] .ov-ring-stroke,
+.ov-root[data-reduced-motion="true"] .ov-ring-ripple,
+.ov-root[data-reduced-motion="true"] .ov-arrow-group,
+.ov-root[data-reduced-motion="true"] .ov-arrow-path,
+.ov-root[data-reduced-motion="true"] .ov-ring-label,
+.ov-root[data-reduced-motion="true"] .ov-caption,
+.ov-root[data-reduced-motion="true"] .ov-card-shell {
+  animation: none !important;
+}
+
+.ov-root[data-reduced-motion="true"] .ov-ring-halo {
+  opacity: 0.42;
+  stroke-width: 10px;
+}
