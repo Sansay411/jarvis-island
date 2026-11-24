@@ -29,6 +29,16 @@ if (label === "reset") {
       </Suspense>
     </StrictMode>,
   );
+} else if (label === "welcome") {
+  const Welcome = lazy(() => import("./welcome/WelcomeApp"));
+  document.body.classList.add("welcome-window");
+  root.render(
+    <StrictMode>
+      <Suspense fallback={null}>
+        <Welcome />
+      </Suspense>
+    </StrictMode>,
+  );
 } else if (label === "settings") {
   const Settings = lazy(() => import("./settings/SettingsApp"));
   document.body.classList.add("settings-window");

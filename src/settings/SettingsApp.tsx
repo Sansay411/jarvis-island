@@ -86,6 +86,7 @@ export interface Settings {
     ifThen: string;
   };
   telegram: { enabled: boolean; chatId: number; botUsername: string; morning: string; evening: string; remindBefore: number; agent: boolean };
+  onboarding: { done: boolean; version: number; dismissedCount: number };
 }
 
 interface SettingsView {
@@ -203,6 +204,7 @@ const FALLBACK_SETTINGS_VIEW: SettingsView = {
       ifThen: "",
     },
     telegram: { enabled: true, chatId: 0, botUsername: "", morning: "08:30", evening: "21:30", remindBefore: 10, agent: true },
+    onboarding: { done: false, version: 0, dismissedCount: 0 },
   },
   presets: [
     {
@@ -264,6 +266,11 @@ function normalizeSettingsView(v: SettingsView): SettingsView {
       agent: {
         ...v.settings.agent,
         learnSkills: v.settings.agent?.learnSkills ?? true,
+      },
+      onboarding: {
+        done: Boolean(v.settings.onboarding?.done),
+        version: typeof v.settings.onboarding?.version === "number" ? v.settings.onboarding.version : 0,
+        dismissedCount: typeof v.settings.onboarding?.dismissedCount === "number" ? v.settings.onboarding.dismissedCount : 0,
       },
       voice: {
         ...v.settings.voice,
@@ -1234,6 +1241,26 @@ export default function SettingsApp({
                   Я разговариваю не только о задачах: можно просто поболтать о дне, фильмах, идеях. Что {vy ? "вы расскажете" : "ты расскажешь"} о себе, я запомню —
                   список в разделе «Память».
                 </p>
+              </Group>
+              <Group title="Знакомство">
+                <Row
+                  label="Настройка профиля и голоса"
+                  hint="Имя, обращение, цели, ритм дня и проверка микрофона — в одном коротком окне."
+                >
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => {
+                      if (hasTauri()) {
+                        void invoke("welcome_open").catch((e) => notify("error", errorMessage(e)));
+                      } else {
+                        notify("info", "Окно знакомства открывается в приложении");
+                      }
+                    }}
+                  >
+                    Пройти знакомство заново
+                  </button>
+                </Row>
               </Group>
             </>
           )}

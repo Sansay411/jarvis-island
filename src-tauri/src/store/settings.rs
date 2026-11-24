@@ -434,6 +434,22 @@ impl Default for TelegramSettings {
     }
 }
 
+/// First-run «Знакомство» flow state.
+pub const ONBOARDING_VERSION: u32 = 1;
+/// Stop auto-opening after this many «позже» closes.
+pub const ONBOARDING_MAX_DISMISSALS: u32 = 3;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OnboardingSettings {
+    /// Completed (or permanently hidden).
+    pub done: bool,
+    /// Flow version completed; 0 = not completed yet.
+    pub version: u32,
+    /// How many times the user closed the window as «позже».
+    pub dismissed_count: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -450,11 +466,67 @@ pub struct Settings {
     pub planner: PlannerSettings,
     pub mentor: MentorSettings,
     pub telegram: TelegramSettings,
+    pub onboarding: OnboardingSettings,
+}
+
+/// Whether the first-run «Знакомство» window should open on island start.
+/// Existing users who already set a persona name or have saved memories are
+/// treated as done so they are never interrupted.
+pub fn should_auto_open_onboarding(settings: &Settings, memories_count: usize) -> bool {
+    if settings.onboarding.done {
+        return false;
+    }
+    if settings.onboarding.dismissed_count >= ONBOARDING_MAX_DISMISSALS {
+        return false;
+    }
+    if !settings.persona.user_name.trim().is_empty() {
+        return false;
+    }
+    if memories_count > 0 {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Settings;
+    use super::*;
+
+    #[test]
+    fn legacy_settings_json_defaults_onboarding() {
+        let s: Settings = serde_json::from_str(r#"{"persona":{"userName":""}}"#).unwrap();
+        assert!(!s.onboarding.done);
+        assert_eq!(s.onboarding.version, 0);
+        assert_eq!(s.onboarding.dismissed_count, 0);
+        assert!(should_auto_open_onboarding(&s, 0));
+    }
+
+    #[test]
+    fn onboarding_trigger_skips_configured_and_dismissed_users() {
+        let mut s = Settings::default();
+        assert!(should_auto_open_onboarding(&s, 0));
+
+        // Existing memories mean an established user.
+        assert!(!should_auto_open_onboarding(&s, 1));
+
+        // Non-empty persona name means an established user; whitespace alone does not.
+        s.persona.user_name = "   ".into();
+        assert!(should_auto_open_onboarding(&s, 0));
+        s.persona.user_name = "Алексей".into();
+        assert!(!should_auto_open_onboarding(&s, 0));
+        s.persona.user_name.clear();
+
+        // Closing as «позже» asks again up to 3 times.
+        s.onboarding.dismissed_count = 2;
+        assert!(should_auto_open_onboarding(&s, 0));
+        s.onboarding.dismissed_count = 3;
+        assert!(!should_auto_open_onboarding(&s, 0));
+
+        // Completed never auto-opens again.
+        s.onboarding.dismissed_count = 0;
+        s.onboarding.done = true;
+        assert!(!should_auto_open_onboarding(&s, 0));
+    }
 
     #[test]
     fn old_settings_json_without_learn_skills_defaults_to_true() {

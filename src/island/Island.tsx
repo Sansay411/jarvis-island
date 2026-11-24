@@ -32,7 +32,7 @@ import { useWeather } from "../store/weather";
 import { NoticeView } from "./views/NoticeView";
 import { useAlerts, useNextTimer } from "../store/reminders";
 import { useStopwatch } from "../store/stopwatch";
-import { activityOf, emote, useEmote } from "../store/emote";
+import { activityOf, dismissGreet, emote, useEmote } from "../store/emote";
 import { useClockRows } from "./views/ClocksStrip";
 import { inputLevel, outputLevel, toggleVoice, useVoice, type VoiceState } from "../store/voice";
 import { WorkspaceView } from "../workspace/WorkspaceView";
@@ -352,7 +352,7 @@ export function Island() {
   const eventCard = useAgenda((s) => s.card !== null);
   const eventSoon = useAgenda((s) => s.soon !== null);
 
-  const { emote: currentEmote, seq: emoteSeq } = useEmote();
+  const { emote: currentEmote, seq: emoteSeq, greet } = useEmote();
   const runningTool = useAgent((s) => {
     const it = s.items.findLast((i) => i.kind === "tool" && i.status === "running");
     return it?.kind === "tool" ? it.tool : null;
@@ -397,6 +397,7 @@ export function Island() {
   const weatherCard = useWeather((s) => s.card !== null);
   const helloCard = useBluetooth((s) => s.hello !== null);
   const updateCard = useUpdates((s) => s.card && s.status?.available != null);
+  const greetCard = greet !== null;
   // A calendar reminder holds under the pointer so its buttons can be used;
   // a growth moment gives way to «Рост» as soon as the pointer comes.
   const mode: IslandMode =
@@ -414,7 +415,7 @@ export function Island() {
               ? "notice"
               : eventCard && (base === "compact" || base === "peek")
                 ? "event"
-                : (helloCard || updateCard) && base === "compact"
+                : (helloCard || updateCard || greetCard) && base === "compact"
                   ? "hello"
                   : momentCard && base === "compact"
                     ? "moment"
@@ -606,7 +607,21 @@ export function Island() {
                 {mode === "notice" && <NoticeView />}
                 {mode === "weather" && <WeatherView />}
                 {mode === "clips" && <ClipsView />}
-                {mode === "hello" && (helloCard ? <HeadsetHello /> : <UpdateCard />)}
+                {mode === "hello" &&
+                  (helloCard ? (
+                    <HeadsetHello />
+                  ) : updateCard ? (
+                    <UpdateCard />
+                  ) : greet ? (
+                    <div className="view view-hello" role="status" onClick={dismissGreet}>
+                      <div className="hello-main">
+                        <div className="hello-text">
+                          <span className="hello-title">{greet.title}</span>
+                          <span className="hello-sub">{greet.sub}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null)}
                 {mode === "event" && <EventCard />}
                 {mode === "moment" && <MomentCard />}
                 {mode === "secret" && <SecretPromptView />}

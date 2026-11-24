@@ -1,7 +1,8 @@
 //! IPC for the agent, settings, secrets, memories and history.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -10,7 +11,11 @@ use crate::agent::{Agent, AgentStatus, HistoryItem, SendResult};
 use crate::ai::{self, types::{ChatMessage, Role}};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
-use crate::store::{secrets, settings::{Settings, ProviderPreset, PRESETS}, Memory, TaskRecord};
+use crate::store::{
+    secrets,
+    settings::{should_auto_open_onboarding, ProviderPreset, Settings, ONBOARDING_VERSION, PRESETS},
+    Memory, TaskRecord,
+};
 
 // ---------- agent ----------
 
@@ -234,9 +239,38 @@ pub async fn models_list(
 
 // ---------- memory & history ----------
 
+fn norm_memory(t: &str) -> String {
+    t.to_lowercase()
+        .replace('ё', "е")
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[tauri::command]
 pub fn memories_list(state: State<'_, AppState>) -> AppResult<Vec<Memory>> {
     state.store.memories()
+}
+
+#[tauri::command]
+pub fn memory_add(state: State<'_, AppState>, text: String) -> AppResult<Memory> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::invalid("Пустая заметка"));
+    }
+    let key = norm_memory(trimmed);
+    let existing = state.store.memories()?;
+    if let Some(known) = existing.into_iter().find(|m| norm_memory(&m.text) == key) {
+        return Ok(known);
+    }
+    let id = state.store.add_memory(trimmed)?;
+    state
+        .store
+        .memories()?
+        .into_iter()
+        .find(|m| m.id == id)
+        .ok_or_else(|| AppError::internal("Не удалось сохранить заметку"))
 }
 
 #[tauri::command]
@@ -279,4 +313,172 @@ pub async fn settings_open(app: AppHandle) -> AppResult<()> {
         .shadow(true)
         .build()?;
     Ok(())
+}
+
+// ---------- welcome (onboarding) ----------
+
+pub const WELCOME_LABEL: &str = "welcome";
+
+static WELCOME_AUTO_CHECKED: AtomicBool = AtomicBool::new(false);
+static WELCOME_HANDLED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WelcomeGreeting {
+    pub title: String,
+    pub sub: String,
+    pub chat_line: String,
+}
+
+pub(crate) fn welcome_greeting(user_name: &str, address: &str, shortcut: &str) -> WelcomeGreeting {
+    let name = user_name.trim();
+    let vy = address == "vy";
+    let key = if shortcut.trim().is_empty() { "Ctrl+Alt+J" } else { shortcut.trim() };
+    let title = if name.is_empty() {
+        "Приятно познакомиться!".to_string()
+    } else if vy {
+        format!("Рад знакомству, {name}!")
+    } else {
+        format!("Привет, {name}!")
+    };
+    let sub = format!("Я всё запомнил · чат по {key}");
+    let chat_line = if name.is_empty() {
+        if vy {
+            format!("Приятно познакомиться! Я готов к работе — нажмите {key} или просто позовите меня, когда понадоблюсь.")
+        } else {
+            format!("Приятно познакомиться! Я готов к работе — нажми {key} или просто позови меня, когда понадоблюсь.")
+        }
+    } else if vy {
+        format!("Рад знакомству, {name}! Я всё запомнил — нажмите {key} или просто позовите меня, когда понадоблюсь.")
+    } else {
+        format!("Привет, {name}! Я всё запомнил — нажми {key} или просто позови меня, когда понадоблюсь.")
+    };
+    WelcomeGreeting { title, sub, chat_line }
+}
+
+pub fn open_welcome_window(app: &AppHandle) -> AppResult<()> {
+    if let Some(w) = app.get_webview_window(WELCOME_LABEL) {
+        let _ = w.unminimize();
+        w.show()?;
+        w.set_focus()?;
+        return Ok(());
+    }
+    WELCOME_HANDLED.store(false, Ordering::Release);
+    WebviewWindowBuilder::new(app, WELCOME_LABEL, WebviewUrl::App("index.html".into()))
+        .title("JARVIS — знакомство")
+        .inner_size(640.0, 560.0)
+        .min_inner_size(580.0, 520.0)
+        .center()
+        .theme(Some(tauri::Theme::Dark))
+        .background_color(tauri::webview::Color(8, 8, 10, 255))
+        .decorations(false)
+        .shadow(true)
+        .build()?;
+    Ok(())
+}
+
+/// Open the first-run «Знакомство» window once per launch if the user has not
+/// completed it, dismissed it fewer than 3 times, and has no existing name or
+/// saved memories.
+pub fn maybe_open_welcome(app: &AppHandle) {
+    if WELCOME_AUTO_CHECKED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let state = app.state::<AppState>();
+    let settings = state.store.settings();
+    let memories_count = state.store.memories().map(|m| m.len()).unwrap_or(0);
+    if !should_auto_open_onboarding(&settings, memories_count) {
+        return;
+    }
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(650)).await;
+        if let Err(e) = open_welcome_window(&handle) {
+            tracing::warn!("welcome window not opened: {e}");
+        }
+    });
+}
+
+fn record_welcome_dismiss(app: &AppHandle, store: &crate::store::Store) {
+    if WELCOME_HANDLED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let mut settings = store.settings();
+    if settings.onboarding.done {
+        return;
+    }
+    settings.onboarding.dismissed_count = settings.onboarding.dismissed_count.saturating_add(1);
+    if let Err(e) = store.save_settings(&settings) {
+        tracing::warn!("onboarding dismiss not saved: {e}");
+    } else {
+        let _ = app.emit("settings:changed", ());
+    }
+}
+
+pub fn on_welcome_destroyed(app: &AppHandle) {
+    record_welcome_dismiss(app, &app.state::<AppState>().store);
+}
+
+#[tauri::command]
+pub async fn welcome_open(app: AppHandle) -> AppResult<()> {
+    open_welcome_window(&app)
+}
+
+#[tauri::command]
+pub fn welcome_dismiss(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
+    record_welcome_dismiss(&app, &state.store);
+    if let Some(w) = app.get_webview_window(WELCOME_LABEL) {
+        let _ = w.close();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn welcome_complete(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
+    WELCOME_HANDLED.store(true, Ordering::Release);
+    let mut settings = state.store.settings();
+    settings.onboarding.done = true;
+    settings.onboarding.version = ONBOARDING_VERSION;
+    state.store.save_settings(&settings)?;
+    let _ = app.emit("settings:changed", ());
+
+    let greeting = welcome_greeting(&settings.persona.user_name, &settings.persona.address, &settings.shortcuts.workspace);
+    let _ = app.emit_to(crate::platform::island::LABEL, "island:emote", "heart");
+    let _ = app.emit_to(
+        crate::platform::island::LABEL,
+        "island:greet",
+        serde_json::json!({ "title": greeting.title, "sub": greeting.sub }),
+    );
+    app.state::<Arc<Agent>>().post_report(greeting.chat_line, true);
+
+    if let Some(w) = app.get_webview_window(WELCOME_LABEL) {
+        let _ = w.close();
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn welcome_greeting_uses_name_and_address() {
+        let ty = welcome_greeting("Алексей", "ty", "Ctrl+Alt+J");
+        assert_eq!(ty.title, "Привет, Алексей!");
+        assert!(ty.chat_line.contains("нажми Ctrl+Alt+J"));
+
+        let vy = welcome_greeting("Мария", "vy", "Alt+Space");
+        assert_eq!(vy.title, "Рад знакомству, Мария!");
+        assert!(vy.chat_line.contains("нажмите Alt+Space"));
+
+        let anon = welcome_greeting("  ", "ty", "");
+        assert_eq!(anon.title, "Приятно познакомиться!");
+        assert!(anon.sub.contains("Ctrl+Alt+J"));
+    }
+
+    #[test]
+    fn memory_normalization_deduplicates_yo_and_punctuation() {
+        assert_eq!(norm_memory("Пользователь — студент, изучает Rust!"), norm_memory("пользователь студент изучает rust"));
+        assert_eq!(norm_memory("Учёба и режим"), norm_memory("учеба и режим"));
+    }
 }
