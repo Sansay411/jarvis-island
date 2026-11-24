@@ -28,6 +28,9 @@ if (existsSync(resolve(root, "qa/areapick.html"))) {
 if (existsSync(resolve(root, "qa/overlay.html"))) {
   input["qa/overlay"] = resolve(root, "qa/overlay.html");
 }
+if (existsSync(resolve(root, "qa/cards.html"))) {
+  input["qa/cards"] = resolve(root, "qa/cards.html");
+}
 
 // Tauri expects a fixed dev port and `dist/index.html` as the primary entry.
 export default defineConfig({

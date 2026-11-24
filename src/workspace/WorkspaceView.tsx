@@ -253,8 +253,8 @@ function AssistantMessage({
 type ToolItem = Extract<ChatItem, { kind: "tool" }>;
 type Row = { kind: "item"; item: ChatItem } | { kind: "tools"; id: string; tools: ToolItem[] };
 
-/** Consecutive finished tool steps fold into one line; a step still running
- *  or waiting for permission always stays on its own. */
+/** Consecutive finished tool steps fold into one line; a step still running,
+ *  waiting for permission, or carrying an inline explanation card stays on its own. */
 function groupRows(items: ChatItem[]): Row[] {
   const rows: Row[] = [];
   let run: ToolItem[] = [];
@@ -264,7 +264,8 @@ function groupRows(items: ChatItem[]): Row[] {
     run = [];
   };
   for (const it of items) {
-    if (it.kind === "tool" && it.status !== "running" && it.status !== "awaiting") {
+    const inlineCard = it.kind === "tool" && it.status === "ok" && (it.tool === "explain_card" || it.card !== undefined);
+    if (it.kind === "tool" && it.status !== "running" && it.status !== "awaiting" && !inlineCard) {
       run.push(it);
       continue;
     }

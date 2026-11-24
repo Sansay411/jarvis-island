@@ -14,6 +14,7 @@ pub mod agent;
 pub mod ai;
 pub mod area;
 pub mod bluetooth;
+pub mod cards;
 pub mod cloud;
 pub mod clips;
 pub mod error;

@@ -43,6 +43,7 @@ export type AgentEvent =
       ok: boolean;
       summary: string;
       error: string | null;
+      card?: unknown;
     }
   | {
       type: "confirmationRequired";
@@ -78,5 +79,6 @@ export interface HistoryMessage {
   text: string;
   toolTitle: string | null;
   toolOk: boolean | null;
+  card?: unknown;
   createdAt: string;
 }

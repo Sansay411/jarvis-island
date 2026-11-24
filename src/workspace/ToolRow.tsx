@@ -1,11 +1,14 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Icon, type IconName } from "../ui/Icon";
 import { useAgent, type ChatItem } from "../store/agent";
+import { CardView } from "../overlay/cards/CardView";
+import { normalizeCard } from "../overlay/cards/normalize";
 import { WsIcon } from "./WorkspaceIcons";
 
 type ToolItem = Extract<ChatItem, { kind: "tool" }>;
 
 function iconFor(tool: string): IconName {
+  if (tool === "explain_card" || tool === "explain_clear") return "cards";
   if (tool === "speak_aloud" || tool.startsWith("audio") || tool.startsWith("volume")) return "volume";
   if (tool.startsWith("brightness")) return "sun";
   if (tool.startsWith("media")) return "play";
@@ -41,6 +44,11 @@ function StatusGlyph({ status, hasDetails, open }: { status: ToolItem["status"];
 export function ToolRow({ item }: { item: ToolItem }) {
   const [open, setOpen] = useState(false);
   const confirm = useAgent((s) => s.confirm);
+  const inlineCard = useMemo(() => {
+    if (item.status !== "ok") return null;
+    if (item.tool !== "explain_card" && item.card === undefined) return null;
+    return normalizeCard(item.card ?? item.args);
+  }, [item.status, item.tool, item.card, item.args]);
 
   if (item.status === "awaiting") {
     const isHigh = item.risk === "high";
@@ -97,6 +105,11 @@ export function ToolRow({ item }: { item: ToolItem }) {
             <pre>{typeof item.args === "string" ? item.args : JSON.stringify(item.args, null, 2)}</pre>
           )}
           {(item.error || item.summary) && <p className={item.error ? "tool-detail-error" : ""}>{item.error ?? item.summary}</p>}
+        </div>
+      )}
+      {inlineCard && (
+        <div className="tool-inline-card">
+          <CardView spec={inlineCard} compact />
         </div>
       )}
     </div>

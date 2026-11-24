@@ -14,6 +14,7 @@ pub mod executive;
 #[cfg(target_os = "macos")]
 #[path = "executive_macos.rs"]
 pub mod executive;
+mod explain;
 mod file_actions;
 mod files;
 mod memory;
@@ -172,6 +173,7 @@ fn builtin_tools() -> Vec<Tool> {
         .chain(clipboard_history::tools())
         .chain(executive::tools())
         .chain(overlay::tools())
+        .chain(explain::tools())
         .chain(planner::tools())
         .chain(connect::tools())
         .chain(skills::tools())

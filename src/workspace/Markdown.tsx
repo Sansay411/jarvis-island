@@ -6,7 +6,7 @@ import { Fragment, memo, type ReactNode } from "react";
 
 function inline(text: string, keyBase: string): ReactNode[] {
   const out: ReactNode[] = [];
-  const re = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+  const re = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\s][^*]*[^*\s]\*|\*[^*\s]\*)/g;
   let last = 0;
   let m: RegExpExecArray | null;
   let i = 0;
@@ -14,7 +14,8 @@ function inline(text: string, keyBase: string): ReactNode[] {
     if (m.index > last) out.push(text.slice(last, m.index));
     const tok = m[0];
     if (tok.startsWith("`")) out.push(<code key={`${keyBase}c${i++}`}>{tok.slice(1, -1)}</code>);
-    else out.push(<strong key={`${keyBase}b${i++}`}>{tok.slice(2, -2)}</strong>);
+    else if (tok.startsWith("**")) out.push(<strong key={`${keyBase}b${i++}`}>{tok.slice(2, -2)}</strong>);
+    else out.push(<em key={`${keyBase}i${i++}`}>{tok.slice(1, -1)}</em>);
     last = m.index + tok.length;
   }
   if (last < text.length) out.push(text.slice(last));
