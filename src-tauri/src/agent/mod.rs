@@ -113,7 +113,9 @@ impl ApprovalScope {
         let requested = args.get("path").and_then(Value::as_str).filter(|p| !p.is_empty())
             .ok_or_else(|| AppError::invalid("Укажите путь для чтения"))?;
         let path = std::fs::canonicalize(requested)?;
+        let extension = Path::new(requested).extension().and_then(|ext| ext.to_str()).unwrap_or_default().to_owned();
         args["path"] = serde_json::to_value(&path)?;
+        args["_requested_extension"] = Value::String(extension);
         Ok(Self::FileRead(path))
     }
 
@@ -1489,6 +1491,25 @@ mod tests {
         assert!(unresolved.is_err());
         assert!(!ApprovalScope::is_approved(&unresolved, &approvals));
         assert_eq!(args, requested);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_read_dispatch_keeps_the_requested_extension_without_reopening_the_link() {
+        let dir = std::env::temp_dir().join(format!("jarvis-file-read-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let target = dir.join("image");
+        let alias = dir.join("image.PNG");
+        std::fs::write(&target, []).unwrap();
+        std::os::unix::fs::symlink(&target, &alias).unwrap();
+        let mut args = serde_json::json!({ "path": alias, "_requested_extension": "txt" });
+        let prepared = ApprovalScope::prepare("file_read", &mut args);
+        let canonical = target.canonicalize().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(prepared.unwrap(), ApprovalScope::FileRead(canonical.clone()));
+        assert_eq!(args["path"], serde_json::json!(canonical));
+        assert_eq!(args["_requested_extension"], "PNG");
     }
 
     #[test]
