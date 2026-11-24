@@ -13,6 +13,7 @@
 pub mod agent;
 pub mod ai;
 pub mod bluetooth;
+pub mod cards;
 pub mod cloud;
 pub mod clips;
 pub mod error;
@@ -32,6 +33,7 @@ pub mod ipc_tts;
 pub mod mcp;
 pub mod mentor;
 mod ipc_agent;
+pub mod overlay;
 pub mod planner;
 pub mod platform;
 pub mod reminders;

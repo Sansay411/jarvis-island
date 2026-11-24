@@ -13,6 +13,7 @@ pub mod executive;
 #[cfg(target_os = "macos")]
 #[path = "executive_macos.rs"]
 pub mod executive;
+mod explain;
 mod file_actions;
 mod files;
 mod memory;
@@ -170,6 +171,7 @@ impl Registry {
             .chain(reminders::tools())
             .chain(clipboard_history::tools())
             .chain(executive::tools())
+            .chain(explain::tools())
             .chain(planner::tools())
         {
             tools.insert(t.name, t);

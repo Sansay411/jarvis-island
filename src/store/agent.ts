@@ -39,6 +39,8 @@ export type ChatItem =
       details?: string;
       /** Last lines of live output while running. */
       progress?: string[];
+      /** Normalized explanation card payload attached to `explain_card`. */
+      card?: unknown;
     }
   | { kind: "notice"; id: string; tone: "error" | "info"; text: string };
 
@@ -113,11 +115,12 @@ export const useAgent = create<AgentStore>((set, get) => ({
                 kind: "tool",
                 id: uid(),
                 turnId: "",
-                tool: "",
+                tool: m.card ? "explain_card" : "",
                 title: m.toolTitle ?? "",
                 status: m.toolOk ? "ok" : "failed",
                 args: null,
                 summary: m.text,
+                card: m.card,
               },
       );
       set({ items });
@@ -323,7 +326,13 @@ export function applyAgentEvent(ev: AgentEvent) {
       set((s) => ({
         items: s.items.map((it) =>
           it.kind === "tool" && it.id === ev.callId
-            ? { ...it, status: it.status === "declined" ? "declined" : ev.ok ? "ok" : "failed", summary: ev.summary, error: ev.error }
+            ? {
+                ...it,
+                status: it.status === "declined" ? "declined" : ev.ok ? "ok" : "failed",
+                summary: ev.summary,
+                error: ev.error,
+                card: ev.card ?? it.card,
+              }
             : it,
         ),
       }));

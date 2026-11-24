@@ -14,6 +14,9 @@ pub fn names_at_point(_x: i32, _y: i32) -> Option<Vec<String>> {
 pub fn element_name(_snapshot_id: u64, _id: usize) -> Option<String> {
     None
 }
+pub fn element_rect(_snapshot_id: u64, _id: usize) -> Option<super::display::Rect> {
+    None
+}
 pub fn act(
     _snapshot_id: u64,
     _id: usize,

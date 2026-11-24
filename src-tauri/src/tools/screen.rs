@@ -162,6 +162,24 @@ fn to_screen(x: f64, y: f64, space: &str, capture_id: Option<u64>) -> AppResult<
     Ok((rect.x + (x * scale).round() as i32, rect.y + (y * scale).round() as i32))
 }
 
+/// Convert a rectangle from screenshot (`image`) or physical `screen` space into physical screen pixels.
+pub fn rect_to_screen(x: f64, y: f64, w: f64, h: f64, space: &str, capture_id: Option<u64>) -> AppResult<Rect> {
+    if space == "screen" {
+        return Ok(Rect { x: x.round() as i32, y: y.round() as i32, width: w.max(0.0).round() as i32, height: h.max(0.0).round() as i32 });
+    }
+    let caps = CAPTURES.lock();
+    let (_, rect, scale) = match capture_id {
+        Some(id) => caps.iter().find(|c| c.0 == id).copied().ok_or_else(|| AppError::invalid("Снимок с таким captureId устарел"))?,
+        None => *caps.front().ok_or_else(|| AppError::invalid("Нет снимка экрана для пересчёта координат"))?,
+    };
+    Ok(Rect {
+        x: rect.x + (x * scale).round() as i32,
+        y: rect.y + (y * scale).round() as i32,
+        width: (w.max(0.0) * scale).round() as i32,
+        height: (h.max(0.0) * scale).round() as i32,
+    })
+}
+
 #[derive(Deserialize)]
 struct InspectArgs {
     hwnd: Option<i64>,
@@ -648,5 +666,9 @@ mod tests {
         CAPTURES.lock().push_front((999, Rect { x: 100, y: 50, width: 3200, height: 1800 }, 2.0));
         assert_eq!(to_screen(10.0, 20.0, "image", Some(999)).unwrap(), (120, 90));
         assert_eq!(to_screen(10.0, 20.0, "screen", None).unwrap(), (10, 20));
+        assert_eq!(
+            rect_to_screen(10.0, 20.0, 100.0, 40.0, "image", Some(999)).unwrap(),
+            Rect { x: 120, y: 90, width: 200, height: 80 }
+        );
     }
 }

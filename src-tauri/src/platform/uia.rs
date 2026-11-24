@@ -282,6 +282,13 @@ pub fn element_name(snapshot_id: u64, id: usize) -> Option<String> {
     (s.id == snapshot_id).then(|| s.infos.get(id).map(|i| i.name.clone())).flatten()
 }
 
+/// Physical screen bounding rect of an element in the latest snapshot.
+pub fn element_rect(snapshot_id: u64, id: usize) -> Option<Rect> {
+    let last = LAST.lock();
+    let s = last.as_ref()?;
+    (s.id == snapshot_id).then(|| s.infos.get(id).map(|i| i.rect)).flatten()
+}
+
 pub use super::data_uia::ActOutcome;
 
 pub fn act(snapshot_id: u64, id: usize, action: &str, value: Option<&str>) -> AppResult<ActOutcome> {

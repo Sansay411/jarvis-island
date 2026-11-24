@@ -1065,6 +1065,9 @@
 .tool-detail-error {
   color: #ffb3a9;
 }
+.tool-inline-card {
+  margin: 5px 0 4px;
+}
 
 .spinner {
   width: 13px;

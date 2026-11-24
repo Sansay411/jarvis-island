@@ -26,7 +26,15 @@ pub enum AgentEvent {
     PlanUpdated { turn_id: String, steps: Vec<PlanStep> },
     ToolStarted { turn_id: String, call_id: String, tool: String, title: String, args: Value },
     ToolProgress { turn_id: String, call_id: String, line: String },
-    ToolFinished { turn_id: String, call_id: String, ok: bool, summary: String, error: Option<String> },
+    ToolFinished {
+        turn_id: String,
+        call_id: String,
+        ok: bool,
+        summary: String,
+        error: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        card: Option<Value>,
+    },
     ConfirmationRequired { turn_id: String, call_id: String, tool: String, title: String, risk: &'static str, details: String },
     TurnFinished { turn_id: String, status: &'static str, error: Option<String> },
     /// Waiting for the provider's rate limit.

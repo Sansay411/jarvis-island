@@ -19,6 +19,9 @@ if (existsSync(resolve(root, "qa/planner.html"))) {
 if (existsSync(resolve(root, "qa/workspace-showcase.html"))) {
   input["qa/workspace-showcase"] = resolve(root, "qa/workspace-showcase.html");
 }
+if (existsSync(resolve(root, "qa/cards.html"))) {
+  input["qa/cards"] = resolve(root, "qa/cards.html");
+}
 
 // Tauri expects a fixed dev port and `dist/index.html` as the primary entry.
 export default defineConfig({

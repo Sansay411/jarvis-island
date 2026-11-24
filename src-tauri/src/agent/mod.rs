@@ -89,6 +89,8 @@ pub struct HistoryItem {
     pub text: String,
     pub tool_title: Option<String>,
     pub tool_ok: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub card: Option<Value>,
     pub created_at: String,
 }
 
@@ -316,17 +318,23 @@ impl Agent {
                 let text = m.message.joined_text();
                 match m.message.role {
                     Role::User if !text.starts_with("[tool-image]") => {
-                        Some(HistoryItem { role: "user", text, tool_title: None, tool_ok: None, created_at: m.created_at })
+                        Some(HistoryItem { role: "user", text, tool_title: None, tool_ok: None, card: None, created_at: m.created_at })
                     }
                     Role::Assistant if !text.trim().is_empty() => {
-                        Some(HistoryItem { role: "assistant", text, tool_title: None, tool_ok: None, created_at: m.created_at })
+                        Some(HistoryItem { role: "assistant", text, tool_title: None, tool_ok: None, card: None, created_at: m.created_at })
                     }
                     Role::Tool => {
-                        let summary = serde_json::from_str::<Value>(&text)
-                            .ok()
+                        let parsed = serde_json::from_str::<Value>(&text).ok();
+                        let summary = parsed
+                            .as_ref()
                             .and_then(|v| v.get("summary").or_else(|| v.get("error")).and_then(Value::as_str).map(str::to_string))
                             .unwrap_or_default();
-                        Some(HistoryItem { role: "tool", text: summary, tool_title: m.tool_title, tool_ok: m.tool_ok, created_at: m.created_at })
+                        let card = if m.tool_ok == Some(true) {
+                            parsed.as_ref().and_then(|v| v.get("data")).and_then(|d| d.get("spec")).cloned()
+                        } else {
+                            None
+                        };
+                        Some(HistoryItem { role: "tool", text: summary, tool_title: m.tool_title, tool_ok: m.tool_ok, card, created_at: m.created_at })
                     }
                     _ => None,
                 }
@@ -1095,6 +1103,7 @@ impl Agent {
                     ok: false,
                     summary: "Отклонено пользователем".into(),
                     error: None,
+                    card: None,
                 });
                 return Ok(ToolOutput::fail("Пользователь отклонил это действие — не повторяй его без новой просьбы", json!({ "declined": true })));
             }
@@ -1137,7 +1146,12 @@ impl Agent {
         if risk >= Risk::Moderate {
             store.audit(Some(&turn.id), &tool.name, risk.as_str(), &args_text, "executed", Some(if ok { &summary } else { error.as_deref().unwrap_or(&summary) }));
         }
-        self.emit(AgentEvent::ToolFinished { turn_id: turn.id.clone(), call_id: call.id.clone(), ok, summary, error });
+        let card = if call.name == "explain_card" {
+            res.as_ref().ok().filter(|o| o.ok).and_then(|o| o.data.get("spec").cloned())
+        } else {
+            None
+        };
+        self.emit(AgentEvent::ToolFinished { turn_id: turn.id.clone(), call_id: call.id.clone(), ok, summary, error, card });
         res
     }
 }
