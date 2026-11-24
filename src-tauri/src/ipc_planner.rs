@@ -71,10 +71,10 @@ pub fn planner_delete(planner: State<'_, Arc<Planner>>, id: String, following: O
 }
 
 #[tauri::command]
-pub async fn planner_suggest(app: AppHandle, planner: State<'_, Arc<Planner>>, date: String) -> AppResult<Vec<Suggestion>> {
+pub async fn planner_suggest(app: AppHandle, planner: State<'_, Arc<Planner>>, date: String, wishes: Option<String>) -> AppResult<Vec<Suggestion>> {
     let date = NaiveDate::parse_from_str(date.trim(), "%Y-%m-%d").map_err(|_| AppError::invalid("Дата ожидается как ГГГГ-ММ-ДД"))?;
     let planner = planner.inner().clone();
-    suggest::suggest(&app, &planner, date, Local::now().naive_local()).await
+    suggest::suggest(&app, &planner, date, Local::now().naive_local(), wishes.as_deref()).await
 }
 
 #[tauri::command]

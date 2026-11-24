@@ -1,0 +1,28 @@
+// jarvis.app landing: static pages from public/, plus a small Worker for
+// direct downloads (/download/*), the Pro waitlist (/api/waitlist) and
+// anonymous daily download counters. No secrets.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "jarvis-site",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-11-23",
+  "observability": { "enabled": true },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "404-page",
+    "run_worker_first": ["/api/*", "/download/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "jarvis-site",
+      // Filled in by `npx wrangler d1 create jarvis-site` before the first deploy.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "GITHUB_REPO": "Sansay411/jarvis-island"
+  }
+}

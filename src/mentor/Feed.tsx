@@ -7,8 +7,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { mentorIpc, type FeedCard } from "../store/mentor";
 import { Icon, type IconName } from "../ui/Icon";
 
-const TRACK: Record<string, string> = { code: "Код", english: "English", body: "Тело", projects: "Проекты" };
-const TRACK_ICON: Record<string, IconName> = { code: "code", english: "book", body: "heart", projects: "rocket" };
+const TRACK: Record<string, string> = { code: "Код", english: "English", mind: "Логика", body: "Тело", projects: "Проекты" };
+const TRACK_ICON: Record<string, IconName> = { code: "code", english: "book", mind: "spark", body: "heart", projects: "rocket" };
 
 export interface FeedResult {
   xp: number;
@@ -32,6 +32,9 @@ export function Feed({ onDone }: { onDone: (r: FeedResult) => void }) {
 
   useEffect(() => {
     void mentorIpc.feed(7).then(setCards);
+    // While this set is played, JARVIS writes the next ones (around the
+    // last mistakes); the backend keeps it to one batch in ten minutes.
+    void mentorIpc.generate().catch(() => {});
   }, []);
   useEffect(() => {
     shownAt.current = performance.now();

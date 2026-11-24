@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Jarvis: скажите «Джарвис», компьютер сделает остальное</title>
+  <meta name="description" content="Голосовой ИИ-агент в острове у верхнего края экрана Windows и macOS. Управляет громкостью, окнами, программами, календарём и файлами, проверяет каждый шаг. Бесплатно и без ключей.">
+  <meta name="theme-color" content="#f3f4f6">
+  <link rel="icon" type="image/svg+xml" href="/img/mark.svg">
+  <link rel="icon" type="image/png" sizes="64x64" href="/img/favicon-64.png">
+  <link rel="apple-touch-icon" href="/img/apple-touch-icon.png">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Jarvis: голосовой ИИ-агент для компьютера">
+  <meta property="og:description" content="Скажите «Джарвис», и он сделает дело на вашем компьютере. Бесплатно, без ключей.">
+  <meta property="og:image" content="/img/og.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="preload" href="/fonts/onest-cyrillic.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/onest-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/img/laptop.webp" as="image" fetchpriority="high">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/config.js"></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+
+<div class="island" id="island" data-state="idle" role="img" aria-label="Jarvis">
+  <div class="island-inner">
+    <div class="island-content" id="islandContent">
+      <div class="brow">
+        <span class="brow-left" id="islandLabel"></span>
+        <span class="eyes"><i class="eye"></i><i class="eye"></i></span>
+        <span class="brow-right" id="islandMeta"></span>
+      </div>
+      <div class="island-body" id="islandBody"></div>
+    </div>
+  </div>
+</div>
+
+<header class="top">
+  <a class="brand" href="#" aria-label="Jarvis">
+    <span class="brand-mark" aria-hidden="true"><i></i><i></i></span>
+    <span class="brand-name">jarvis</span>
+  </a>
+  <nav class="nav">
+    <span><a href="#tour" data-i18n="nav.tour">Остров</a><a href="#features" data-i18n="nav.features">Возможности</a></span>
+    <span><a href="#pricing" data-i18n="nav.pricing">Цены</a><a href="#faq" data-i18n="nav.faq">Вопросы</a></span>
+  </nav>
+  <div class="top-actions">
+    <button class="lang" id="lang" type="button" aria-label="Language">EN</button>
+    <a class="btn btn-small" href="#download" data-i18n="nav.download">Скачать</a>
+  </div>
+</header>
+
+<main>
+
+  <section class="hero" id="hero">
+    <div class="hero-glow" aria-hidden="true"></div>
+    <div class="hero-stage" id="stage" aria-hidden="true">
+      <img class="float f-main" data-depth="14" src="/img/laptop.webp" width="1214" height="1214" alt="" fetchpriority="high">
+      <img class="float f1" data-depth="34" src="/img/rocket.webp" width="640" height="640" alt="">
+      <img class="float f2" data-depth="26" src="/img/flame.webp" width="640" height="640" alt="">
+      <img class="float f3" data-depth="40" src="/img/cards.webp" width="640" height="640" alt="">
+      <img class="float f4" data-depth="22" src="/img/trophy.webp" width="640" height="640" alt="">
+      <img class="float f5" data-depth="30" src="/img/chat.webp" width="640" height="640" alt="">
+      <img class="float f6" data-depth="18" src="/img/gamepad.webp" width="640" height="640" alt="">
+    </div>
+    <p class="eyebrow" data-i18n="hero.eyebrow">ИИ-агент для Windows и macOS</p>
+    <h1 data-i18n="hero.title">Скажите «Джарвис».<br><span class="amber">Компьютер сделает остальное.</span></h1>
+    <p class="lead" data-i18n="hero.lead">Голосовой помощник живёт в острове у верхнего края экрана. Меняет громкость, открывает программы, раскладывает окна, ведёт календарь и проверяет каждый шаг, прежде чем ответить.</p>
+    <div class="cta-row">
+      <a class="btn btn-amber" data-download href="/download/windows">
+        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3v11.2l4.1-4.1 1.4 1.4L12 17l-5.5-5.5 1.4-1.4 4.1 4.1V3h0zM5 19h14v2H5z"/></svg>
+        <span data-download-label data-i18n="cta.windows">Скачать для Windows</span>
+      </a>
+      <a class="btn btn-ghost" href="#tour">
+        <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5.5v13l10.5-6.5z"/></svg>
+        <span data-i18n="cta.tour">Как это выглядит</span>
+      </a>
+    </div>
+    <p class="fine" data-i18n="hero.fine">Бесплатно · Без ключей и регистрации · Windows 10/11 и macOS</p>
+
+    <div class="say" aria-hidden="true">
+      <div class="say-track" id="sayTrack"></div>
+    </div>
+  </section>
+
+  <section class="strip">
+    <div class="stat"><b>0%</b><span data-i18n="stat.cpu">процессора в покое</span></div>
+    <div class="stat"><b>~0,45 c</b><span data-i18n="stat.wake">от имени до отклика</span></div>
+    <div class="stat"><b>36 мс</b><span data-i18n="stat.local">громкость без модели</span></div>
+    <div class="stat"><b>0</b><span data-i18n="stat.electron">Electron и Python. Только Rust</span></div>
+  </section>
+
+  <section class="section tour" id="tour">
+    <p class="kicker" data-i18n="tour.kicker">Остров</p>
+    <h2 data-i18n="tour.title">Один остров. Всё под рукой.</h2>
+    <p class="lead lead-left" data-i18n="tour.lead">Наведите курсор, и остров раскроется: музыка с календарём, фокус, рост, полка и звук. Это настоящие экраны приложения.</p>
+    <div class="screen screen-xl tilt" id="tourScreen">
+      <img class="shot is-on" data-tab="voice" style="--w:663" src="/img/ui/island-tts.webp" width="1988" height="726" alt="Озвучка ответа на острове" data-i18n-alt="tour.voice.alt">
+      <img class="shot" data-tab="nook" style="--w:663" src="/img/ui/island-nook-events.webp" width="1988" height="642" loading="lazy" alt="Обзор: плеер и календарь" data-i18n-alt="tour.nook.alt">
+      <img class="shot" data-tab="focus" style="--w:663" src="/img/ui/island-focus-cal.webp" width="1988" height="954" loading="lazy" alt="Фокус по блоку календаря" data-i18n-alt="tour.focus.alt">
+      <img class="shot" data-tab="growth" style="--w:663" src="/img/ui/island-growth.webp" width="1988" height="678" loading="lazy" alt="Рост: серия, уровень, минуты видео" data-i18n-alt="tour.growth.alt">
+      <img class="shot" data-tab="tray" style="--w:663" src="/img/ui/island-tray.webp" width="1988" height="600" loading="lazy" alt="Полка с файлами" data-i18n-alt="tour.tray.alt">
+      <img class="shot" data-tab="sound" style="--w:663" src="/img/ui/island-sound.webp" width="1988" height="744" loading="lazy" alt="Звук: заряд наушников" data-i18n-alt="tour.sound.alt">
+      <img class="shot" data-tab="files" style="--w:516" src="/img/ui/island-files.webp" width="1548" height="561" loading="lazy" alt="Что сделать с файлом" data-i18n-alt="tour.files.alt">
+      <img class="screen-art" src="/img/mic.webp" width="640" height="640" loading="lazy" alt="">
+    </div>
+    <div class="tabs" role="tablist">
+      <button type="button" class="on" data-tab="voice" data-i18n="tour.voice">Голос</button>
+      <button type="button" data-tab="nook" data-i18n="tour.nook">Обзор</button>
+      <button type="button" data-tab="focus" data-i18n="tour.focus">Фокус</button>
+      <button type="button" data-tab="growth" data-i18n="tour.growth">Рост</button>
+      <button type="button" data-tab="tray" data-i18n="tour.tray">Полка</button>
+      <button type="button" data-tab="sound" data-i18n="tour.sound">Звук</button>
+      <button type="button" data-tab="files" data-i18n="tour.files">Файлы</button>
+    </div>
+  </section>
+
+  <section class="section" id="how">
+    <p class="kicker" data-i18n="how.kicker">Как это работает</p>
+    <h2 data-i18n="how.title">Одна фраза вместо десяти кликов</h2>
+    <div class="steps">
+      <article class="step tilt">
+        <img class="icon3d" src="/img/mic.webp" width="640" height="640" loading="lazy" alt="">
+        <span class="step-n">01</span>
+        <h3 data-i18n="how.1.t">Скажите</h3>
+        <p data-i18n="how.1.p">«Джарвис, сделай громкость 30 и открой последний проект». Имя слышит модель на вашем компьютере: до обращения звук никуда не уходит.</p>
+      </article>
+      <article class="step tilt">
+        <img class="icon3d" src="/img/controls.webp" width="640" height="640" loading="lazy" alt="">
+        <span class="step-n">02</span>
+        <h3 data-i18n="how.2.t">Он делает</h3>
+        <p data-i18n="how.2.p">Не советует, а нажимает: системные API Windows и macOS, окна, браузер, файлы. Длинную задачу раскладывает в живой план прямо на острове.</p>
+      </article>
+      <article class="step tilt">
+        <img class="icon3d" src="/img/trophy.webp" width="640" height="640" loading="lazy" alt="">
+        <span class="step-n">03</span>
+        <h3 data-i18n="how.3.t">И проверяет</h3>
+        <p data-i18n="how.3.p">После каждого действия смотрит, что получилось на самом деле, и только потом отвечает голосом. Опасное выполняется только после вашего «Разрешить».</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="section" id="features">
+    <p class="kicker" data-i18n="feat.kicker">Возможности</p>
+    <h2 data-i18n="feat.title">Не болталка. Руки для вашего компьютера.</h2>
+
+    <div class="bento">
+      <article class="card card-wide tilt">
+        <div class="card-text">
+          <img class="icon3d" src="/img/voice.webp" width="640" height="640" loading="lazy" alt="">
+          <h3 data-i18n="feat.voice.t">Голос, который не надо ждать</h3>
+          <p data-i18n="feat.voice.p">Локальное распознавание имени, студийные нейроголоса без ключей и офлайн-голос, если пропал интернет. Перебейте его на полуслове, и он замолчит.</p>
+        </div>
+        <div class="screen screen-md" data-cycle>
+          <img class="shot is-on" style="--w:356" src="/img/ui/island-thinking.webp" width="1068" height="108" loading="lazy" alt="Джарвис ищет ответ" data-i18n-alt="feat.voice.alt1">
+          <img class="shot" style="--w:432" src="/img/ui/island-voice.webp" width="1296" height="294" loading="lazy" alt="Джарвис отвечает голосом" data-i18n-alt="feat.voice.alt2">
+        </div>
+      </article>
+
+      <article class="card card-two tilt">
+        <div class="card-text">
+          <img class="icon3d" src="/img/windows.webp" width="640" height="640" loading="lazy" alt="">
+          <h3 data-i18n="feat.act.t">Много шагов, одна просьба</h3>
+          <p data-i18n="feat.act.p">Громкость, яркость, программы, окна 50/50, вкладки браузера, таймеры. Живой план и галочка у каждого шага.</p>
+        </div>
+        <div class="screen screen-tall">
+          <img class="shot is-on" style="--w:571" src="/img/ui/workspace.webp" width="1712" height="1548" loading="lazy" alt="Чат с планом и выполненными действиями" data-i18n-alt="feat.act.alt">
+        </div>
+      </article>
+
+      <article class="card tilt">
+        <div class="card-text">
+          <img class="icon3d" src="/img/folder.webp" width="640" height="640" loading="lazy" alt="">
+          <h3 data-i18n="feat.files.t">Бросьте файл на остров</h3>
+          <p data-i18n="feat.files.p">MKV в MP4, звук из видео, текст с картинки и PDF, субтитры из аудио, ZIP, чистка EXIF.</p>
+        </div>
+        <div class="screen screen-sm" data-cycle>
+          <img class="shot is-on" style="--w:492" src="/img/ui/island-drop.webp" width="1476" height="432" loading="lazy" alt="Сброс файла на остров" data-i18n-alt="feat.files.alt1">
+          <img class="shot" style="--w:516" src="/img/ui/island-files.webp" width="1548" height="561" loading="lazy" alt="Действия с файлом" data-i18n-alt="feat.files.alt2">
+        </div>
+      </article>
+
+      <article class="card card-two tilt">
+        <div class="card-text">
+          <img class="icon3d" src="/img/calendar.webp" width="640" height="640" loading="lazy" alt="">
+          <h3 data-i18n="feat.plan.t">Календарь как у Google</h3>
+          <p data-i18n="feat.plan.p">Неделя, день и месяц, синхронизация с Google в обе стороны и «Спланируй мне день».</p>
+        </div>
+        <div class="window">
+          <img src="/img/ui/planner.webp" width="2560" height="1600" loading="lazy" alt="Планировщик на неделю" data-i18n-alt="feat.plan.alt">
+        </div>
+      </article>
+
+      <article class="card tilt">
+        <div class="card-text">
+          <img class="icon3d" src="/img/medal.webp" width="640" height="640" loading="lazy" alt="">
+          <h3 data-i18n="feat.focus.t">Фокус по календарю</h3>
+          <p data-i18n="feat.focus.p">За 10 минут до блока остров сам предложит фокус. Серия дней и уровни растут от ваших задач.</p>
+        </div>
+        <div class="screen screen-sm">
+          <img class="shot is-on" style="--w:572" src="/img/ui/island-event-soon.webp" width="1716" height="324" loading="lazy" alt="Напоминание о блоке календаря" data-i18n-alt="feat.focus.alt">
+        </div>
+      </article>
+    </div>
+
+    <div class="mini">
+      <article class="card tilt">
+        <img class="icon3d" src="/img/flame.webp" width="640" height="640" loading="lazy" alt="">
+        <h3 data-i18n="feat.mentor.t">Наставник вместо ленты</h3>
+        <p data-i18n="feat.mentor.p">Лимит на Shorts, Reels и TikTok. Минуты кончились: вкладка закрывается, а вместо ленты карточки по коду и английскому, разминка или шаг по проекту.</p>
+      </article>
+      <article class="card tilt">
+        <img class="icon3d" src="/img/cards.webp" width="640" height="640" loading="lazy" alt="">
+        <h3 data-i18n="feat.clip.t">Память буфера</h3>
+        <p data-i18n="feat.clip.p">«Вставь то, что я копировал час назад». Пароли и ключи не сохраняются, всё на компьютере.</p>
+      </article>
+      <article class="card tilt">
+        <img class="icon3d" src="/img/plane.webp" width="640" height="640" loading="lazy" alt="">
+        <h3 data-i18n="feat.tg.t">Свой Telegram-бот</h3>
+        <p data-i18n="feat.tg.p">План утром, итог вечером, напоминания и просьбы Джарвису с телефона. Без стороннего сервера.</p>
+      </article>
+      <article class="card tilt">
+        <img class="icon3d" src="/img/terminal.webp" width="640" height="640" loading="lazy" alt="">
+        <h3 data-i18n="feat.dev.t">Для разработчиков</h3>
+        <p data-i18n="feat.dev.p">VS Code и недавние проекты, Claude Code и Codex фоновыми задачами, терминал, любые MCP-серверы.</p>
+      </article>
+    </div>
+
+    <div class="models">
+      <p data-i18n="feat.models">Любая модель: работает сразу через Jarvis Cloud, а также со своим ключом</p>
+      <ul>
+        <li>DeepSeek</li><li>OpenAI</li><li>OpenRouter</li><li>Qwen</li><li>Ollama</li><li data-i18n="feat.models.any">любой OpenAI-совместимый API</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section split" id="privacy">
+    <div>
+      <img class="icon3d icon-xl" src="/img/shield.webp" width="640" height="640" loading="lazy" alt="">
+      <p class="kicker" data-i18n="priv.kicker">Приватность и безопасность</p>
+      <h2 data-i18n="priv.title">Управляет настоящим компьютером. Поэтому осторожен.</h2>
+      <ul class="checks">
+        <li data-i18n="priv.1"><b>Имя слушается локально.</b> Пока вы не позвали Джарвиса, ни звук, ни текст не покидают компьютер.</li>
+        <li data-i18n="priv.2"><b>Опасное только с вашего «Разрешить».</b> Удаление, установка, отправка сообщений и покупки, даже на автопилоте.</li>
+        <li data-i18n="priv.3"><b>Чужой текст не командует.</b> Страницы, файлы и буфер для модели остаются недоверенными данными.</li>
+        <li data-i18n="priv.4"><b>Ни аккаунтов, ни телеметрии.</b> Ключи в хранилище Windows и связке ключей macOS, рискованные действия пишутся в локальный журнал.</li>
+      </ul>
+    </div>
+    <div class="screen screen-tall tilt">
+      <img class="shot is-on" style="--w:572" src="/img/ui/workspace-confirm.webp" width="1716" height="1548" loading="lazy" alt="Подтверждение опасного действия" data-i18n-alt="priv.alt">
+    </div>
+  </section>
+
+  <section class="section" id="roadmap">
+    <p class="kicker" data-i18n="road.kicker">Куда растём</p>
+    <h2 data-i18n="road.title">Цель: компьютер, которым удобнее управлять голосом, чем мышью</h2>
+    <div class="road">
+      <article class="road-item road-now tilt">
+        <img class="icon3d" src="/img/rocket.webp" width="640" height="640" loading="lazy" alt="">
+        <span class="badge" data-i18n="road.now">Уже работает</span>
+        <p data-i18n="road.now.p">Остров, голос на русском, 40+ действий в системе, календарь, наставник, Telegram, Windows и macOS.</p>
+      </article>
+      <article class="road-item tilt">
+        <img class="icon3d" src="/img/chat.webp" width="640" height="640" loading="lazy" alt="">
+        <span class="badge" data-i18n="road.next">Дальше</span>
+        <p data-i18n="road.next.p">Голос на английском и казахском, своё имя для помощника, заметки и надёжные напоминания, «Отмени последнее».</p>
+      </article>
+      <article class="road-item tilt">
+        <img class="icon3d" src="/img/gamepad.webp" width="640" height="640" loading="lazy" alt="">
+        <span class="badge" data-i18n="road.later">Потом</span>
+        <p data-i18n="road.later.p">Любое приложение голосом без кнопок, сценарии, которые он выучил сам, телефон как микрофон для компьютера.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="section" id="pricing">
+    <p class="kicker" data-i18n="price.kicker">Цены</p>
+    <h2 data-i18n="price.title">Бесплатно навсегда. Pro, когда хочется больше.</h2>
+    <div class="period" role="tablist">
+      <button type="button" class="on" data-period="monthly" data-i18n="price.monthly">Помесячно</button>
+      <button type="button" data-period="yearly"><span data-i18n="price.yearly">За год</span> <em data-i18n="price.save">-30%</em></button>
+    </div>
+    <div class="plans">
+      <article class="plan tilt">
+        <img class="plan-art" src="/img/app.webp" width="1100" height="1100" loading="lazy" alt="">
+        <h3>Free</h3>
+        <p class="plan-price"><b>$0</b></p>
+        <p class="plan-sub" data-i18n="price.free.sub">Всё приложение, без карты и регистрации</p>
+        <ul>
+          <li data-i18n="price.free.1">Все возможности острова, голоса и агента</li>
+          <li data-i18n="price.free.2">Jarvis Cloud: 300 просьб и 300 озвучек в день</li>
+          <li data-i18n="price.free.3">20 минут облачного распознавания в день</li>
+          <li data-i18n="price.free.4">Свой ключ или Ollama: без лимитов</li>
+          <li data-i18n="price.free.5">Офлайн-голос и распознавание на компьютере</li>
+        </ul>
+        <a class="btn btn-ghost btn-block" data-download href="/download/windows" data-i18n="price.free.cta">Скачать бесплатно</a>
+      </article>
+      <article class="plan plan-pro tilt">
+        <span class="plan-tag" data-i18n="price.pro.tag">Для тех, кто говорит много</span>
+        <img class="plan-art" src="/img/gem.webp" width="640" height="640" loading="lazy" alt="">
+        <h3>Pro</h3>
+        <p class="plan-price"><b id="proPrice">$7</b><span id="proPer" data-i18n="price.per.month">/мес</span></p>
+        <p class="plan-sub" id="proNote" data-i18n="price.pro.sub">Отмена в один клик</p>
+        <ul>
+          <li data-i18n="price.pro.1">В 10 раз больше облачных лимитов</li>
+          <li data-i18n="price.pro.2">Сильная модель для длинных и сложных задач</li>
+          <li data-i18n="price.pro.3">Премиальные облачные голоса</li>
+          <li data-i18n="price.pro.4">Новые функции раньше всех</li>
+          <li data-i18n="price.pro.5">Поддержка напрямую от разработчика</li>
+        </ul>
+        <button class="btn btn-amber btn-block" type="button" id="buyPro" data-i18n="price.pro.cta">Получить Pro</button>
+      </article>
+    </div>
+    <p class="fine center" data-i18n="price.fine">Цены в долларах, налоги считает платёжный партнёр. Деньги идут на облако и развитие проекта.</p>
+  </section>
+
+  <section class="section" id="faq">
+    <p class="kicker" data-i18n="faq.kicker">Вопросы</p>
+    <h2 data-i18n="faq.title">Коротко о главном</h2>
+    <div class="faq">
+      <details><summary data-i18n="faq.1.q">Это правда бесплатно?</summary><p data-i18n="faq.1.a">Да. Free включает всё приложение целиком. Облако по умолчанию даёт дневной лимит, а со своим ключом модели или с локальной Ollama лимита нет вовсе. Pro нужен тем, кто много говорит с Джарвисом через облако.</p></details>
+      <details><summary data-i18n="faq.2.q">Нужны ли ключи API?</summary><p data-i18n="faq.2.a">Нет. После установки он сразу работает через Jarvis Cloud: модель, голос и распознавание речи без единого ключа. Свой ключ можно добавить в настройках в любой момент.</p></details>
+      <details><summary data-i18n="faq.3.q">Работает без интернета?</summary><p data-i18n="faq.3.a">Имя, распознавание речи и голос могут работать на компьютере. Для умных ответов без сети подключите локальную модель через Ollama. Простые команды вроде громкости, музыки и яркости выполняются вообще без модели.</p></details>
+      <details><summary data-i18n="faq.4.q">Какие языки он понимает?</summary><p data-i18n="faq.4.a">Голосом пока только русский. В чате подойдёт любой язык, который понимает выбранная модель. Английский и казахский голос следующие в планах.</p></details>
+      <details><summary data-i18n="faq.5.q">Он не сделает лишнего?</summary><p data-i18n="faq.5.a">Чтение выполняется сразу, изменения идут с подтверждением, а удаление, установка, отправка и покупки всегда ждут вашего «Разрешить», даже в режиме автопилота. Каждое рискованное действие записывается в локальный журнал.</p></details>
+      <details><summary data-i18n="faq.6.q">Windows предупреждает о неизвестном издателе</summary><p data-i18n="faq.6.a">Сборки пока не подписаны сертификатом: подпись через SignPath Foundation подключается. До этого нажмите «Подробнее», затем «Выполнить в любом случае». Исходный код открыт на GitHub.</p></details>
+      <details><summary data-i18n="faq.7.q">Как отменить Pro?</summary><p data-i18n="faq.7.a">В письме об оплате есть ссылка на кабинет покупателя: отмена в один клик, Pro работает до конца оплаченного периода. Free остаётся с вами.</p></details>
+    </div>
+  </section>
+
+  <section class="final" id="download">
+    <img class="final-scene" src="/img/factory.webp" width="1100" height="1100" loading="lazy" alt="">
+    <img class="final-art" src="/img/app.webp" width="1100" height="1100" loading="lazy" alt="">
+    <h2 data-i18n="final.title">Позовите его по имени</h2>
+    <p class="lead" data-i18n="final.lead">Установка за минуту, без прав администратора. Дальше обновляется сам.</p>
+    <div class="dl-grid">
+      <a class="dl" href="/download/windows" data-platform="windows">
+        <b>Windows</b><span data-i18n="dl.win">10 и 11, x64</span>
+      </a>
+      <a class="dl" href="/download/mac-arm" data-platform="mac-arm">
+        <b>macOS</b><span data-i18n="dl.arm">Apple Silicon</span>
+      </a>
+      <a class="dl" href="/download/mac-intel" data-platform="mac-intel">
+        <b>macOS</b><span data-i18n="dl.intel">Intel</span>
+      </a>
+    </div>
+    <p class="fine"><a href="/download/portable" data-i18n="dl.portable">Portable-версия для Windows</a> · <a href="https://github.com/Sansay411/jarvis-island/releases" target="_blank" rel="noopener" data-i18n="dl.all">Все релизы</a></p>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="foot-brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span> <span class="brand-name">jarvis</span></div>
+  <nav>
+    <a href="https://github.com/Sansay411/jarvis-island" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://github.com/Sansay411/jarvis-island/blob/main/PRIVACY.md" target="_blank" rel="noopener" data-i18n="foot.privacy">Конфиденциальность</a>
+    <a href="https://github.com/Sansay411/jarvis-island/blob/main/CHANGELOG.md" target="_blank" rel="noopener" data-i18n="foot.changelog">Что нового</a>
+  </nav>
+  <p class="fine">© 2026 Jarvis</p>
+</footer>
+
+<dialog class="modal modal-form" id="waitModal">
+  <button class="modal-x" type="button" data-close aria-label="Закрыть">×</button>
+  <form id="waitForm">
+    <img src="/img/medal.webp" width="640" height="640" alt="">
+    <h3 data-i18n="wait.title">Pro скоро откроется</h3>
+    <p data-i18n="wait.lead">Оставьте почту, и мы напишем один раз, когда Pro можно будет купить.</p>
+    <input type="email" name="email" required autocomplete="email" placeholder="you@example.com">
+    <input type="text" name="website" tabindex="-1" autocomplete="off" class="hp" aria-hidden="true">
+    <button class="btn btn-amber btn-block" type="submit" data-i18n="wait.cta">Сообщить мне</button>
+    <p class="wait-msg" id="waitMsg" role="status"></p>
+  </form>
+</dialog>
+
+</body>
+</html>

@@ -140,7 +140,8 @@ interface PlannerStore {
   toggleHidden: (category: string) => void;
   addTask: (title: string, date: string, time: string | null) => Promise<void>;
   toggleTask: (id: string) => Promise<void>;
-  suggest: (date: Date) => Promise<void>;
+  /** `wishes`: what the user wants from the day, in their words. */
+  suggest: (date: Date, wishes?: string) => Promise<void>;
   accept: (s: Suggestion) => Promise<void>;
   acceptAll: () => Promise<void>;
   dismissSuggestions: () => void;
@@ -321,11 +322,11 @@ export const usePlanner = create<PlannerStore>((set, get) => ({
     if (isTauri()) await invoke("hub_task_toggle", { id }).catch((e) => get().showToast(errorMessage(e)));
   },
 
-  suggest: async (date) => {
+  suggest: async (date, wishes) => {
     set({ suggesting: true, suggestions: [] });
     try {
       const suggestions = isTauri()
-        ? await invoke<Suggestion[]>("planner_suggest", { date: isoDate(date) })
+        ? await invoke<Suggestion[]>("planner_suggest", { date: isoDate(date), wishes: wishes?.trim() || null })
         : [];
       set({ suggestions });
       if (suggestions.length === 0) get().showToast("Свободного времени на этот день почти нет");

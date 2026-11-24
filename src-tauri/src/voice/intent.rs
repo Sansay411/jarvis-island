@@ -168,6 +168,29 @@ pub fn player_command(text: &str) -> Option<String> {
     Some(if parts.len() == 1 { text.trim().to_string() } else { format!("{}.", parts[parts.len() - 1]) })
 }
 
+/// «Громче», «сделай тише», «громкость 30»: an exact sound or brightness
+/// command that counts without the name like a player word does (heard
+/// live 2026-11-23: «Громче.» twice, then «Сделай громче.», all dropped
+/// until the user added the name). Short phrases only, never a question.
+pub fn device_word(text: &str) -> bool {
+    !text.trim_end().ends_with('?') && plain_words(text).len() <= 4 && crate::agent::fast::device_command(text)
+}
+
+/// Words that are complete the moment they are said: an exact player or
+/// device command, with the name and a greeting in front or not, or stop
+/// words alone. The microphone answers them after a short pause instead of
+/// the full one, so «дальше» acts as soon as it is said.
+pub fn quick_final(text: &str) -> bool {
+    if text.trim_end().ends_with('?') {
+        return false;
+    }
+    let w = wake::spans(text);
+    let skip = w.iter().take_while(|(_, x)| LEADS.contains(&x.as_str()) || wake::is_name(x)).count();
+    let Some(&(at, _)) = w.get(skip) else { return false };
+    let rest = &text[at..];
+    player_command(rest).is_some() || crate::agent::fast::device_command(rest) || is_stop(rest)
+}
+
 /// «…, Джарвис, хватит.», «… Стоп.»: the phrase ends by cutting JARVIS off
 /// (heard live 2026-11-20: «Давай я тебе скину. Ничего, Жарвис, всё, Джарвис,
 /// хватит. Стоп.» went to the model, which paused the music instead). The stop
@@ -778,6 +801,46 @@ mod tests {
         }
         for t in ["Играй в футбол.", "Дальше?", "Включи свет.", "Ну давай дальше рассказывай.", "Стоп, а где ключи?", "Открой браузер.", "Привет.", "Музыка!", "Тихо!", "Отмена."] {
             assert_eq!(player_command(t), None, "not a player command: {t}");
+        }
+    }
+
+    #[test]
+    fn repeated_and_short_player_words_from_the_log_go_through() {
+        // Heard live 2026-11-21/23 and lost: the user said it again and again.
+        crate::platform::media::set_cached(crate::platform::media::MediaState { available: true, status: "paused".into(), ..Default::default() });
+        for (t, last) in [
+            ("Дальше дальше.", "Дальше дальше."),
+            ("Играй! Играй, играй, играй.", "играй."),
+            ("Играй дальше.", "Играй дальше."),
+            ("Дальше. Играй.", "Играй."),
+            ("Назад, назад.", "назад."),
+            ("Старт.", "Старт."),
+            ("Вперёд!", "Вперёд!"),
+            ("Давай следующую.", "Давай следующую."),
+        ] {
+            assert_eq!(player_command(t).as_deref(), Some(last), "{t}");
+        }
+        assert_eq!(classify("Jarves. Пауза.", &Context::default()), req("Jarves. Пауза."));
+    }
+
+    #[test]
+    fn sound_commands_count_without_the_name() {
+        for t in ["Громче.", "Сделай громче.", "Тише!", "Громкость 30.", "Выключи звук."] {
+            assert!(device_word(t), "{t}");
+        }
+        for t in ["Громче?", "Говори громче, я не слышу", "Сделай громче телевизор у соседей", "Открой браузер."] {
+            assert!(!device_word(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn quick_final_takes_only_short_exact_commands() {
+        crate::platform::media::set_cached(crate::platform::media::MediaState { available: true, status: "playing".into(), ..Default::default() });
+        for t in ["Дальше.", "Дальше дальше.", "Пауза.", "Стоп.", "Стоп, стоп.", "Джарвис, дальше.", "Эй, Джарвис, пауза!", "Громче.", "Громкость 30.", "Старт."] {
+            assert!(quick_final(t), "must end at once: {t}");
+        }
+        for t in ["Дальше?", "Дальше мы", "Джарвис", "Открой", "Стоп, а где", "Пауза. Я сейчас", "Включи свет", "Привет."] {
+            assert!(!quick_final(t), "must wait for the rest: {t}");
         }
     }
 

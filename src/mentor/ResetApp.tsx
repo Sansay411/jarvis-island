@@ -12,7 +12,8 @@ import { isTauri } from "../lib/ipc";
 import heroUrl from "../../installer/ui/hero.png";
 import { daysRu, mentorIpc, minutesRu, startMentorFeed, useMentor, type Intervention, type Reward, type Step } from "../store/mentor";
 import { Feed, type FeedResult } from "./Feed";
-import { Game, GamePicker, GAME_TITLE, type GameId } from "./Games";
+import { Game, GamePicker, GAME_TITLE, GAME_TRACK, PUZZLES, type GameId } from "./Games";
+import { Memory, Schulte, Sudoku } from "./Puzzles";
 import { Breath, Workout } from "./Body";
 import { ART } from "./art";
 import { Icon, type IconName } from "../ui/Icon";
@@ -86,7 +87,10 @@ export default function ResetApp() {
       });
       const s = q.get("screen") as Screen["id"] | null;
       if (s && s !== "done" && s !== "started" && s !== "game") setScreen({ id: s } as Screen);
-      if (s === "game") setScreen({ id: "game", game: q.get("game") === "words" ? "words" : "sprint" });
+      if (s === "game") {
+        const g = q.get("game") as GameId | null;
+        setScreen({ id: "game", game: g && (Object.keys(GAME_TITLE) as GameId[]).includes(g) ? g : "sprint" });
+      }
       const won = q.get("reward");
       if (s === "done") setScreen({ id: "done", reward: { xp: 55, earnedSec: 180, level: won === "level" ? 4 : 3, levelName: won === "level" ? "Собранный" : "Практик", levelUp: won === "level", streak: 6, best: won === "record", record: 0 }, extraXp: 48, kind: "feed", note: "5 из 6 верно" });
       if (s === "started") setScreen({ id: "started", title: "jarvis-island: открыть файл и написать заголовок функции", minutes: 10 });
@@ -122,7 +126,7 @@ export default function ResetApp() {
 
   const tiles = [
     { id: "feed", title: "Лента знаний", meta: "7 карточек · 3 мин", text: "Код, английский, тело. Как лента — только после неё ты умнее.", earn: "+3 мин видео" },
-    { id: "games", title: "Игра на минуту", meta: "Счёт или слова", text: "Побей свой рекорд. Быстро, азартно и с пользой.", earn: "+2 мин видео" },
+    { id: "games", title: "Игры для головы", meta: "Судоку, счёт, слова, Шульте", text: "Побей свой рекорд. Быстро, азартно и с пользой.", earn: "+2 мин видео" },
     { id: "workout", title: "Разминка", meta: "3 упражнения · 3 мин", text: "Движение снимает тягу лучше силы воли.", earn: "+3 мин видео" },
     { id: "step", title: "Шаг по проекту", meta: "10 минут фокуса", text: "Самое маленькое действие. Дальше пойдёт само.", earn: "+2 XP за минуту" },
   ];
@@ -228,13 +232,21 @@ export default function ResetApp() {
         )}
         {screen.id === "games" && (
           <section className="rs-screen rs-center">
-            <h2 className="rs-h2">Игра на минуту</h2>
+            <h2 className="rs-h2">Игры для головы</h2>
             <GamePicker onPick={(game) => setScreen({ id: "game", game })} />
           </section>
         )}
         {screen.id === "game" && (
           <section className="rs-screen rs-center">
-            <Game game={screen.game} onDone={(score) => void finish("game", screen.game === "sprint" ? "code" : "english", GAME_TITLE[screen.game], 1, score, Math.min(60, score * 2), 0, `${score} очков`)} />
+            {PUZZLES.includes(screen.game) ? (
+              (() => {
+                const g = screen.game;
+                const done = (score: number, note: string) => void finish("game", GAME_TRACK[g], GAME_TITLE[g], 3, score, Math.min(90, Math.round(score / 3)), 0, note);
+                return g === "sudoku" ? <Sudoku onDone={done} /> : g === "schulte" ? <Schulte onDone={done} /> : <Memory onDone={done} />;
+              })()
+            ) : (
+              <Game game={screen.game} onDone={(score) => void finish("game", GAME_TRACK[screen.game], GAME_TITLE[screen.game], 1, score, Math.min(60, score * 2), 0, `${score} очков`)} />
+            )}
           </section>
         )}
         {screen.id === "workout" && (

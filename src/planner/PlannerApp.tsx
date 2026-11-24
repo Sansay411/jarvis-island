@@ -72,6 +72,8 @@ export default function PlannerApp() {
       return next;
     });
   const [viewMenu, setViewMenu] = useState(false);
+  const [planAsk, setPlanAsk] = useState(false);
+  const [wishes, setWishes] = useState("");
   const [pop, setPop] = useState<Pop>(null);
   const [editor, setEditor] = useState<EditorInit | null>(null);
   const [calsOpen, setCalsOpen] = useState(true);
@@ -173,16 +175,55 @@ export default function PlannerApp() {
           {periodTitle(view, anchor)}
         </h1>
         <div className="pl-header-gap" data-tauri-drag-region />
-        <button
-          type="button"
-          className={`pl-plan-btn${suggesting ? " is-busy" : ""}`}
-          onClick={() => void st().suggest(planDate)}
-          disabled={suggesting}
-          title="Джарвис заполнит свободное время блоками работы, учёбы и спорта"
-        >
-          <PIcon name="spark" size={18} />
-          {suggesting ? "Планирую…" : "Спланировать день"}
-        </button>
+        <div className="pl-plan-wrap">
+          <button
+            type="button"
+            className={`pl-plan-btn${suggesting ? " is-busy" : ""}`}
+            onClick={() => setPlanAsk((v) => !v)}
+            disabled={suggesting}
+            aria-expanded={planAsk}
+            title="Джарвис спланирует свободное время дня под ваши дела и цели"
+          >
+            <PIcon name="spark" size={18} />
+            {suggesting ? "Планирую…" : "Спланировать день"}
+          </button>
+          {planAsk && (
+            <>
+              <div className="pl-menu-layer" onPointerDown={() => setPlanAsk(false)} />
+              <form
+                className="pl-menu pl-plan-ask"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  setPlanAsk(false);
+                  void st().suggest(planDate, wishes);
+                }}
+              >
+                <label htmlFor="pl-wishes">Что важно в этот день?</label>
+                <textarea
+                  id="pl-wishes"
+                  autoFocus
+                  rows={3}
+                  value={wishes}
+                  placeholder="Например: закончить отчёт до обеда, вечером зал, в 19:00 ужин с друзьями"
+                  onChange={(e) => setWishes(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      e.currentTarget.form?.requestSubmit();
+                    }
+                    if (e.key === "Escape") setPlanAsk(false);
+                  }}
+                />
+                <div className="pl-plan-ask-row">
+                  <span>Можно оставить пустым: Джарвис возьмёт задачи и цели.</span>
+                  <button type="submit" className="pl-plan-go">
+                    Спланировать
+                  </button>
+                </div>
+              </form>
+            </>
+          )}
+        </div>
         {sync?.connected && (
           <button type="button" className={`pl-icon-btn${sync.syncing ? " is-spinning" : ""}`} aria-label="Синхронизировать" title={`Google: ${ago(sync.lastSync, now)}`} onClick={() => void st().syncNow()}>
             <PIcon name="sync" />

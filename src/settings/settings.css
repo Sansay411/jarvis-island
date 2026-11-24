@@ -1069,6 +1069,134 @@
   gap: 8px;
 }
 
+/* ---------- MCP catalog ---------- */
+
+.mcp-cat-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+}
+.mcp-cat-search {
+  width: 100%;
+}
+.mcp-cat-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mcp-cat-chip {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 14px;
+  border: 1px solid var(--line-strong);
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-12);
+  cursor: pointer;
+}
+.mcp-cat-chip:hover {
+  color: var(--text-1);
+}
+.mcp-cat-chip.is-on {
+  border-color: transparent;
+  background: var(--text-1);
+  color: var(--obsidian);
+}
+.mcp-cat-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 10px;
+}
+.mcp-cat-card {
+  padding: 14px 14px 12px;
+  border-radius: 12px;
+  background: var(--field);
+  border: 1px solid var(--line);
+  transition: border-color 160ms ease, background 160ms ease;
+}
+.mcp-cat-card:hover {
+  border-color: var(--line-strong);
+}
+.mcp-cat-card.is-open {
+  grid-column: 1 / -1;
+  background: var(--field-hi);
+}
+.mcp-cat-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.mcp-cat-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mcp-cat-name {
+  font-size: var(--fs-14);
+  font-weight: 560;
+  color: var(--text-1);
+}
+.mcp-cat-desc {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-3);
+}
+.mcp-cat-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.mcp-cat-tag {
+  padding: 1px 8px;
+  border-radius: 9px;
+  background: var(--field-hi);
+  color: var(--text-3);
+  font-size: 11px;
+}
+.mcp-cat-tag.is-free {
+  color: var(--ok);
+}
+.mcp-cat-done {
+  flex: none;
+  padding: 5px 10px;
+  border-radius: 8px;
+  color: var(--ok);
+  font-size: var(--fs-12);
+}
+.mcp-cat-card.is-installed {
+  opacity: 0.75;
+}
+.mcp-cat-form {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.mcp-cat-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.mcp-cat-field input {
+  flex: 1;
+  min-width: 0;
+}
+.mcp-cat-link {
+  flex: none;
+  color: var(--amber-hi);
+  font-size: var(--fs-12);
+  text-decoration: none;
+}
+.mcp-cat-link:hover {
+  text-decoration: underline;
+}
+
 /* ---------- Free Neural HD TTS Studio ---------- */
 
 .tts-studio-card {

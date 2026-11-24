@@ -8,6 +8,7 @@
 //! the useful one), so the quick reward stays — attached to the right habit.
 
 pub mod guard;
+pub mod gen;
 pub mod seed;
 
 use std::collections::{HashMap, HashSet};
@@ -293,6 +294,15 @@ impl Mentor {
     pub fn new(app: Option<AppHandle>, store: Arc<Store>) -> AppResult<Arc<Self>> {
         let m = Arc::new(Mentor { app, store, allowed: Mutex::new((String::new(), HashSet::new())), pending: Mutex::new(None), watching: Mutex::new(None) });
         m.seed()?;
+        // «Логика и счёт» arrived after the first installs: switch it on once.
+        if m.store.kv_get("mentor.mind_added").is_none() {
+            let mut s = m.store.settings();
+            if !s.mentor.tracks.iter().any(|t| t == "mind") {
+                s.mentor.tracks.push("mind".into());
+                let _ = m.store.save_settings(&s);
+            }
+            let _ = m.store.kv_set("mentor.mind_added", "1");
+        }
         Ok(m)
     }
 
@@ -315,6 +325,13 @@ impl Mentor {
                 tx.execute(
                     "INSERT OR IGNORE INTO mentor_cards(id, track, kind, payload, source, due, created_at) VALUES(?1, ?2, ?3, ?4, 'seed', ?5, ?6)",
                     params![format!("seed-{i}"), track, kind, payload.to_string(), due, now],
+                )?;
+            }
+            // Hundreds more made by rule (`gen`): computed answers, stable ids.
+            for (id, track, kind, payload) in gen::cards() {
+                tx.execute(
+                    "INSERT OR IGNORE INTO mentor_cards(id, track, kind, payload, source, due, created_at) VALUES(?1, ?2, ?3, ?4, 'gen', ?5, ?6)",
+                    params![id, track, kind, payload.to_string(), due, now],
                 )?;
             }
             tx.commit()?;
@@ -595,9 +612,9 @@ impl Mentor {
             .mentor
             .tracks
             .into_iter()
-            .filter(|t| matches!(t.as_str(), "code" | "english" | "body"))
+            .filter(|t| matches!(t.as_str(), "code" | "english" | "mind" | "body"))
             .collect();
-        let tracks = if tracks.is_empty() { vec!["code".into(), "english".into(), "body".into()] } else { tracks };
+        let tracks = if tracks.is_empty() { vec!["code".into(), "english".into(), "mind".into(), "body".into()] } else { tracks };
         let today_s = day_str(today());
         let list = tracks.iter().map(|t| format!("'{t}'")).collect::<Vec<_>>().join(",");
         let (due, fresh, challenge, words) = self.store.with_conn(|conn| {
@@ -854,27 +871,39 @@ fn last_commit(dir: &Path) -> Option<(i64, String)> {
     Some((ts.parse().ok()?, subject))
 }
 
-/// Ask the model for fresh cards when a track runs low (at most every six
-/// hours per track).
-pub async fn refill(app: AppHandle, mentor: Arc<Mentor>) {
+/// What the model may write for each track.
+fn track_brief(track: &str) -> Option<(&'static str, &'static [&'static str])> {
+    Some(match track {
+        "code" => (
+            "программирование: Rust, TypeScript/JavaScript, Python, Git, SQL, алгоритмы, сети, архитектура, отладка. Типы: quiz {q, options[4], answer, explain}, \
+             code {title, code (до 6 строк), options[4], answer, explain}, fact {title, body до 280 символов}",
+            &["quiz", "code", "fact"],
+        ),
+        "english" => (
+            "английский для разработчика, уровень B1-B2: полезные слова, фразовые глаголы, ложные друзья переводчика, предлоги, частые ошибки русских. \
+             Типы: word {word, ipa, tr (перевод), ex (пример на английском), exRu (перевод примера)}, quiz {q, options[4], answer, explain}",
+            &["word", "quiz"],
+        ),
+        "mind" => (
+            "логика и счёт: задачки на смекалку, последовательности, вероятность, проценты, трюки устного счёта, логические парадоксы, задачи «на подумать» \
+             с одним точным ответом. Тип: quiz {q, options[4], answer, explain}; ответ проверяемый, explain показывает ход решения",
+            &["quiz"],
+        ),
+        _ => return None,
+    })
+}
+
+/// Ask the model for one batch of cards for `track`. `focus`: what the user
+/// got wrong lately, so the new cards practise exactly that.
+async fn generate_for(app: &AppHandle, mentor: &Arc<Mentor>, track: &str) -> usize {
+    let Some((topic, kinds)) = track_brief(track) else { return 0 };
     let state = app.state::<crate::state::AppState>();
-    let settings = state.store.settings();
-    let Ok(client) = crate::ai::client_from_settings(&settings, &state.store) else { return };
-    for track in settings.mentor.tracks.iter().filter(|t| matches!(t.as_str(), "code" | "english")) {
-        let key = format!("mentor_refill_{track}");
-        let recent = mentor.store.kv_get(&key).and_then(|v| DateTime::parse_from_rfc3339(&v).ok()).is_some_and(|t| Utc::now() - t.with_timezone(&Utc) < Duration::hours(6));
-        let unseen: i64 = mentor
-            .store
-            .with_conn(|c| Ok(c.query_row("SELECT COUNT(*) FROM mentor_cards WHERE track = ?1 AND seen = 0", params![track], |r| r.get(0))?))
-            .unwrap_or(0);
-        if recent || unseen >= 8 {
-            continue;
-        }
-        let _ = mentor.store.kv_set(&key, &Utc::now().to_rfc3339());
-        let known: Vec<String> = mentor
+    let Ok(client) = crate::ai::client_from_settings(&state.store.settings(), &state.store) else { return 0 };
+    let heads = |sql: &str| -> Vec<String> {
+        mentor
             .store
             .with_conn(|c| {
-                let mut stmt = c.prepare("SELECT payload FROM mentor_cards WHERE track = ?1 ORDER BY created_at DESC LIMIT 60")?;
+                let mut stmt = c.prepare(sql)?;
                 let rows = stmt.query_map(params![track], |r| r.get::<_, String>(0))?;
                 Ok(rows
                     .filter_map(Result::ok)
@@ -882,53 +911,95 @@ pub async fn refill(app: AppHandle, mentor: Arc<Mentor>) {
                     .filter_map(|v| v.get("word").or_else(|| v.get("q")).or_else(|| v.get("title")).and_then(Value::as_str).map(str::to_string))
                     .collect())
             })
-            .unwrap_or_default();
-        let topic = if track == "code" {
-            "программирование: Rust, TypeScript/JavaScript, Python, Git, SQL, алгоритмы, сети, архитектура. Типы: quiz {q, options[4], answer, explain}, code {title, code (до 6 строк), options[4], answer, explain}, fact {title, body до 280 символов}"
-        } else {
-            "английский для разработчика, уровень B1–B2: полезные слова, фразовые глаголы, ложные друзья переводчика. Типы: word {word, ipa, tr (перевод), ex (пример на английском), exRu (перевод примера)}, quiz {q, options[4], answer, explain}"
-        };
-        let prompt = format!(
-            "Сделай 10 новых карточек для короткой обучающей ленты. Тема: {topic}. Каждая начинается с крючка, \
-             коротко, без воды, по-русски (английские слова и код — как есть), факты точные. Не повторяй: {known}.\n\
-             Ответ — только JSON: {{\"cards\":[{{\"kind\":\"quiz\", ...поля...}}]}}",
-            known = known.join("; ")
-        );
-        let msgs = [
-            crate::ai::types::ChatMessage::text(crate::ai::types::Role::System, "Ты автор коротких обучающих карточек. Отвечаешь строго JSON."),
-            crate::ai::types::ChatMessage::text(crate::ai::types::Role::User, prompt),
-        ];
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let Ok(Ok(done)) = tokio::time::timeout(std::time::Duration::from_secs(60), client.complete(&msgs, &[], &cancel, Some(2500), |_| {})).await else { continue };
-        let text = done.message.joined_text();
-        let (Some(a), Some(b)) = (text.find('{'), text.rfind('}')) else { continue };
-        let Ok(v) = serde_json::from_str::<Value>(&text[a..=b]) else { continue };
-        let now = Utc::now().to_rfc3339();
-        let due = day_str(today());
-        let mut added = 0;
-        for c in v.get("cards").and_then(Value::as_array).cloned().unwrap_or_default() {
-            let kind = c.get("kind").and_then(Value::as_str).unwrap_or("").to_string();
-            let allowed = if track == "code" { matches!(kind.as_str(), "quiz" | "code" | "fact") } else { matches!(kind.as_str(), "word" | "quiz") };
-            if !allowed || !valid_card(&kind, &c) {
-                continue;
-            }
-            let mut payload = c.clone();
-            if let Some(o) = payload.as_object_mut() {
-                o.remove("kind");
-            }
-            let id = format!("ai-{}", uuid::Uuid::new_v4().simple());
-            let ok = mentor.store.with_conn(|conn| {
-                Ok(conn.execute(
-                    "INSERT INTO mentor_cards(id, track, kind, payload, source, due, created_at) VALUES(?1, ?2, ?3, ?4, 'ai', ?5, ?6)",
-                    params![id, track, kind, payload.to_string(), due, now],
-                )?)
-            });
-            if ok.is_ok() {
-                added += 1;
-            }
+            .unwrap_or_default()
+    };
+    let known = heads("SELECT payload FROM mentor_cards WHERE track = ?1 ORDER BY created_at DESC LIMIT 60");
+    // Seen and answered wrong last time (SM-2 reset): the weak spots.
+    let missed = heads("SELECT payload FROM mentor_cards WHERE track = ?1 AND seen > 0 AND reps = 0 ORDER BY due DESC LIMIT 8");
+    let focus = if missed.is_empty() { String::new() } else { format!("\nЧеловек недавно ошибся здесь, сделай половину карточек на эти же темы, но с другими примерами: {}.", missed.join("; ")) };
+    let prompt = format!(
+        "Придумай 12 новых карточек для короткой обучающей ленты. Тема: {topic}. Каждая цепляет с первой строки, коротко, без воды, \
+         по-русски (английские слова и код как есть), факты точные, ответ однозначный, неверные варианты правдоподобные. \
+         Разнообразь форматы и сложность, добавь пару неожиданных.{focus}\nНе повторяй: {known}.\n\
+         Ответ только JSON: {{\"cards\":[{{\"kind\":\"quiz\", ...поля...}}]}}",
+        known = known.join("; ")
+    );
+    let msgs = [
+        crate::ai::types::ChatMessage::text(crate::ai::types::Role::System, "Ты автор коротких обучающих карточек, азартных как лента. Отвечаешь строго JSON."),
+        crate::ai::types::ChatMessage::text(crate::ai::types::Role::User, prompt),
+    ];
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let Ok(Ok(done)) = tokio::time::timeout(std::time::Duration::from_secs(90), client.complete(&msgs, &[], &cancel, Some(3500), |_| {})).await else { return 0 };
+    let text = done.message.joined_text();
+    let (Some(a), Some(b)) = (text.find('{'), text.rfind('}')) else { return 0 };
+    let Ok(v) = serde_json::from_str::<Value>(&text[a..=b]) else { return 0 };
+    let now = Utc::now().to_rfc3339();
+    let due = day_str(today());
+    let mut added = 0;
+    for c in v.get("cards").and_then(Value::as_array).cloned().unwrap_or_default() {
+        let kind = c.get("kind").and_then(Value::as_str).unwrap_or("").to_string();
+        if !kinds.contains(&kind.as_str()) || !valid_card(&kind, &c) {
+            continue;
         }
-        tracing::info!(track = %track, added, "mentor: fresh cards");
+        let mut payload = c.clone();
+        if let Some(o) = payload.as_object_mut() {
+            o.remove("kind");
+        }
+        let id = format!("ai-{}", uuid::Uuid::new_v4().simple());
+        let ok = mentor.store.with_conn(|conn| {
+            Ok(conn.execute(
+                "INSERT INTO mentor_cards(id, track, kind, payload, source, due, created_at) VALUES(?1, ?2, ?3, ?4, 'ai', ?5, ?6)",
+                params![id, track, kind, payload.to_string(), due, now],
+            )?)
+        });
+        if ok.is_ok() {
+            added += 1;
+        }
     }
+    tracing::info!(track = %track, added, missed = missed.len(), "mentor: fresh cards from the model");
+    added
+}
+
+/// Tracks the model writes for, among the user's.
+fn ai_tracks(mentor: &Mentor) -> Vec<String> {
+    mentor.store.settings().mentor.tracks.into_iter().filter(|t| track_brief(t).is_some()).collect()
+}
+
+/// Ask the model for fresh cards when a track runs low (at most every three
+/// hours per track): the built-in base stays for offline, the model keeps it new.
+pub async fn refill(app: AppHandle, mentor: Arc<Mentor>) {
+    for track in ai_tracks(&mentor) {
+        let key = format!("mentor_refill_{track}");
+        let recent = mentor.store.kv_get(&key).and_then(|v| DateTime::parse_from_rfc3339(&v).ok()).is_some_and(|t| Utc::now() - t.with_timezone(&Utc) < Duration::hours(3));
+        let unseen_ai: i64 = mentor
+            .store
+            .with_conn(|c| Ok(c.query_row("SELECT COUNT(*) FROM mentor_cards WHERE track = ?1 AND seen = 0 AND source = 'ai'", params![track], |r| r.get(0))?))
+            .unwrap_or(0);
+        if recent || unseen_ai >= 20 {
+            continue;
+        }
+        let _ = mentor.store.kv_set(&key, &Utc::now().to_rfc3339());
+        generate_for(&app, &mentor, &track).await;
+    }
+}
+
+/// Fresh cards now (the feed asks when it opens): one batch for `track`, or
+/// for every track of the user, at most once in ten minutes each.
+pub async fn refill_now(app: AppHandle, mentor: Arc<Mentor>, track: Option<String>) -> usize {
+    let tracks = match track {
+        Some(t) => vec![t],
+        None => ai_tracks(&mentor),
+    };
+    let mut added = 0;
+    for t in tracks {
+        let key = format!("mentor_refill_now_{t}");
+        if mentor.store.kv_get(&key).and_then(|v| DateTime::parse_from_rfc3339(&v).ok()).is_some_and(|at| Utc::now() - at.with_timezone(&Utc) < Duration::minutes(10)) {
+            continue;
+        }
+        let _ = mentor.store.kv_set(&key, &Utc::now().to_rfc3339());
+        added += generate_for(&app, &mentor, &t).await;
+    }
+    added
 }
 
 use chrono::Datelike;

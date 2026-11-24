@@ -263,7 +263,7 @@ pub fn control(action: MediaAction) -> AppResult<ControlOutcome> {
     // Verify against the new state; apps apply commands asynchronously.
     let deadline = Instant::now() + Duration::from_millis(1200);
     loop {
-        std::thread::sleep(Duration::from_millis(120));
+        std::thread::sleep(Duration::from_millis(40));
         let after = session_state(&session)?.0;
         let verified = match action {
             MediaAction::PlayPause => after.status != before.status,

@@ -226,6 +226,8 @@ export const mentorIpc = {
           ["to figure out", "разобраться"], ["outcome", "результат"], ["thorough", "тщательный"], ["feasible", "осуществимый"],
           ["bottleneck", "узкое место"], ["trade-off", "компромисс"], ["meanwhile", "тем временем"], ["to give up", "сдаваться"],
         ]),
+  /** Fresh cards from the model now; how many were added. */
+  generate: (track?: string) => (isTauri() ? invoke<number>("mentor_generate", { track: track ?? null }) : Promise.resolve(0)),
   best: (game: string) => (isTauri() ? invoke<number>("mentor_best", { game }) : Promise.resolve(14)),
   workout: () =>
     isTauri()

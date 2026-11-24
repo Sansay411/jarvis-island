@@ -1,9 +1,9 @@
-//! «Спланировать день»: the free time between the user's events filled with
-//! blocks for what they grow in — deep work on a project in the morning,
-//! programming practice, twenty minutes of English, a workout in the
-//! evening. The chat model words the plan when one is configured; the
-//! placement rules below always decide where blocks may go, so a proposal
-//! never overlaps the user's own events.
+//! «Спланировать день»: the chat model plans the free time between the
+//! user's events the way a personal assistant would: the user's own wishes
+//! for the day first («хочу закончить отчёт и сходить в зал»), then open
+//! tasks, then what they grow in. The fixed plan below is only for when no
+//! model answers. The placement rules always decide where blocks may go, so
+//! a proposal never overlaps the user's own events.
 
 use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use serde::{Deserialize, Serialize};
@@ -207,9 +207,9 @@ pub fn context(planner: &Planner, date: NaiveDate, now: NaiveDateTime) -> AppRes
     })
 }
 
-/// Propose blocks for `date`: the model's wording when it answers, the
-/// fixed plan otherwise.
-pub async fn suggest(app: &AppHandle, planner: &Planner, date: NaiveDate, now: NaiveDateTime) -> AppResult<Vec<Suggestion>> {
+/// Propose blocks for `date`: the model's plan when it answers, the fixed
+/// plan otherwise. `wishes`: what the user said they want from the day.
+pub async fn suggest(app: &AppHandle, planner: &Planner, date: NaiveDate, now: NaiveDateTime, wishes: Option<&str>) -> AppResult<Vec<Suggestion>> {
     let mut ctx = context(planner, date, now)?;
     if let Some(hub) = app.try_state::<std::sync::Arc<crate::hub::Hub>>() {
         let day = date.format("%Y-%m-%d").to_string();
@@ -246,15 +246,16 @@ pub async fn suggest(app: &AppHandle, planner: &Planner, date: NaiveDate, now: N
             other => other,
         })
         .collect();
-    let draft: Vec<String> = fallback.iter().map(|s| format!("{}–{} {}", &s.start[11..], &s.end[11..], s.title)).collect();
+    let wishes = wishes.map(str::trim).filter(|w| !w.is_empty());
     let prompt = format!(
-        "Дата: {date} ({weekday}). Сейчас {now}.\nЗанято: {busy}\nСвободно: {free}\nРабочие часы: {ws}–{we}.\n\
-         Человек развивается в: {tracks}. Проект: {project}. Открытые задачи: {tasks}.\nЧерновик: {draft}\n\n\
-         Составь план дня блоками времени. Правила: только в свободное время, без пересечений; 3–6 блоков; \
-         самое трудное (глубокая работа над проектом или задачей) — утром, 60–120 мин; учёба 20–45 мин; \
-         спорт 30–60 мин ближе к вечеру; между блоками 10+ мин. Названия короткие и конкретные \
-         (по задачам, если они есть). why — одна фраза, зачем блок именно тогда.\n\
-         Ответ — только JSON: {{\"blocks\":[{{\"title\":\"…\",\"start\":\"HH:MM\",\"end\":\"HH:MM\",\
+        "Дата: {date} ({weekday}). Сейчас {now}.\nУже в календаре: {busy}\nСвободные окна: {free}\nРабочие часы: {ws}-{we}.\n\
+         Цели роста: {tracks}. Главный проект: {project}. Открытые задачи: {tasks}.\nПожелания на этот день: {wishes}\n\n\
+         Спланируй этот день сам, как хороший личный ассистент, а не по шаблону. Важнее всего пожелания человека, \
+         затем открытые задачи, затем цели роста. Думай об энергии: трудное на свежую голову, лёгкое после обеда; \
+         не забивай каждую минуту, оставляй паузы, время на еду и отдых. Столько блоков, сколько разумно для этого дня \
+         (бывает и один). Длительность по смыслу дела. Каждому блоку конкретное короткое название по задаче или пожеланию, \
+         а не общее «Работа». Только в свободных окнах, без пересечений. why: одна фраза, почему блок именно тогда.\n\
+         Ответ только JSON: {{\"blocks\":[{{\"title\":\"…\",\"start\":\"HH:MM\",\"end\":\"HH:MM\",\
          \"category\":\"work|study|sport|project|personal\",\"why\":\"…\"}}]}}",
         weekday = weekday_ru(date),
         now = now.format("%H:%M"),
@@ -265,7 +266,7 @@ pub async fn suggest(app: &AppHandle, planner: &Planner, date: NaiveDate, now: N
         tracks = tracks.join(", "),
         project = ctx.project.as_deref().unwrap_or("не указан"),
         tasks = if ctx.tasks.is_empty() { "нет".into() } else { ctx.tasks.join("; ") },
-        draft = draft.join("; "),
+        wishes = wishes.unwrap_or("не названы, исходи из задач и целей"),
     );
     let msgs = [
         ChatMessage::text(Role::System, "Ты планировщик дня внутри ассистента Джарвис. Пишешь по-русски, отвечаешь строго JSON без пояснений."),
@@ -296,7 +297,66 @@ pub async fn suggest(app: &AppHandle, planner: &Planner, date: NaiveDate, now: N
         })
         .unwrap_or_default();
     let valid = validate(&ctx, raw);
-    Ok(if valid.len() >= 2 { valid } else { fallback })
+    Ok(if valid.is_empty() { fallback } else { valid })
+}
+
+/// A block the agent itself decided on (`calendar_manage` → `plan`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Block {
+    pub title: String,
+    pub start: String,
+    pub end: String,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+/// Which of the agent's blocks may go into the calendar as they are: on one
+/// day, between ten minutes and six hours, clear of the timed events already
+/// there (`busy`) and of each other. The rest come back with the reason.
+pub fn check_blocks(blocks: Vec<Block>, busy: impl Fn(NaiveDate) -> Vec<Slot>) -> (Vec<Block>, Vec<(Block, &'static str)>) {
+    let mut ok: Vec<(Block, Slot)> = Vec::new();
+    let mut bad = Vec::new();
+    for b in blocks {
+        let (Some(When::At(a)), Some(When::At(e))) = (parse_when(&b.start), parse_when(&b.end)) else {
+            bad.push((b, "время ожидается как ГГГГ-ММ-ДДTЧЧ:ММ"));
+            continue;
+        };
+        let why = if b.title.trim().is_empty() {
+            Some("нет названия")
+        } else if a.date() != e.date() || e <= a {
+            Some("конец должен быть позже начала в тот же день")
+        } else if e - a < Duration::minutes(10) || e - a > Duration::hours(6) {
+            Some("блок от 10 минут до 6 часов")
+        } else if busy(a.date()).iter().any(|(s, f)| a < *f && e > *s) {
+            Some("пересекается с событием в календаре")
+        } else if ok.iter().any(|(_, (s, f))| a < *f && e > *s) {
+            Some("пересекается с другим блоком плана")
+        } else {
+            None
+        };
+        match why {
+            Some(w) => bad.push((b, w)),
+            None => ok.push((b, (a, e))),
+        }
+    }
+    ok.sort_by_key(|(_, (a, _))| *a);
+    (ok.into_iter().map(|(b, _)| b).collect(), bad)
+}
+
+/// The timed events of a day as spans.
+pub fn busy_of(planner: &Planner, date: NaiveDate) -> Vec<Slot> {
+    planner
+        .day(date)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| !e.all_day)
+        .filter_map(|e| match (parse_when(&e.start), parse_when(&e.end)) {
+            (Some(When::At(a)), Some(When::At(b))) => Some((a, b)),
+            _ => None,
+        })
+        .collect()
 }
 
 pub fn weekday_ru(d: NaiveDate) -> &'static str {
@@ -359,6 +419,26 @@ mod tests {
         let plan = heuristic(&ctx(&[], "2026-11-23T21:40"));
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].start, "2026-11-23T21:45");
+    }
+
+    #[test]
+    fn agent_blocks_go_in_only_when_they_fit() {
+        let busy = |_: NaiveDate| vec![(t("2026-11-23T10:00"), t("2026-11-23T11:00"))];
+        let b = |title: &str, a: &str, e: &str| Block { title: title.into(), start: a.into(), end: e.into(), category: None, notes: None };
+        let (ok, bad) = check_blocks(
+            vec![
+                b("Зал", "2026-11-23T19:00", "2026-11-23T20:00"),
+                b("Отчёт", "2026-11-23T08:30", "2026-11-23T10:00"),
+                b("Поверх встречи", "2026-11-23T10:30", "2026-11-23T11:30"),
+                b("Внахлёст с отчётом", "2026-11-23T09:30", "2026-11-23T09:50"),
+                b("Ночь", "2026-11-23T23:00", "2026-11-24T01:00"),
+                b("", "2026-11-23T13:00", "2026-11-23T14:00"),
+            ],
+            busy,
+        );
+        assert_eq!(ok.iter().map(|b| b.title.as_str()).collect::<Vec<_>>(), ["Отчёт", "Зал"]);
+        assert_eq!(bad.len(), 4);
+        assert_eq!(bad[0].1, "пересекается с событием в календаре");
     }
 
     #[test]

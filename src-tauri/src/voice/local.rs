@@ -228,6 +228,8 @@ enum Ev {
     WakePreview(u64, AppResult<Transcript>),
     /// A decode of the utterance so far (awake), for endpointing.
     Progress(u64, AppResult<Transcript>),
+    /// A decode of a short phrase after a short pause: an exact command acts now.
+    Quick(u64, AppResult<Transcript>),
     /// Apps made quieter for the conversation.
     Ducked(AppResult<Vec<crate::platform::audio::Ducked>>),
 }
@@ -279,6 +281,9 @@ struct Pipeline {
     quiet_sleep: bool,
     /// The running turn is a player command: its success is not spoken.
     quiet_reply: bool,
+    /// The next turn is a device command taken without the name: it acts
+    /// silently, only a failure is spoken.
+    quiet_next: bool,
     /// Make playing apps quieter during a conversation (Settings → Голос).
     duck_media: bool,
     ducking: bool,
@@ -302,6 +307,9 @@ struct Pipeline {
     /// The utterance already answered from its stable words: the rest of it
     /// (the room's sound) is dropped when the detector closes it.
     consumed_seq: Option<u64>,
+    /// The last utterance the detector closed: a quick decode that comes
+    /// back after it is too late to matter.
+    ended_seq: u64,
     playback_pending: bool,
     /// Speech generation whose only queued line is «Слушаю»: words spoken
     /// over it are the command it invited, not an interruption.
@@ -501,7 +509,7 @@ impl Pipeline {
         }
         // A player command that works is its own answer (see the agent's
         // fast path): only a failure or «что играет» is spoken.
-        self.quiet_reply = action.is_some_and(|a| a != "status");
+        self.quiet_reply = action.is_some_and(|a| a != "status") || std::mem::take(&mut self.quiet_next);
         // Words that may be the room's get no «одну секунду»: that alone
         // would be an answer to them.
         self.filler_at = (!heard.may_be_silent()).then(|| Instant::now() + FILLER_AFTER);
@@ -814,6 +822,7 @@ impl VoiceManager {
             sleep_after_reply: false,
             quiet_sleep: false,
             quiet_reply: false,
+            quiet_next: false,
             duck_media: cfg.duck_media,
             ducking: false,
             ducked: Vec::new(),
@@ -826,7 +835,7 @@ impl VoiceManager {
             speech_end_at: None,
             first_audio_pending: false,
             shown: initial,
-            utterance_seq:0,preview_job:None,hearing_since:None,progress_job:None,progress_text:None,consumed_seq:None,
+            utterance_seq:0,preview_job:None,hearing_since:None,progress_job:None,progress_text:None,consumed_seq:None,ended_seq:0,
             playback_pending:false,
             filler_at: None,
             turn_started: None,
@@ -867,6 +876,7 @@ impl VoiceManager {
                     vad.echo_guard = pl.audio.is_playing() && !pl.audio.headphones;
                     vad.wake_preview = !pl.awake && pl.wake_enabled && pl.resting_since.is_none();
                     vad.endpoint_preview = pl.awake;
+                    vad.quick_preview = pl.awake || (pl.wake_enabled && pl.resting_since.is_none());
                     for event in vad.push(&pcm) { match event {
                         VadEvent::Started => {
                             pl.utterance_seq += 1;
@@ -887,6 +897,7 @@ impl VoiceManager {
                             tracing::debug!("voice: tail of an answered phrase dropped");
                         }
                         VadEvent::Ended(utterance) => {
+                            pl.ended_seq = pl.utterance_seq;
                             pl.transcribing += 1;
                             let ended = Instant::now();
                             pl.last_ended = Some(ended);
@@ -931,10 +942,33 @@ impl VoiceManager {
                             tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&pcm);let _=tx.send(Ev::Progress(seq,res)); });
                         }
                         VadEvent::Progress(_) => {}
+                        VadEvent::Quick(pcm) => {
+                            let seq=pl.utterance_seq;
+                            let engine=self.stt.clone();
+                            let path=pl.model_path.clone();
+                            let tx=ev_tx.clone();
+                            tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&pcm);let _=tx.send(Ev::Quick(seq,res)); });
+                        }
                     } }
                     pl.refresh_state(&vad);
                 }
                 Some(ev) = ev_rx.recv() => match ev {
+                    Ev::Quick(seq, res) => {
+                        let Ok(t) = res else { continue };
+                        // Too late (the detector closed it) or already answered.
+                        if seq != pl.utterance_seq || pl.ended_seq == seq || pl.consumed_seq == Some(seq) || !intent::quick_final(&t.text) {
+                            continue;
+                        }
+                        tracing::info!(ms = t.ms, words = t.text.split_whitespace().count(), "voice: short command ended by a short pause");
+                        pl.consumed_seq = Some(seq);
+                        pl.progress_text = None;
+                        pl.transcribing += 1;
+                        let ended = Instant::now();
+                        pl.last_ended = Some(ended);
+                        let continues = std::mem::take(&mut pl.hearing_continues);
+                        let _ = ev_tx.send(Ev::Transcribed(Ok(t), ended, continues, seq));
+                        pl.refresh_state(&vad);
+                    }
                     Ev::Progress(seq, res) => {
                         if pl.progress_job == Some(seq) { pl.progress_job = None; }
                         let Ok(t) = res else { continue };
@@ -1208,15 +1242,18 @@ impl VoiceManager {
                                         // into a chat task he is doing. A bare «стоп» pauses the
                                         // music when JARVIS himself has nothing going on.
                                         None if !reply_busy
-                                            && intent::player_command(&t.text).is_some()
+                                            && (intent::player_command(&t.text).is_some() || intent::device_word(&t.text))
                                             && (pl.audio.headphones || !is_echo(&t.text, &pl.recent_said))
                                             && !pl.vm.app.state::<Arc<Agent>>().is_busy() =>
                                         {
-                                            let command = intent::player_command(&t.text).unwrap_or_default();
-                                            tracing::info!(words, "voice: player command without the name");
+                                            let command = intent::player_command(&t.text).unwrap_or_else(|| t.text.clone());
+                                            tracing::info!(words, "voice: device command without the name");
                                             pl.speech_end_at = Some(ended);
                                             pl.first_audio_pending = true;
+                                            pl.quiet_next = true;
                                             pl.on_request(command, false, Heard::Addressed, true);
+                                            // Taken by the turn it started, if any; never left for the next one.
+                                            pl.quiet_next = false;
                                         }
                                         // The text stays in the local log only: it shows how
                                         // the recogniser hears the name when a call is missed.

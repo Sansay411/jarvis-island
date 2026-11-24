@@ -16,6 +16,13 @@ use super::models::native_path;
 use crate::error::{AppError, AppResult};
 
 const END_SILENCE_S: f32 = 0.75;
+/// A short command («дальше», «пауза», «стоп») is done after this much
+/// silence: a second detector closes it early, and the caller acts at once
+/// if the words are an exact command. Anything else still waits for the
+/// pause-tolerant end above.
+const QUICK_SILENCE_S: f32 = 0.28;
+/// Only phrases this short are checked early.
+const QUICK_MAX: usize = 16_000 * 2;
 // Short «Стоп», «Джар» and the first word before a pause must survive.
 const MIN_SPEECH_S: f32 = 0.12;
 const MAX_SPEECH_S: f32 = 20.0;
@@ -41,6 +48,8 @@ pub enum VadEvent {
     /// user is done and the sound that keeps the detector open is just the
     /// room (music, a video, a fan).
     Progress(Vec<f32>),
+    /// A short phrase followed by a short pause: maybe a whole command.
+    Quick(Vec<f32>),
 }
 
 /// Progress decodes start this long into an utterance and repeat this often.
@@ -79,6 +88,11 @@ impl Floor {
 
 pub struct Vad {
     det: VoiceActivityDetector,
+    /// The same model with a short end pause (`QUICK_SILENCE_S`).
+    quick: VoiceActivityDetector,
+    /// Send `Quick` for short phrases.
+    pub quick_preview: bool,
+    quick_sent: bool,
     floor: Floor,
     /// Silero currently hears speech.
     in_speech: bool,
@@ -101,25 +115,42 @@ pub struct Vad {
 
 impl Vad {
     pub fn new(model: &Path) -> AppResult<Vad> {
-        let silero = SileroVadModelConfig {
-            model: Some(native_path(model)?),
-            threshold: 0.5,
-            min_silence_duration: END_SILENCE_S,
-            min_speech_duration: MIN_SPEECH_S,
-            window_size: 512,
-            max_speech_duration: MAX_SPEECH_S,
+        let detector = |silence: f32| -> AppResult<VoiceActivityDetector> {
+            let silero = SileroVadModelConfig {
+                model: Some(native_path(model)?),
+                threshold: 0.5,
+                min_silence_duration: silence,
+                min_speech_duration: MIN_SPEECH_S,
+                window_size: 512,
+                max_speech_duration: MAX_SPEECH_S,
+            };
+            let cfg = VadModelConfig {
+                silero_vad: silero,
+                ten_vad: Default::default(),
+                sample_rate: 16_000,
+                num_threads: 1,
+                provider: Some("cpu".into()),
+                debug: false,
+            };
+            VoiceActivityDetector::create(&cfg, MAX_SPEECH_S + 10.0).ok_or_else(|| AppError::platform("Не удалось загрузить детектор речи"))
         };
-        let cfg = VadModelConfig {
-            silero_vad: silero,
-            ten_vad: Default::default(),
-            sample_rate: 16_000,
-            num_threads: 1,
-            provider: Some("cpu".into()),
-            debug: false,
-        };
-        let det = VoiceActivityDetector::create(&cfg, MAX_SPEECH_S + 10.0)
-            .ok_or_else(|| AppError::platform("Не удалось загрузить детектор речи"))?;
-        Ok(Vad { det, floor: Floor::default(), in_speech: false, accepted: false, echo_guard: false, wake_preview:false, endpoint_preview:false, utterance_start:0,last_preview:0,history: VecDeque::with_capacity(HISTORY), history_base: 0, last_segment_start: 0 })
+        Ok(Vad {
+            det: detector(END_SILENCE_S)?,
+            quick: detector(QUICK_SILENCE_S)?,
+            quick_preview: false,
+            quick_sent: false,
+            floor: Floor::default(),
+            in_speech: false,
+            accepted: false,
+            echo_guard: false,
+            wake_preview: false,
+            endpoint_preview: false,
+            utterance_start: 0,
+            last_preview: 0,
+            history: VecDeque::with_capacity(HISTORY),
+            history_base: 0,
+            last_segment_start: 0,
+        })
     }
 
     pub fn floor_db(&self) -> f32 {
@@ -133,12 +164,20 @@ impl Vad {
     pub fn push(&mut self, chunk: &[f32]) -> Vec<VadEvent> {
         let db = chunk_db(chunk);
         self.det.accept_waveform(chunk);
+        self.quick.accept_waveform(chunk);
         self.history.extend(chunk.iter().copied());
         while self.history.len() > HISTORY {
             self.history.pop_front();
             self.history_base += 1;
         }
         let mut events = Vec::new();
+        // The short-pause detector: a short phrase that has just gone quiet.
+        let mut quick_closed = false;
+        while let Some(seg) = self.quick.front() {
+            quick_closed |= seg.samples().len() <= QUICK_MAX;
+            self.quick.pop();
+        }
+        let main_closed = self.det.front().is_some();
         // Finished segments first: each closes the utterance it belongs to.
         while let Some(seg) = self.det.front() {
             if self.accepted {
@@ -150,9 +189,17 @@ impl Vad {
             self.accepted = false;
         }
         let detected = self.det.detected();
+        let seen = self.history_base + self.history.len();
+        if quick_closed && !main_closed && self.accepted && self.quick_preview && !self.quick_sent && !self.echo_guard
+            && seen.saturating_sub(self.utterance_start) <= QUICK_MAX + (QUICK_SILENCE_S * 16_000.) as usize
+        {
+            self.quick_sent = true;
+            events.push(VadEvent::Quick(self.utterance_so_far()));
+        }
         if detected {
             if !self.accepted && (!self.echo_guard || self.floor.passes_echo_guard(db)) {
                 self.accepted = true;
+                self.quick_sent = false;
                 self.utterance_start = (self.history_base+self.history.len()).saturating_sub((MIN_SPEECH_S*16_000.) as usize);
                 self.last_preview = self.utterance_start;
                 events.push(VadEvent::Started);
@@ -198,6 +245,7 @@ impl Vad {
     /// Forget a half-heard utterance.
     pub fn reset(&mut self) {
         self.det.reset();
+        self.quick.reset();
         self.history.clear();
         self.history_base = 0;
         self.in_speech = false;

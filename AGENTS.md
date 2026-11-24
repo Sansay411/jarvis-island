@@ -125,3 +125,65 @@ with a sample week) and `/qa/reset.html?reason=budget|strict|voluntary&screen=fe
 * `git tag vX.Y.Z && git push --tags` runs `.github/workflows/release.yml`:
   Windows + both macOS arches, then `latest.json` and the release notes from
   `CHANGELOG.md`.
+
+## Voice: instant commands
+
+* `voice/vad.rs` runs a second Silero detector with a 0.28 s end pause
+  (`QUICK_SILENCE_S`). For phrases up to 2 s it sends `VadEvent::Quick`;
+  `local.rs` decodes it and, if `intent::quick_final` says the words are an
+  exact player/device command or stop words, answers at once and drops the
+  rest of the utterance (`consumed_seq`). Everything else still waits for the
+  0.75 s end.
+* `fast::bare` collapses one word said several times («дальше дальше»).
+  Player words that need an open player are in `NEEDS_PLAYER` (`старт`,
+  `вперёд`, `другую`). Without the name, dormant, exact player words and
+  short sound commands (`intent::device_word`: «громче», «тише»,
+  «громкость 30») act silently (`quiet_next`).
+
+## Planner and the agent
+
+* `planner/suggest.rs`: the model plans from the user's `wishes` (IPC
+  `planner_suggest { date, wishes }`, the «Что важно в этот день?» box,
+  Telegram «план дня: …»); the fixed plan is only the no-model fallback.
+* `calendar_manage` has `free` (free windows for up to 7 days) and `plan`
+  (several blocks at once, `check_blocks` skips clashes with a reason).
+
+## MCP catalog
+
+* `src/settings/mcpCatalog.ts`: the one-click catalog in Settings →
+  «Подключения». Every package is pinned to a release at least a week old
+  (check `npm view <pkg> time` / PyPI before bumping); `{field}` placeholders
+  are filled from the card's inputs; env/header values go to Credential
+  Manager through `mcp_save`. `mcpCatalog.test.ts` checks ids, placeholders
+  and pins.
+
+## Landing (`site/`)
+
+* Static pages in `site/public` plus `site/src/worker.ts` (Cloudflare Worker
+  `jarvis-site`): `/download/{windows,mac-arm,mac-intel,portable}` redirect to
+  the newest GitHub release asset and count downloads per day in D1;
+  `/api/waitlist` stores Pro e-mails. `cd site && npm ci && npx wrangler dev`
+  (local D1: `npx wrangler d1 migrations apply jarvis-site --local`).
+  Before the first deploy: `npx wrangler d1 create jarvis-site`, put the id
+  into `site/wrangler.jsonc`, apply migrations with `--remote`.
+* Prices and the Paddle client token / price ids live in
+  `site/public/config.js`; without them «Получить Pro» opens the waitlist.
+* Site texts never use long dashes (—, –) or «--»: the owner's rule.
+* Product shots in `site/public/img/ui` are real app screens from the QA
+  pages (`/qa/notch-showcase.html?preset=…`, workspace, planner) captured at
+  3x with a transparent background; 3D models are Codex renders exported at
+  640 px (1100 to 1400 px for the hero, app icon and factory).
+
+## Mentor cards and games
+
+* `mentor/gen.rs` makes 500+ cards by rule at every start (stable `gen-*`
+  ids, `INSERT OR IGNORE`): code output puzzles with computed answers, the
+  `mind` track (logic, sequences, mental math, clocks, roman numerals) and
+  irregular verbs. Add a template, not hand-written answers; the test checks
+  every card with `valid_card` and that options are distinct.
+* The model writes 12 cards per batch around the last mistakes
+  (`generate_for`): in the background every 3 h per track and when the feed
+  opens (`mentor_generate`, once in 10 min per track).
+* `src/mentor/Puzzles.tsx`: sudoku (4×4/6×6 with the clay icons, 9×9 in
+  three levels, unique solution, notes, hints), Schulte table, memory pairs.
+  QA: `/qa/reset.html?screen=game&game=sudoku|schulte|memory`.

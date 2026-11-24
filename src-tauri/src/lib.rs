@@ -474,6 +474,7 @@ pub fn run() {
             ipc_mentor::mentor_best,
             ipc_mentor::mentor_workout,
             ipc_mentor::mentor_words,
+            ipc_mentor::mentor_generate,
             ipc_mentor::mentor_steps,
             ipc_mentor::mentor_start_step,
             ipc_mentor::mentor_allow,

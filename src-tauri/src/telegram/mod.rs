@@ -296,10 +296,12 @@ async fn handle_text(app: &AppHandle, bot: &Bot, token: &str, chat: i64, text: &
         app.state::<Arc<crate::hub::Hub>>().focus_start("Фокус из Telegram".into(), mins.clamp(5, 180), None)?;
         return send(token, chat, &format!("Фокус на {mins} мин запущен на компьютере. Короткие видео закрыты до конца."), None).await;
     }
-    if lower == "план дня" || lower == "/plan" {
+    if lower.starts_with("план дня") || lower.starts_with("/plan") {
+        // «план дня: отчёт до обеда, вечером зал» — the rest is the wishes.
+        let wishes = lower.trim_start_matches("план дня").trim_start_matches("/plan").trim_start_matches([':', ' ', ',']).trim().to_string();
         let p = app.state::<Arc<crate::planner::Planner>>().inner().clone();
         let now = Local::now().naive_local();
-        let blocks = crate::planner::suggest::suggest(app, &p, now.date(), now).await?;
+        let blocks = crate::planner::suggest::suggest(app, &p, now.date(), now, Some(wishes.as_str()).filter(|w| !w.is_empty())).await?;
         if blocks.is_empty() {
             return send(token, chat, "Свободного времени сегодня почти не осталось.", None).await;
         }

@@ -56,6 +56,13 @@ pub fn mentor_best(mentor: State<'_, Arc<Mentor>>, game: String) -> u32 {
     mentor.best(&game)
 }
 
+/// «Джарвис, придумай ещё»: fresh cards from the model now, around the
+/// user's recent mistakes. How many were added.
+#[tauri::command]
+pub async fn mentor_generate(app: tauri::AppHandle, mentor: State<'_, Arc<Mentor>>, track: Option<String>) -> AppResult<usize> {
+    Ok(crate::mentor::refill_now(app, mentor.inner().clone(), track).await)
+}
+
 #[tauri::command]
 pub fn mentor_words(mentor: State<'_, Arc<Mentor>>) -> AppResult<Vec<(String, String)>> {
     mentor.words(40)

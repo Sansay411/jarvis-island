@@ -29,6 +29,12 @@ struct CalArgs {
     from: Option<String>,
     to: Option<String>,
     date: Option<String>,
+    /// `suggest`: what the user wants from the day, in their words.
+    wishes: Option<String>,
+    /// `plan`: the blocks the agent decided on.
+    blocks: Option<Vec<crate::planner::suggest::Block>>,
+    /// `free`: how many days from `date` (1..7).
+    days: Option<u32>,
 }
 
 fn day(s: Option<&str>) -> AppResult<NaiveDate> {
@@ -113,11 +119,49 @@ async fn calendar_manage(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
         }
         "suggest" => {
             let d = day(a.date.as_deref())?;
-            let blocks = crate::planner::suggest::suggest(&ctx.app, &p, d, Local::now().naive_local()).await?;
+            let blocks = crate::planner::suggest::suggest(&ctx.app, &p, d, Local::now().naive_local(), a.wishes.as_deref()).await?;
             Ok(ToolOutput::ok(
-                format!("Предложено блоков: {} (ещё не в календаре — создайте подходящие через create)", blocks.len()),
+                format!("Предложено блоков: {}. Их ещё нет в календаре: поставьте выбранные одним вызовом plan.", blocks.len()),
                 json!({ "blocks": blocks }),
             ))
+        }
+        "free" => {
+            let from = day(a.date.as_deref().or(a.from.as_deref()))?;
+            let now = Local::now().naive_local();
+            let mut days = Vec::new();
+            for i in 0..a.days.unwrap_or(1).clamp(1, 7) {
+                let d = from + CDur::days(i as i64);
+                let c = crate::planner::suggest::context(&p, d, now)?;
+                let free: Vec<String> = crate::planner::suggest::free_slots(&c).iter().map(|(s, e)| format!("{}-{}", s.format("%H:%M"), e.format("%H:%M"))).collect();
+                let events = p.day(d)?;
+                days.push(json!({ "date": d.format("%Y-%m-%d").to_string(), "weekday": crate::planner::suggest::weekday_ru(d), "free": free, "events": events }));
+            }
+            Ok(ToolOutput::ok(format!("Свободное время на {} дн.", days.len()), json!({ "days": days })))
+        }
+        "plan" => {
+            let blocks = a.blocks.unwrap_or_default();
+            if blocks.is_empty() {
+                return Err(AppError::invalid("Нужен список blocks: title, start, end (ГГГГ-ММ-ДДTЧЧ:ММ), category"));
+            }
+            let (ok, bad) = crate::planner::suggest::check_blocks(blocks, |d| crate::planner::suggest::busy_of(&p, d));
+            let mut created = Vec::new();
+            for b in ok {
+                created.extend(p.create(EventInput {
+                    title: b.title,
+                    start: b.start,
+                    end: Some(b.end),
+                    category: b.category,
+                    notes: b.notes,
+                    ..Default::default()
+                })?);
+            }
+            let skipped: Vec<Value> = bad.iter().map(|(b, why)| json!({ "title": b.title, "start": b.start, "end": b.end, "why": why })).collect();
+            let summary = if skipped.is_empty() {
+                format!("В календаре блоков: {}", created.len())
+            } else {
+                format!("В календаре блоков: {}, не поставлено: {} (см. skipped)", created.len(), skipped.len())
+            };
+            Ok(ToolOutput { ok: !created.is_empty(), summary, data: json!({ "created": created, "skipped": skipped, "verified": !created.is_empty() }), images: vec![] })
         }
         "open" => {
             crate::ipc_planner::open_window(&ctx.app, a.date.clone())?;
@@ -169,6 +213,8 @@ fn calendar_title(a: &Value) -> String {
         "update" | "move" => "Изменить событие".into(),
         "delete" => "Удалить событие".into(),
         "suggest" => "Спланировать день".into(),
+        "free" => "Свободное время".into(),
+        "plan" => format!("В календарь: план, блоков {}", a.get("blocks").and_then(Value::as_array).map_or(0, Vec::len)),
         "open" => "Открыть планировщик".into(),
         _ => "Календарь".into(),
     }
@@ -187,12 +233,16 @@ pub fn tools() -> Vec<Tool> {
         Tool {
             name: "calendar_manage",
             description: "The user's calendar (Google-Calendar-style planner, synced with Google when connected). \
-                `list` events (`date` or `from`/`to` as YYYY-MM-DD), `create` (title, start 'YYYY-MM-DDTHH:MM' or 'YYYY-MM-DD' for all-day, \
+                `list` events (`date` or `from`/`to` as YYYY-MM-DD), `create` one event (title, start 'YYYY-MM-DDTHH:MM' or 'YYYY-MM-DD' for all-day, \
                 end, category work|study|sport|project|personal, optional repeat none|daily|weekdays|weekly), `update`/`move` (id or title + new fields), \
-                `delete` (id or title), `suggest` a time-blocked plan for a day's free time (returns blocks, does not create), `open` the planner window.",
+                `delete` (id or title), `free` (free time and events for `date`, `days` up to 7), \
+                `suggest` (a ready plan for one day's free time; pass the user's own words about the day as `wishes`; returns blocks, does not create), \
+                `plan` (put several blocks into the calendar at once: `blocks` [{title, start, end, category, notes}]; blocks that clash are skipped with the reason), \
+                `open` the planner window. Planning a day or a week with the user: you plan it yourself from what they said, their tasks and goals; \
+                look at `free` first, then put the agreed blocks in with one `plan` call.",
             schema: object(
                 json!({
-                    "action": { "type": "string", "enum": ["list", "create", "update", "move", "delete", "suggest", "open"] },
+                    "action": { "type": "string", "enum": ["list", "create", "update", "move", "delete", "free", "suggest", "plan", "open"] },
                     "id": { "type": "string" },
                     "title": { "type": "string" },
                     "start": { "type": "string" },
@@ -204,7 +254,23 @@ pub fn tools() -> Vec<Tool> {
                     "repeat": { "type": "string", "enum": ["none", "daily", "weekdays", "weekly"] },
                     "from": { "type": "string" },
                     "to": { "type": "string" },
-                    "date": { "type": "string" }
+                    "date": { "type": "string" },
+                    "days": { "type": "integer", "minimum": 1, "maximum": 7 },
+                    "wishes": { "type": "string" },
+                    "blocks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": { "type": "string" },
+                                "start": { "type": "string" },
+                                "end": { "type": "string" },
+                                "category": { "type": "string", "enum": ["work", "study", "sport", "project", "personal"] },
+                                "notes": { "type": "string" }
+                            },
+                            "required": ["title", "start", "end"]
+                        }
+                    }
                 }),
                 &["action"],
             ),

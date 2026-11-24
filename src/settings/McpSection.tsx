@@ -9,6 +9,7 @@ import { listen } from "@tauri-apps/api/event";
 import { errorMessage } from "../lib/ipc";
 import { hasTauri } from "../lib/workspace-ipc";
 import { Group, Row, Segmented, Switch } from "./controls";
+import { build, CATALOG, CATEGORIES, NEEDS_LABEL, ready, type CatalogCategory, type CatalogEntry } from "./mcpCatalog";
 
 type Transport = { type: "stdio"; command: string; args: string[]; cwd: string } | { type: "http"; url: string };
 
@@ -53,31 +54,6 @@ const RISK_LABEL: Record<ToolView["risk"], string> = {
   moderate: "спрошу один раз",
   high: "спрошу каждый раз",
 };
-
-/** Ready-made servers; the form opens prefilled and editable. */
-const PRESETS: { label: string; name: string; transport: Transport; secrets: string; note: string }[] = [
-  {
-    label: "Файлы",
-    name: "Файлы",
-    transport: { type: "stdio", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "%USERPROFILE%\\Documents"], cwd: "" },
-    secrets: "",
-    note: "Чтение и запись файлов в указанных папках. Нужен Node.js. Замените путь на свою папку; можно указать несколько, по одной на строку.",
-  },
-  {
-    label: "Граф памяти",
-    name: "Память",
-    transport: { type: "stdio", command: "npx", args: ["-y", "@modelcontextprotocol/server-memory"], cwd: "" },
-    secrets: "",
-    note: "Долговременная память в виде графа сущностей и связей. Нужен Node.js.",
-  },
-  {
-    label: "GitHub",
-    name: "GitHub",
-    transport: { type: "http", url: "https://api.githubcopilot.com/mcp/" },
-    secrets: "Authorization: Bearer ",
-    note: "Официальный удалённый сервер GitHub. Вставьте после «Bearer» свой personal access token (github.com → Settings → Developer settings).",
-  },
-];
 
 interface Draft {
   previousId: string | null;
@@ -317,6 +293,123 @@ function ImportForm({ onDone, notify }: { onDone: () => void; notify: (tone: Ton
   );
 }
 
+function CatalogCard({ entry, installed, notify, onDone }: { entry: CatalogEntry; installed: boolean; notify: (tone: Tone, text: string) => void; onDone: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(entry.fields.map((f) => [f.key, f.initial ?? ""])));
+
+  const connect = async () => {
+    setBusy(true);
+    notify("info", `${entry.name}: запускаю и читаю инструменты…`);
+    try {
+      const { transport, secrets } = build(entry, values);
+      const config: ServerConfig = { id: entry.id, name: entry.name, enabled: true, transport, envKeys: [], headerKeys: [], disabledTools: [] };
+      await invoke("mcp_save", { config, secrets, previousId: null });
+      notify("ok", `${entry.name} подключён`);
+      setOpen(false);
+      onDone();
+    } catch (e) {
+      notify("error", errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <li className={`mcp-cat-card${open ? " is-open" : ""}${installed ? " is-installed" : ""}`}>
+      <div className="mcp-cat-head">
+        <div className="mcp-cat-text">
+          <span className="mcp-cat-name">{entry.name}</span>
+          <span className="mcp-cat-desc">{entry.description}</span>
+          <span className="mcp-cat-tags">
+            {entry.fields.length === 0 && <span className="mcp-cat-tag is-free">без ключа</span>}
+            {entry.needs && <span className="mcp-cat-tag">{NEEDS_LABEL[entry.needs]}</span>}
+            {entry.transport.type === "http" && <span className="mcp-cat-tag">в облаке</span>}
+          </span>
+        </div>
+        {installed ? (
+          <span className="mcp-cat-done">Подключён</span>
+        ) : (
+          <button
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={() => (entry.fields.length === 0 ? void connect() : setOpen((v) => !v))}
+          >
+            {busy ? "Подключаю…" : entry.fields.length === 0 ? "Подключить" : open ? "Свернуть" : "Подключить"}
+          </button>
+        )}
+      </div>
+      {open && !installed && (
+        <div className="mcp-cat-form">
+          {entry.note && <p className="note">{entry.note}</p>}
+          {entry.fields.map((f) => (
+            <Row key={f.key} label={f.label} hint={f.hint}>
+              <div className="mcp-cat-field">
+                <input
+                  className="mono"
+                  type={f.target === "env" || f.target === "header" ? "password" : "text"}
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={values[f.key] ?? ""}
+                  placeholder={f.placeholder}
+                  onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                />
+                {f.link && (
+                  <a className="mcp-cat-link" href={f.link} target="_blank" rel="noreferrer">
+                    Где взять
+                  </a>
+                )}
+              </div>
+            </Row>
+          ))}
+          <div className="actions mcp-form-actions">
+            <button className="btn" disabled={busy} onClick={() => setOpen(false)}>
+              Отмена
+            </button>
+            <button className="btn btn-primary" disabled={busy || !ready(entry, values)} onClick={() => void connect()}>
+              {busy ? "Подключаю…" : "Подключить"}
+            </button>
+          </div>
+          {(entry.fields.some((f) => f.target === "env" || f.target === "header")) && (
+            <p className="note">Ключи хранятся в диспетчере учётных данных Windows и уходят только этому серверу.</p>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function Catalog({ servers, notify, onDone }: { servers: ServerView[]; notify: (tone: Tone, text: string) => void; onDone: () => void }) {
+  const [cat, setCat] = useState<CatalogCategory | "all">("all");
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const have = new Set(servers.map((s) => s.config.id));
+  const list = CATALOG.filter((e) => (cat === "all" || e.category === cat) && (!q || `${e.name} ${e.description}`.toLowerCase().includes(q)));
+  return (
+    <div className="mcp-catalog">
+      <div className="mcp-cat-bar">
+        <input className="mcp-cat-search" value={query} placeholder="Найти: почта, поиск, GitHub, умный дом…" onChange={(e) => setQuery(e.target.value)} />
+        <div className="mcp-cat-chips" role="tablist">
+          {CATEGORIES.map((c) => (
+            <button key={c.id} className={`mcp-cat-chip${cat === c.id ? " is-on" : ""}`} onClick={() => setCat(c.id)}>
+              {c.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {list.length === 0 ? (
+        <p className="empty">Ничего не нашлось. Любой другой сервер можно добавить вручную или вставить его JSON.</p>
+      ) : (
+        <ul className="mcp-cat-list">
+          {list.map((e) => (
+            <CatalogCard key={e.id} entry={e} installed={have.has(e.id)} notify={notify} onDone={onDone} />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function ServerCard({ s, onEdit, notify }: { s: ServerView; onEdit: () => void; notify: (tone: Tone, text: string) => void }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -434,7 +527,7 @@ export function McpSection({ notify, vy }: { notify: (tone: Tone, text: string) 
 
       <Group title="Серверы">
         {servers.length === 0 ? (
-          <p className="empty">Пока ни одного. Добавьте свой или начните с готового ниже.</p>
+          <p className="empty">Пока ни одного. Подключите готовый из каталога ниже в один клик.</p>
         ) : (
           <ul className="mcp-servers">
             {servers.map((s) => (
@@ -444,36 +537,19 @@ export function McpSection({ notify, vy }: { notify: (tone: Tone, text: string) 
         )}
       </Group>
 
+      <Group title="Каталог">
+        <Catalog servers={servers} notify={notify} onDone={refresh} />
+      </Group>
+
       {form === null ? (
-        <Group title="Добавить">
+        <Group title="Свой сервер">
           <div className="mcp-add">
-            <button className="btn btn-primary" onClick={() => setForm(emptyDraft())}>
+            <button className="btn" onClick={() => setForm(emptyDraft())}>
               Новый сервер
             </button>
             <button className="btn" onClick={() => setForm("import")}>
               Вставить JSON
             </button>
-            <span className="mcp-add-sep" />
-            {PRESETS.map((p) => (
-              <button
-                key={p.label}
-                className="btn"
-                onClick={() =>
-                  setForm({
-                    ...emptyDraft(),
-                    name: p.name,
-                    kind: p.transport.type,
-                    command: p.transport.type === "stdio" ? p.transport.command : "npx",
-                    args: p.transport.type === "stdio" ? p.transport.args.join("\n") : "",
-                    url: p.transport.type === "http" ? p.transport.url : "",
-                    secrets: p.secrets,
-                    note: p.note,
-                  })
-                }
-              >
-                {p.label}
-              </button>
-            ))}
           </div>
         </Group>
       ) : (

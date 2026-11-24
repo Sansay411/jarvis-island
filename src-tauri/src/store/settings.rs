@@ -352,7 +352,7 @@ pub struct MentorSettings {
     pub strict_focus: bool,
     /// Say it aloud when stepping in.
     pub speak: bool,
-    /// What the user grows in: "code", "english", "body", "projects".
+    /// What the user grows in: "code", "english", "mind", "body", "projects".
     pub tracks: Vec<String>,
     /// A YouTube title with one of these is learning.
     pub learning_words: Vec<String>,
@@ -372,7 +372,7 @@ impl Default for MentorSettings {
             earn: true,
             strict_focus: true,
             speak: true,
-            tracks: ["code", "english", "body", "projects"].iter().map(|s| s.to_string()).collect(),
+            tracks: ["code", "english", "mind", "body", "projects"].iter().map(|s| s.to_string()).collect(),
             learning_words: LEARNING_WORDS.iter().map(|s| s.to_string()).collect(),
             night_from: String::new(),
             night_to: String::new(),
