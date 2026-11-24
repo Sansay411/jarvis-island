@@ -12,6 +12,7 @@
 //! work is delegated to the text agent (`delegate_to_agent`).
 
 pub mod audio;
+pub mod conditioner;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]

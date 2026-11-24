@@ -160,6 +160,12 @@ pub struct VoiceSettings {
     /// Recognise finished requests with Yandex SpeechKit through Jarvis
     /// Cloud as well; the local model stays for the name and as a fallback.
     pub cloud_stt: bool,
+    /// Microphone sensitivity mode: "auto" (speech-gated AGC) or "manual".
+    pub mic_gain_mode: String,
+    /// Manual microphone boost in dB (-6..=30) when `mic_gain_mode == "manual"`.
+    pub mic_gain_db: f32,
+    /// Noise suppression mode: "off", "auto" (default), or "strong".
+    pub noise_suppression: String,
 }
 
 impl Default for VoiceSettings {
@@ -181,6 +187,9 @@ impl Default for VoiceSettings {
             output_device: String::new(),
             duck_media: true,
             cloud_stt: true,
+            mic_gain_mode: "auto".into(),
+            mic_gain_db: 0.0,
+            noise_suppression: "auto".into(),
         }
     }
 }
