@@ -44,6 +44,8 @@ import { useMentor } from "../store/mentor";
 import { useAgenda } from "../store/agenda";
 import { EventCard } from "./views/EventCard";
 import { MomentCard } from "./views/MomentCard";
+import { SecretPromptView } from "./views/SecretPromptView";
+import { useMcpPrompt } from "../store/mcpPrompt";
 import "./island.css";
 
 const SHAPE_SPRING = { stiffness: 460, damping: 34, mass: 0.65 };
@@ -192,6 +194,11 @@ function useIslandController(nativeGeometry: NotchGeometry | null) {
           }).catch(console.error);
           return;
         }
+        if (useMcpPrompt.getState().prompt) {
+          e.preventDefault();
+          void useMcpPrompt.getState().cancel();
+          return;
+        }
         if (useFiles.getState().open) closeFiles();
         else if (s.workspaceOpen) set({ workspaceOpen: false });
         else if (s.voiceOpen) {
@@ -239,8 +246,20 @@ function useIslandController(nativeGeometry: NotchGeometry | null) {
     if (clipsKeyboard === clipsInput.current) return;
     clipsInput.current = clipsKeyboard;
     if (clipsKeyboard) void ipc.island.beginInput().then(() => window.dispatchEvent(new Event("jarvis:input-ready")));
-    else if (!useIsland.getState().workspaceOpen) void ipc.island.endInput(true);
+    else if (!useIsland.getState().workspaceOpen && !useMcpPrompt.getState().prompt) void ipc.island.endInput(true);
   }, [clipsKeyboard]);
+
+  const secretOpen = useMcpPrompt((s) => s.prompt !== null);
+  const secretInput = useRef(false);
+  useEffect(() => {
+    if (secretOpen === secretInput.current) return;
+    secretInput.current = secretOpen;
+    if (secretOpen) void ipc.island.beginInput().then(() => window.dispatchEvent(new Event("jarvis:input-ready")));
+    else {
+      const s = useIsland.getState();
+      if (!s.workspaceOpen && !(s.clipsOpen && s.clipsKeyboard)) void ipc.island.endInput(true);
+    }
+  }, [secretOpen]);
 
   useEffect(() => {
     if (workspaceOpen) closeClips();
@@ -292,7 +311,7 @@ function voiceMood(state: VoiceState, agentMood: EyeMood | null): EyeMood {
 function moodFor(mode: IslandMode, agentMood: EyeMood | null, hovered: boolean, ttsSpeaking: boolean): EyeMood {
   if (ttsSpeaking) return "speaking";
   if (agentMood) return agentMood;
-  if (mode === "drop" || mode === "files" || mode === "notice" || mode === "clips" || mode === "weather" || mode === "hello" || mode === "event" || mode === "moment") return "attentive";
+  if (mode === "drop" || mode === "files" || mode === "notice" || mode === "clips" || mode === "weather" || mode === "hello" || mode === "event" || mode === "moment" || mode === "secret") return "attentive";
   if (mode === "peek" || mode === "workspace" || hovered) return "attentive";
   return "idle";
 }
@@ -319,6 +338,8 @@ export function Island() {
   const filesOpen = useFiles((s) => s.open);
   const filesH = useFiles((s) => s.height);
   const clipsH = useClips((s) => s.height);
+  const secretPrompt = useMcpPrompt((s) => s.prompt !== null);
+  const secretH = useMcpPrompt((s) => s.height);
   const alerting = useAlerts().length > 0;
   const timer = useNextTimer();
   const stopwatch = useStopwatch((s) => s.active);
@@ -381,8 +402,10 @@ export function Island() {
   const mode: IslandMode =
     base === "drop"
       ? "drop"
-      : filesOpen
-        ? "files"
+      : secretPrompt
+        ? "secret"
+        : filesOpen
+          ? "files"
         : weatherCard && base !== "workspace"
           ? "weather"
           : base === "voice"
@@ -446,6 +469,7 @@ export function Island() {
         confirm: confirmPending,
         filesH,
         clipsH,
+        secretH,
       }),
     [
       mode,
@@ -464,6 +488,7 @@ export function Island() {
       confirmPending,
       filesH,
       clipsH,
+      secretH,
       !!timer,
       stopwatch,
       agentThinking,
@@ -584,6 +609,7 @@ export function Island() {
                 {mode === "hello" && (helloCard ? <HeadsetHello /> : <UpdateCard />)}
                 {mode === "event" && <EventCard />}
                 {mode === "moment" && <MomentCard />}
+                {mode === "secret" && <SecretPromptView />}
               </motion.div>
             )}
           </AnimatePresence>

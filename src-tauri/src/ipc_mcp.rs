@@ -2,6 +2,7 @@
 //! once (no save bar); env values and headers go to Credential Manager and
 //! never come back to the UI — it only sees their names.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use tauri::State;
@@ -46,4 +47,10 @@ pub async fn mcp_set_enabled(hub: HubState<'_>, id: String, enabled: bool) -> Ap
 #[tauri::command]
 pub fn mcp_set_tool(hub: HubState<'_>, id: String, tool: String, enabled: bool) -> AppResult<()> {
     hub.set_tool_enabled(&id, &tool, enabled)
+}
+
+/// Submit or cancel secret keys requested by `connect_service` in the island.
+#[tauri::command]
+pub fn mcp_secret_submit(hub: HubState<'_>, prompt_id: String, values: Option<BTreeMap<String, String>>) -> AppResult<()> {
+    hub.submit_secrets(&prompt_id, values)
 }

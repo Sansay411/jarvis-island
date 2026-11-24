@@ -5242,3 +5242,160 @@ button.growth-week:hover .growth-day i {
     animation: none;
   }
 }
+
+/* ---------- secure key prompt (connect_service) ---------- */
+
+.view-secret {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.secret-brow {
+  height: 36px;
+  padding: 0 12px 0 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px minmax(0, 1fr);
+  align-items: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+}
+.secret-brow-left {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.secret-shield {
+  color: var(--amber);
+  flex: none;
+}
+.secret-brow .brow-name {
+  font-size: 12px;
+  font-weight: 580;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.secret-brow-center {
+  width: 72px;
+  height: 100%;
+  pointer-events: none;
+}
+.secret-brow-right {
+  display: flex;
+  justify-content: flex-end;
+}
+.secret-body {
+  padding: 12px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.secret-note {
+  margin: 0;
+  font-size: var(--fs-12);
+  color: var(--amber-hi);
+}
+.secret-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.secret-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.secret-label {
+  font-size: var(--fs-12);
+  font-weight: 560;
+  color: var(--text-1);
+}
+.secret-link {
+  font-size: 11.5px;
+  color: var(--amber-hi);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.secret-link:hover {
+  opacity: 0.85;
+  text-decoration: underline;
+}
+.secret-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.secret-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 34px 0 10px;
+  border-radius: var(--r-sm);
+  background: var(--graphite-2);
+  border: 1px solid var(--line-strong);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+.secret-input:focus {
+  border-color: rgba(255, 178, 63, 0.55);
+  background: var(--graphite-1);
+}
+.secret-input::placeholder {
+  color: var(--text-3);
+}
+.secret-reveal-btn {
+  position: absolute;
+  right: 5px;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-xs);
+  display: grid;
+  place-items: center;
+  color: var(--text-3);
+  transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+.secret-reveal-btn:hover {
+  color: var(--text-1);
+  background: var(--graphite-3);
+}
+.secret-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-3);
+}
+.secret-error {
+  margin: 0;
+  font-size: 11.5px;
+  color: #ffb3a9;
+}
+.secret-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 2px;
+}
+.secret-guard {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--text-3);
+}
+.secret-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.secret-save-btn {
+  background: var(--bone);
+  color: var(--on-bone);
+}
+.secret-save-btn:disabled {
+  opacity: 0.42;
+}

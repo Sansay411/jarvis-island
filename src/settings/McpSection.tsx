@@ -384,7 +384,9 @@ function Catalog({ servers, notify, onDone }: { servers: ServerView[]; notify: (
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
   const have = new Set(servers.map((s) => s.config.id));
-  const list = CATALOG.filter((e) => (cat === "all" || e.category === cat) && (!q || `${e.name} ${e.description}`.toLowerCase().includes(q)));
+  const list = CATALOG.filter(
+    (e) => (cat === "all" || e.category === cat) && (!q || `${e.name} ${(e.aliases ?? []).join(" ")} ${e.description}`.toLowerCase().includes(q)),
+  );
   return (
     <div className="mcp-catalog">
       <div className="mcp-cat-bar">

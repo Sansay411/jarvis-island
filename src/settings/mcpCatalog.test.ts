@@ -36,4 +36,13 @@ describe("MCP catalog", () => {
     const notion = CATALOG.find((e) => e.id === "notion")!;
     expect(build(notion, { NOTION_TOKEN: " ntn_x " }).secrets.env).toEqual({ NOTION_TOKEN: "ntn_x" });
   });
+
+  it("includes Russian and English aliases for popular services", () => {
+    const notion = CATALOG.find((e) => e.id === "notion")!;
+    const github = CATALOG.find((e) => e.id === "github")!;
+    const zapier = CATALOG.find((e) => e.id === "zapier")!;
+    expect(notion.aliases).toContain("ноушн");
+    expect(github.aliases).toContain("гитхаб");
+    expect(zapier.aliases).toContain("телега");
+  });
 });

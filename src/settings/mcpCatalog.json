@@ -1,0 +1,493 @@
+[
+  {
+    "id": "desktop-commander",
+    "name": "Терминал и процессы",
+    "aliases": ["терминал", "консоль", "процессы", "powershell", "cmd", "shell", "excel", "csv", "desktop commander"],
+    "category": "computer",
+    "description": "Команды в терминале, долгие процессы, поиск и правка файлов, работа с CSV и Excel. Опасные действия я всё равно спрошу.",
+    "needs": "node",
+    "transport": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@wonderwhy-er/desktop-commander@0.3.3"]
+    },
+    "fields": []
+  },
+  {
+    "id": "files",
+    "name": "Файлы в папке",
+    "aliases": ["файлы", "папка", "документы", "filesystem", "files", "диск", "каталог"],
+    "category": "computer",
+    "description": "Чтение, поиск и запись файлов только внутри выбранной папки.",
+    "needs": "node",
+    "transport": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2.3.0", "{path}"]
+    },
+    "fields": [
+      {
+        "key": "path",
+        "label": "Папка",
+        "target": "arg",
+        "initial": "%USERPROFILE%\\Documents",
+        "hint": "Полный путь. %USERPROFILE% раскрывается."
+      }
+    ]
+  },
+  {
+    "id": "playwright",
+    "name": "Браузер-робот",
+    "aliases": ["браузер", "playwright", "плейрайт", "сайты", "автоматизация браузера"],
+    "category": "computer",
+    "description": "Свой браузер Playwright: открывает сайты, нажимает кнопки, заполняет формы и читает страницы по шагам.",
+    "needs": "node",
+    "transport": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@0.0.85"]
+    },
+    "fields": []
+  },
+  {
+    "id": "time",
+    "name": "Время и часовые пояса",
+    "aliases": ["время", "часы", "часовой пояс", "часовые пояса", "timezone", "time"],
+    "category": "computer",
+    "description": "Точное время в любом городе и перевод между часовыми поясами.",
+    "needs": "uv",
+    "transport": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mcp-server-time@2026.11.11"]
+    },
+    "fields": []
+  },
+  {
+    "id": "slack",
+    "name": "Slack",
+    "aliases": ["слак", "слэк", "slack", "рабочий чат", "каналы"],
+    "category": "talk",
+    "description": "Каналы, личные сообщения и поиск по переписке. Отправку сообщения я покажу и подожду «Разрешить».",
+    "needs": "node",
+    "transport": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "slack-mcp-server@1.3.0", "--transport", "stdio"]
+    },
+    "fields": [
+      {
+        "key": "SLACK_MCP_XOXP_TOKEN",
+        "label": "User OAuth Token",
+        "hint": "Создайте приложение Slack, дайте права на чтение и запись и скопируйте токен xoxp-…",
+        "link": "https://api.slack.com/apps",
+        "placeholder": "xoxp-…",
+        "target": "env",
+        "name": "SLACK_MCP_XOXP_TOKEN"
+      }
+    ]
+  },
+  {
+    "id": "zapier",
+    "name": "Zapier: почта, Telegram, WhatsApp",
+    "aliases": ["запир", "zapier", "телега", "телеграм", "telegram", "почта", "gmail", "гмейл", "whatsapp", "ватсап", "вотсап", "гугл таблицы", "google sheets"],
+    "category": "talk",
+    "description": "Тысячи сервисов через Zapier: отправить письмо в Gmail, сообщение в Telegram или WhatsApp, строку в Google Таблицу.",
+    "transport": {
+      "type": "http",
+      "url": "{url}"
+    },
+    "fields": [
+      {
+        "key": "url",
+        "label": "Адрес сервера",
+        "target": "url",
+        "hint": "На mcp.zapier.com создайте сервер, добавьте нужные действия и скопируйте его адрес.",
+        "link": "https://mcp.zapier.com",
+        "placeholder": "https://mcp.zapier.com/api/mcp/s/…/mcp"
+      }
+    ]
+  },
+  {
+    "id": "exa",
+    "name": "Поиск Exa",
+    "aliases": ["екса", "экса", "exa", "поиск", "веб поиск", "поиск в интернете"],
+    "category": "web",
+    "description": "Умный поиск по интернету и чтение найденных страниц. Без ключа.",
+    "transport": {
+      "type": "http",
+      "url": "https://mcp.exa.ai/mcp"
+    },
+    "fields": []
+  },
+  {
+    "id": "duckduckgo",
+    "name": "Поиск DuckDuckGo",
+    "aliases": ["дакдакго", "утка", "duckduckgo", "ddg", "поиск", "поиск в интернете"],
+    "category": "web",
+    "description": "Поиск в DuckDuckGo и текст найденных страниц. Без ключа и аккаунта.",
+    "needs": "uv",
+    "transport": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["duckduckgo-mcp-server@0.7.0"]
+    },
+    "fields": []
+  },
+  {
+    "id": "fetch",
+    "name": "Чтение сайтов",
+    "aliases": ["сайты", "веб-страницы", "fetch", "фетч", "прочитать ссылку"],
+    "category": "web",
+    "description": "Любая страница по ссылке в виде чистого текста, без рекламы и меню.",
+    "needs": "uv",
+    "transport": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mcp-server-fetch@2026.11.11"]
+    },
+    "fields": []
+  },
+  {
+    "id": "youtube",
+    "name": "Расшифровки YouTube",
+    "aliases": ["ютуб", "ютюб", "youtube", "видео", "субтитры", "транскрипт", "расшифровка"],
+    "category": "web",
+    "description": "Текст видео с YouTube по ссылке: пересказать ролик, найти момент, сделать конспект.",
+    "needs": "node",
+    "transport": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@kimtaeyoon83/mcp-server-youtube-transcript@0.1.1"]
+    },
+    "fields": []
+  },
+  {
+    "id": "wikipedia",
+    "name": "Википедия",
+    "aliases": ["вики", "википедия", "wikipedia", "wiki", "энциклопедия"],
+    "category": "web",
+    "description": "Статьи, краткие сводки и факты из Википедии на любом языке.",
+    "needs": "uv",
+    "transport": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["wikipedia-mcp@2.0.1"]
+    },
+    "fields": []
+  },
+  {
+    "id": "brave",
+    "name": "Поиск Brave",
+    "aliases": ["брейв", "brave", "поиск", "поиск brave"],
+    "category": "web",
+    "description": "Поиск по интернету, новостям, картинкам и видео через Brave Search API.",
+    "needs": "node",
+    "transport": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@brave/brave-search-mcp-server@2.1.4"]
+    },
+    "fields": [
+      {
+        "key": "BRAVE_API_KEY",
+        "label": "Ключ API",
+        "hint": "Бесплатный тариф есть.",
+        "link": "https://brave.com/search/api/",
+        "target": "env",
+        "name": "BRAVE_API_KEY"
+      }
+    ]
+  },
+  {
+    "id": "tavily",
+    "name": "Поиск Tavily",
+    "aliases": ["тавили", "tavily", "поиск"],
+    "category": "web",
+    "description": "Поиск для ИИ с готовыми выдержками из источников.",
+    "needs": "node",
+    "transport": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "tavily-mcp@0.2.22"]
+    },
+    "fields": [
+      {
+        "key": "TAVILY_API_KEY",
+        "label": "Ключ API",
+        "hint": "Бесплатные запросы каждый месяц.",
+        "link": "https://app.tavily.com",
+        "placeholder": "tvly-…",
+        "target": "env",
+        "name": "TAVILY_API_KEY"
+      }
+    ]
+  },
+  {
+    "id": "firecrawl",
+    "name": "Firecrawl",
+    "aliases": ["файркроул", "firecrawl", "парсинг", "скрапинг", "краулер"],
+    "category": "web",
+    "description": "Обход целых сайтов, извлечение данных со страниц в таблицу.",
+    "needs": "node",
+    "transport": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "firecrawl-mcp@3.40.0"]
+    },
+    "fields": [
+      {
+        "key": "FIRECRAWL_API_KEY",
+        "label": "Ключ API",
+        "hint": "Ключ в личном кабинете Firecrawl.",
+        "link": "https://www.firecrawl.dev/app/api-keys",
+        "placeholder": "fc-…",
+        "target": "env",
+        "name": "FIRECRAWL_API_KEY"
+      }
+    ]
+  },
+  {
+    "id": "notion",
+    "name": "Notion",
+    "aliases": ["ноушн", "ношен", "notion", "заметки", "базы знаний"],
+    "category": "notes",
+    "description": "Страницы и базы Notion: найти, прочитать, создать заметку или строку в базе.",
+    "needs": "node",
+    "transport": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@notionhq/notion-mcp-server@2.6.1"]
+    },
+    "fields": [
+      {
+        "key": "NOTION_TOKEN",
+        "label": "Токен интеграции",
+        "hint": "Создайте внутреннюю интеграцию и откройте ей доступ к нужным страницам.",
+        "link": "https://www.notion.so/profile/integrations",
+        "placeholder": "ntn_…",
+        "target": "env",
+        "name": "NOTION_TOKEN"
+      }
+    ]
+  },
+  {
+    "id": "obsidian",
+    "name": "Obsidian",
+    "aliases": ["обсидиан", "obsidian", "заметки", "маркдаун", "markdown", "хранилище"],
+    "category": "notes",
+    "description": "Ваше хранилище Obsidian: поиск, чтение и дописывание заметок.",
+    "needs": "uv",
+    "transport": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mcp-obsidian@0.2.3"]
+    },
+    "fields": [
+      {
+        "key": "OBSIDIAN_API_KEY",
+        "label": "Ключ Local REST API",
+        "hint": "Включите плагин Local REST API в Obsidian и скопируйте ключ из его настроек.",
+        "link": "https://github.com/coddingtonbear/obsidian-local-rest-api",
+        "target": "env",
+        "name": "OBSIDIAN_API_KEY"
+      }
+    ],
+    "note": "Obsidian должен быть открыт."
+  },
+  {
+    "id": "todoist",
+    "name": "Todoist",
+    "aliases": ["тудуист", "todoist", "задачи", "список дел", "таски", "todo"],
+    "category": "notes",
+    "description": "Задачи Todoist голосом: добавить, найти, перенести, закрыть.",
+    "needs": "node",
+    "transport": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@abhiz123/todoist-mcp-server@0.1.0"]
+    },
+    "fields": [
+      {
+        "key": "TODOIST_API_TOKEN",
+        "label": "Токен API",
+        "hint": "Настройки Todoist → Интеграции → Для разработчиков.",
+        "link": "https://app.todoist.com/app/settings/integrations/developer",
+        "target": "env",
+        "name": "TODOIST_API_TOKEN"
+      }
+    ]
+  },
+  {
+    "id": "memory",
+    "name": "Граф памяти",
+    "aliases": ["память", "граф памяти", "memory", "knowledge graph"],
+    "category": "notes",
+    "description": "Долговременная память в виде связей: люди, проекты, договорённости.",
+    "needs": "node",
+    "transport": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory@2.1.1"]
+    },
+    "fields": []
+  },
+  {
+    "id": "thinking",
+    "name": "Пошаговое мышление",
+    "aliases": ["мышление", "пошаговое мышление", "sequential thinking", "рассуждение"],
+    "category": "notes",
+    "description": "Разбор сложной задачи по шагам с проверкой и пересмотром решений.",
+    "needs": "node",
+    "transport": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking@2.1.1"]
+    },
+    "fields": []
+  },
+  {
+    "id": "github",
+    "name": "GitHub",
+    "aliases": ["гитхаб", "гитхабе", "github", "gh", "репозитории", "пулреквесты", "issues"],
+    "category": "dev",
+    "description": "Репозитории, задачи, пулреквесты и код на GitHub. Официальный сервер.",
+    "transport": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/"
+    },
+    "fields": [
+      {
+        "key": "token",
+        "label": "Personal access token",
+        "hint": "Fine-grained personal access token с доступом к нужным репозиториям.",
+        "link": "https://github.com/settings/personal-access-tokens",
+        "target": "header",
+        "name": "Authorization",
+        "format": "Bearer {value}"
+      }
+    ]
+  },
+  {
+    "id": "git",
+    "name": "Git в проекте",
+    "aliases": ["гит", "git", "коммиты", "ветки", "репозиторий"],
+    "category": "dev",
+    "description": "История, изменения, ветки и коммиты одного локального репозитория.",
+    "needs": "uv",
+    "transport": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mcp-server-git@2026.11.11", "--repository", "{path}"]
+    },
+    "fields": [
+      {
+        "key": "path",
+        "label": "Папка репозитория",
+        "target": "arg",
+        "placeholder": "E:\\Projects\\my-app"
+      }
+    ]
+  },
+  {
+    "id": "context7",
+    "name": "Context7: документация",
+    "aliases": ["context7", "контекст7", "документация", "доки", "docs", "библиотеки"],
+    "category": "dev",
+    "description": "Свежая документация любых библиотек и фреймворков прямо в ответе.",
+    "needs": "node",
+    "transport": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@4.7.1"]
+    },
+    "fields": []
+  },
+  {
+    "id": "deepwiki",
+    "name": "DeepWiki",
+    "aliases": ["deepwiki", "дипвики", "разбор репозитория"],
+    "category": "dev",
+    "description": "Объяснит устройство любого открытого репозитория GitHub. Без ключа.",
+    "transport": {
+      "type": "http",
+      "url": "https://mcp.deepwiki.com/mcp"
+    },
+    "fields": []
+  },
+  {
+    "id": "mslearn",
+    "name": "Microsoft Learn",
+    "aliases": ["microsoft", "майкрософт", "mslearn", "azure", "dotnet", ".net", "powershell", "windows docs"],
+    "category": "dev",
+    "description": "Официальная документация Microsoft: Windows, .NET, Azure, PowerShell.",
+    "transport": {
+      "type": "http",
+      "url": "https://learn.microsoft.com/api/mcp"
+    },
+    "fields": []
+  },
+  {
+    "id": "cloudflare-docs",
+    "name": "Документация Cloudflare",
+    "aliases": ["cloudflare", "клаудфлер", "клаудфлейр", "workers", "r2", "d1", "pages"],
+    "category": "dev",
+    "description": "Ответы по Workers, Pages, R2, D1 и остальной платформе Cloudflare.",
+    "transport": {
+      "type": "http",
+      "url": "https://docs.mcp.cloudflare.com/mcp"
+    },
+    "fields": []
+  },
+  {
+    "id": "home-assistant",
+    "name": "Home Assistant",
+    "aliases": ["умный дом", "home assistant", "хом ассистант", "свет", "розетки", "климат", "шторы", "датчики"],
+    "category": "home",
+    "description": "Свет, розетки, климат, шторы и сценарии умного дома голосом.",
+    "transport": {
+      "type": "http",
+      "url": "{url}/api/mcp"
+    },
+    "fields": [
+      {
+        "key": "url",
+        "label": "Адрес Home Assistant",
+        "target": "url",
+        "initial": "http://homeassistant.local:8123",
+        "hint": "Включите интеграцию Model Context Protocol Server в Home Assistant."
+      },
+      {
+        "key": "token",
+        "label": "Токен доступа",
+        "hint": "Профиль → Безопасность → Долгосрочные токены доступа.",
+        "link": "https://www.home-assistant.io/docs/authentication/#your-account-profile",
+        "target": "header",
+        "name": "Authorization",
+        "format": "Bearer {value}"
+      }
+    ]
+  },
+  {
+    "id": "stripe",
+    "name": "Stripe",
+    "aliases": ["страйп", "stripe", "платежи", "оплаты", "подписки", "счета", "биллинг"],
+    "category": "money",
+    "description": "Платежи, клиенты, подписки и счета в Stripe. Официальный сервер.",
+    "transport": {
+      "type": "http",
+      "url": "https://mcp.stripe.com"
+    },
+    "fields": [
+      {
+        "key": "token",
+        "label": "Agent API key",
+        "hint": "Создайте ключ с меткой Agent и только нужными правами.",
+        "link": "https://dashboard.stripe.com/apikeys",
+        "target": "header",
+        "name": "Authorization",
+        "format": "Bearer {value}"
+      }
+    ]
+  }
+]

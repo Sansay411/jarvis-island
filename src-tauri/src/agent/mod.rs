@@ -223,7 +223,7 @@ fn ext_of(p: &str) -> String {
 fn still_confirmed(tool: &str, args: &Value) -> bool {
     // An MCP tool is high only when its server calls it destructive. Sending
     // a file to Telegram leaves the computer, so it is always asked about.
-    matches!(tool, "input_key" | "input_click" | "ui_act" | "shell_run")
+    matches!(tool, "input_key" | "input_click" | "ui_act" | "shell_run" | "connect_service")
         || tool.starts_with(crate::mcp::PREFIX)
         || (tool == "file_action" && args.get("action").and_then(Value::as_str) == Some("telegram"))
 }
@@ -1037,6 +1037,11 @@ impl Agent {
                 let what = if sends { "Отправит сообщение в окне" } else { "Окно" };
                 details = format!("{what}: «{}» ({})
 {details}", w.title.trim_start_matches('‎'), w.process);
+            }
+        }
+        if call.name == "connect_service" {
+            if let Some(text) = crate::tools::connect::confirmation_details(args) {
+                details = text;
             }
         }
         // A file sent to Telegram may come from the attachments or the island

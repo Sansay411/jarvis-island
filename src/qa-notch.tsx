@@ -24,6 +24,7 @@ import { useWeather, type Weather } from "./store/weather";
 import { primeShelfThumbs } from "./island/shelfThumbs";
 import { useBluetooth } from "./store/bluetooth";
 import { useMentor } from "./store/mentor";
+import { useMcpPrompt } from "./store/mcpPrompt";
 import { remember, upcoming, useAgenda, type CalEvent } from "./store/agenda";
 import { isoDateTime } from "./planner/dates";
 import type { BtDevice } from "./lib/types";
@@ -95,7 +96,8 @@ type PresetId =
   | "moment-day"
   | "moment-level"
   | "growth-card"
-  | "focus-cal";
+  | "focus-cal"
+  | "secret";
 
 function makeCoverArtDataUrl(hue: "ocean" | "crimson" | "gold"): string {
   const c = document.createElement("canvas");
@@ -436,6 +438,7 @@ const PRESETS: Array<{ id: PresetId; label: string }> = [
   { id: "moment-level", label: "21b. Новый уровень" },
   { id: "growth-card", label: "22. Рост: карточка на острове" },
   { id: "focus-cal", label: "23. Фокус: блок из календаря" },
+  { id: "secret", label: "24. Подключение: ввод ключа" },
 ];
 
 const SOURCES: Array<{ id: string; label: string; app: string; track: string; artist: string; hue: "ocean" | "crimson" | "gold" }> = [
@@ -550,6 +553,7 @@ function QaHarness() {
     outputLevel.set(0);
     useVoice.setState({ state: "idle", error: null, userLine: "", assistantLine: "" });
     useFiles.setState({ open: false, loading: false, error: null, paths: [], files: [], actions: [], job: null });
+    useMcpPrompt.setState({ prompt: null, submitting: false, error: null });
     useBluetooth.setState({ devices: buildBtDevices(id === "sound-single" ? "single" : id === "sound-low" ? "low" : id === "sound-empty" ? "away" : "pods"), hello: null });
     useIsland.setState({ pinned: id === "pinned" });
     if (id !== "watching") useMentor.setState({ watching: null });
@@ -873,6 +877,33 @@ function QaHarness() {
         seedMedia(srcIndex, true);
         useHub.setState({ focus: EMPTY_FOCUS });
         useIsland.setState({ hovered: false, peekDeck: "nook", dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: true });
+        break;
+
+      case "secret":
+        useSystem.setState({ media: null, artwork: null });
+        useHub.setState({ focus: EMPTY_FOCUS });
+        useIsland.setState({ hovered: false, dragOver: false, voiceOpen: false, workspaceOpen: false, clipsOpen: false, forceFocusBanner: false, focusBannerDismissed: false });
+        useMcpPrompt.setState({
+          prompt: {
+            promptId: "qa-secret-1",
+            serviceId: "notion",
+            serviceName: "Notion",
+            description: "Страницы и базы Notion: найти, прочитать, создать заметку или строку в базе.",
+            note: null,
+            fields: [
+              {
+                key: "NOTION_TOKEN",
+                label: "Токен интеграции",
+                hint: "Создайте внутреннюю интеграцию и откройте ей доступ к нужным страницам.",
+                link: "https://www.notion.so/profile/integrations",
+                placeholder: "ntn_…",
+                optional: false,
+              },
+            ],
+          },
+          submitting: false,
+          error: null,
+        });
         break;
 
       case "files":

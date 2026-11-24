@@ -7,6 +7,7 @@
 mod apps;
 mod browser;
 mod clipboard_history;
+pub mod connect;
 mod dev;
 #[cfg(windows)]
 pub mod executive;
@@ -171,6 +172,7 @@ impl Registry {
             .chain(clipboard_history::tools())
             .chain(executive::tools())
             .chain(planner::tools())
+            .chain(connect::tools())
         {
             tools.insert(t.name, t);
         }

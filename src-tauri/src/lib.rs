@@ -427,6 +427,7 @@ pub fn run() {
             ipc_mcp::mcp_refresh,
             ipc_mcp::mcp_set_enabled,
             ipc_mcp::mcp_set_tool,
+            ipc_mcp::mcp_secret_submit,
             ipc_hub::hub_tasks_list,
             ipc_hub::hub_task_add,
             ipc_hub::hub_task_toggle,

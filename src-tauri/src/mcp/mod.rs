@@ -8,9 +8,10 @@
 //! idle JARVIS keeps no extra processes. Env values and HTTP headers (API
 //! tokens) live in Credential Manager; SQLite only knows their names.
 
+pub mod catalog;
 mod transport;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,7 @@ use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::ai::types::ToolSpec;
@@ -31,6 +33,8 @@ pub const PREFIX: &str = "mcp__";
 const KV_SERVERS: &str = "mcp.servers";
 const KV_TOOLS: &str = "mcp.tools";
 const EVT: &str = "mcp:changed";
+pub const EVT_SECRET_PROMPT: &str = "mcp:secret-prompt";
+pub const EVT_SECRET_PROMPT_CLOSED: &str = "mcp:secret-prompt-closed";
 /// A server unused this long is shut down; the next call starts it again.
 const IDLE: Duration = Duration::from_secs(600);
 /// First start may download the package (`npx -y …`).
@@ -215,12 +219,38 @@ pub struct Meta {
     pub parallel_safe: bool,
 }
 
+/// One secret field shown in the island's secure key prompt.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretFieldPrompt {
+    pub key: String,
+    pub label: String,
+    pub hint: Option<String>,
+    pub link: Option<String>,
+    pub placeholder: Option<String>,
+    pub optional: bool,
+}
+
+/// Payload emitted to the island when `connect_service` needs secret keys.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretPromptPayload {
+    pub prompt_id: String,
+    pub service_id: String,
+    pub service_name: String,
+    pub description: String,
+    pub note: Option<String>,
+    pub fields: Vec<SecretFieldPrompt>,
+}
+
 pub struct Hub {
     app: AppHandle,
     servers: RwLock<BTreeMap<String, Arc<Server>>>,
     /// Ids of servers whose tool list changed (read by [`Hub::spawn_background`]).
     reloads: ReloadQueue,
     reload_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<String>>>,
+    /// Pending secure key prompts waiting on the island dialog.
+    secret_prompts: Mutex<HashMap<String, oneshot::Sender<Option<BTreeMap<String, String>>>>>,
 }
 
 /// Holds each server at most once: a burst of `tools/list_changed`
@@ -406,7 +436,13 @@ impl Hub {
         let servers = configs.into_iter().map(|c| (c.id.clone(), Server::new(c.clone(), cache.remove(&c.id).unwrap_or_default()))).collect();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let reloads = ReloadQueue { tx, queued: Arc::default() };
-        Arc::new(Hub { app, servers: RwLock::new(servers), reloads, reload_rx: Mutex::new(Some(rx)) })
+        Arc::new(Hub {
+            app,
+            servers: RwLock::new(servers),
+            reloads,
+            reload_rx: Mutex::new(Some(rx)),
+            secret_prompts: Mutex::new(HashMap::new()),
+        })
     }
 
     fn store(&self) -> Arc<crate::store::Store> {
@@ -551,31 +587,76 @@ impl Hub {
     }
 
     pub fn views(&self) -> Vec<ServerView> {
-        self.servers
-            .read()
-            .values()
-            .map(|s| {
-                let (state, error, info) = s.state.lock().clone();
-                ServerView {
-                    config: s.config.clone(),
-                    state,
-                    error,
-                    server_info: info,
-                    tools: s
-                        .tools
-                        .read()
-                        .iter()
-                        .map(|t| ToolView {
-                            name: t.name.clone(),
-                            title: t.label().to_string(),
-                            description: truncate(t.description.trim(), 240),
-                            risk: t.risk().as_str(),
-                            enabled: !s.config.disabled_tools.contains(&t.name),
-                        })
-                        .collect(),
-                }
-            })
-            .collect()
+        self.servers.read().values().map(|s| Self::view_of(s)).collect()
+    }
+
+    pub fn view(&self, id: &str) -> Option<ServerView> {
+        self.servers.read().get(id).map(|s| Self::view_of(s))
+    }
+
+    pub fn has_server(&self, id: &str) -> bool {
+        self.servers.read().contains_key(id)
+    }
+
+    fn view_of(s: &Server) -> ServerView {
+        let (state, error, info) = s.state.lock().clone();
+        ServerView {
+            config: s.config.clone(),
+            state,
+            error,
+            server_info: info,
+            tools: s
+                .tools
+                .read()
+                .iter()
+                .map(|t| ToolView {
+                    name: t.name.clone(),
+                    title: t.label().to_string(),
+                    description: truncate(t.description.trim(), 240),
+                    risk: t.risk().as_str(),
+                    enabled: !s.config.disabled_tools.contains(&t.name),
+                })
+                .collect(),
+        }
+    }
+
+    /// Ask the user for secret keys via the island's secure prompt dialog.
+    /// Returns `Ok(Some(values))` on save, `Ok(None)` on cancel.
+    pub async fn request_secrets(
+        &self,
+        payload: SecretPromptPayload,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> AppResult<Option<BTreeMap<String, String>>> {
+        let prompt_id = payload.prompt_id.clone();
+        let (tx, rx) = oneshot::channel();
+        self.secret_prompts.lock().insert(prompt_id.clone(), tx);
+        self.app.state::<AppState>().island.set_user_hidden(false);
+        let _ = self.app.emit(EVT_SECRET_PROMPT, &payload);
+        let outcome = tokio::select! {
+            _ = cancel.cancelled() => Err(AppError::Cancelled),
+            r = tokio::time::timeout(timeout, rx) => match r {
+                Ok(Ok(values)) => Ok(values),
+                Ok(Err(_)) => Ok(None),
+                Err(_) => Err(AppError::Timeout("Время ожидания ключа истекло".into())),
+            },
+        };
+        self.secret_prompts.lock().remove(&prompt_id);
+        let _ = self.app.emit(EVT_SECRET_PROMPT_CLOSED, json!({ "promptId": prompt_id }));
+        outcome
+    }
+
+    /// Deliver secret values (or `None` on cancel) from the island prompt.
+    pub fn submit_secrets(&self, prompt_id: &str, values: Option<BTreeMap<String, String>>) -> AppResult<()> {
+        let tx = self.secret_prompts.lock().remove(prompt_id);
+        let _ = self.app.emit(EVT_SECRET_PROMPT_CLOSED, json!({ "promptId": prompt_id }));
+        match tx {
+            Some(tx) => {
+                let _ = tx.send(values);
+                Ok(())
+            }
+            None => Err(AppError::not_found("Запрос ключа уже неактуален")),
+        }
     }
 
     /// Add or replace a server. `secrets: None` keeps the stored ones.
