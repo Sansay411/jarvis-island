@@ -283,16 +283,19 @@ function SmoothGlyph({ activity, color, strokeW }: { activity: Activity; color: 
 export function ActivityGlyph({ activity, color, variant = "soft", reduced = false, scale = 1 }: ActivityGlyphProps) {
   if (!activity || scale < 0.6) return null;
   const strokeW = variant === "minimal" ? 0.85 : 1.05;
+  // The placement lives on a plain group: motion writes its own transform on
+  // the animated one, which would drop an SVG `transform` attribute.
   return (
-    <motion.g
-      key={activity}
-      transform="translate(41.5, 2.5)"
-      initial={{ opacity: 0, scale: 0.7 }}
-      animate={reduced ? { opacity: 0.82, scale: 1 } : { opacity: [0.65, 0.98, 0.65], scale: 1 }}
-      transition={reduced ? { duration: 0.12 } : { opacity: { duration: 1.6, repeat: Infinity, ease: "easeInOut" }, scale: { duration: 0.2 } }}
-      style={{ transformOrigin: "4.5px 4.5px", transformBox: "fill-box" }}
-    >
-      {variant === "pixel" ? <PixelGlyph activity={activity} color={color} /> : <SmoothGlyph activity={activity} color={color} strokeW={strokeW} />}
-    </motion.g>
+    <g transform="translate(41.5, 2.5)">
+      <motion.g
+        key={activity}
+        initial={{ opacity: 0, scale: 0.7 }}
+        animate={reduced ? { opacity: 0.82, scale: 1 } : { opacity: [0.65, 0.98, 0.65], scale: 1 }}
+        transition={reduced ? { duration: 0.12 } : { opacity: { duration: 1.6, repeat: Infinity, ease: "easeInOut" }, scale: { duration: 0.2 } }}
+        style={{ transformOrigin: "50% 50%", transformBox: "fill-box" }}
+      >
+        {variant === "pixel" ? <PixelGlyph activity={activity} color={color} /> : <SmoothGlyph activity={activity} color={color} strokeW={strokeW} />}
+      </motion.g>
+    </g>
   );
 }

@@ -1,66 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { ACTIVITIES, activityOf, type Activity } from "./emote";
+import { ACTIVITIES, ACTIVITY_HOLD_MS, activityOf, activityStep, type Activity } from "./emote";
+import toolNames from "./toolNames.json";
 
-/** Complete list of built-in tools registered in `src-tauri/src/tools/*`.
- *  Synced by a Rust test in `src-tauri/src/tools/mod.rs`. */
-const REGISTERED_TOOLS = [
-  "app_launch",
-  "app_volume",
-  "apps_find",
-  "bluetooth_battery",
-  "browser_close_tab",
-  "browser_read_page",
-  "browser_switch_tab",
-  "browser_tabs",
-  "calendar_manage",
-  "clipboard_history",
-  "clipboard_read",
-  "clipboard_write",
-  "coding_agent_run",
-  "context_snapshot",
-  "dev_tools_status",
-  "display_brightness",
-  "file_action",
-  "file_read",
-  "files_search",
-  "focus_session",
-  "growth",
-  "input_click",
-  "input_key",
-  "input_scroll",
-  "input_type",
-  "job_cancel",
-  "job_status",
-  "location",
-  "media_control",
-  "memory_forget",
-  "memory_save",
-  "mission_plan",
-  "open_target",
-  "projects_list",
-  "reminder_cancel",
-  "reminder_create",
-  "reminders_list",
-  "screen_capture",
-  "selection_grab",
-  "shell_run",
-  "speak_aloud",
-  "stopwatch",
-  "system_diagnostics",
-  "system_volume",
-  "tasks_manage",
-  "terminal_open",
-  "ui_act",
-  "ui_inspect",
-  "vscode_open",
-  "wait",
-  "weather",
-  "web_fetch",
-  "web_search",
-  "window_action",
-  "window_layout",
-  "windows_list",
-] as const;
+/** Every built-in tool registered in `src-tauri/src/tools/*`; a Rust test
+ *  (`tools::tests`) keeps this file equal to the registry. */
+const REGISTERED_TOOLS: string[] = toolNames;
 
 describe("activityOf", () => {
   it("maps every registered built-in tool to a dedicated non-generic activity", () => {
@@ -108,5 +52,25 @@ describe("activityOf", () => {
     const ids = new Set<Activity>(ACTIVITIES.map((a) => a.id));
     expect(ids.size).toBe(16);
     expect(ACTIVITIES.every((a) => a.label.trim().length > 0)).toBe(true);
+  });
+});
+
+describe("activityStep", () => {
+  it("starts the first activity at once", () => {
+    expect(activityStep(null, 0, "search", 10)).toEqual({ show: "search", wait: 0 });
+  });
+
+  it("keeps the shown activity until it has played the hold time", () => {
+    expect(activityStep("search", 1000, "read", 1200)).toEqual({ show: "search", wait: ACTIVITY_HOLD_MS - 200 });
+    expect(activityStep("search", 1000, "read", 1000 + ACTIVITY_HOLD_MS)).toEqual({ show: "read", wait: 0 });
+  });
+
+  it("holds the last activity a moment after the tool finished", () => {
+    expect(activityStep("type", 1000, null, 1100)).toEqual({ show: "type", wait: ACTIVITY_HOLD_MS - 100 });
+    expect(activityStep("type", 1000, null, 5000)).toEqual({ show: null, wait: 0 });
+  });
+
+  it("does nothing when the activity is unchanged", () => {
+    expect(activityStep("code", 1000, "code", 1001)).toEqual({ show: "code", wait: 0 });
   });
 });

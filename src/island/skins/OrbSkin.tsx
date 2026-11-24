@@ -60,7 +60,8 @@ function arcPoint(i: number, total: number): [number, number] {
   const row = i % 2 === 0 ? 0 : 1;
   const u = (t - 0.5) * 2; // -1..1
   const x = u * 11.2;
-  const y = 3.2 - (1 - u * u) * 7.2 + (row ? 1.65 : -0.45);
+  // A smile: the ends sit higher than the middle.
+  const y = -3.4 + (1 - u * u) * 6.6 + (row ? 1.65 : -0.45);
   return [x, y];
 }
 

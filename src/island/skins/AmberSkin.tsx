@@ -1,6 +1,13 @@
-// «Янтарь» — the default JARVIS face: two warm amber lenses with halo, side
-// shading, inner core, light rim and moving glint. Unchanged pixel for pixel
-// when idle or in standard moods.
+// «Янтарь» — JARVIS's own face and the default look. Two amber pills that
+// blink on rare timers, glance around now and then while idle, widen when you
+// approach, narrow and scan while thinking, follow real audio levels while
+// listening/speaking, curve into arcs on success and flatten on errors. The
+// motion itself lives in `useFaceMotion` (shared by every look).
+//
+// Each eye is a small lens of light, drawn in layers: a two-step halo, the
+// amber body with side shading (so it reads round), a hot inner core, a thin
+// light rim and a glint that drifts against the gaze. A very slow shimmer
+// keeps it alive.
 
 import { motion, useTransform, type MotionValue } from "motion/react";
 import { useId } from "react";
@@ -16,6 +23,7 @@ interface Ids {
   refl: string;
 }
 
+/** One eye, layer by layer (see the header); `clip` is its lid. */
 function Pill({
   x,
   y,
@@ -37,11 +45,13 @@ function Pill({
   const coreX = useTransform(() => x.get() + (EYE_W - coreW) / 2);
   const coreY = useTransform(() => y.get() + h.get() * 0.14 + 0.4);
   const coreH = useTransform(() => Math.max(0, h.get() * 0.72 - 0.8));
+  // The glint sits up and to the left, and slides a little against the gaze.
   const glintX = useTransform(() => x.get() + EYE_W * 0.33 - gx.get() * 0.22);
   const glintY = useTransform(() => y.get() + Math.min(2.7, h.get() * 0.2) + 0.2);
   const glintR = useTransform(() => (h.get() > 4.5 ? Math.min(1.05, h.get() * 0.085) : 0));
   return (
     <>
+      {/* The glow is built from the eye as the lid cuts it. */}
       <g filter={`url(#${ids.glow})`}>
         <g clipPath={`url(#${clip})`}>
           <motion.rect x={x} y={y} width={EYE_W} height={h} rx={EYE_W / 2} fill={error ? "var(--danger)" : `url(#${ids.fill})`} />
@@ -70,6 +80,7 @@ function arc(cx: number): string {
   return `M${cx - 4} ${BOX_H / 2 + 2} Q${cx} ${BOX_H / 2 - 4.5} ${cx + 4} ${BOX_H / 2 + 2}`;
 }
 
+/** A four-point sparkle. */
 function star(cx: number): string {
   const cy = BOX_H / 2;
   const r = 5.2;
@@ -119,6 +130,7 @@ export function AmberSkin(props: EyesProps) {
           <stop offset="0.5" stopColor="var(--amber)" />
           <stop offset="1" stopColor="var(--amber-lo)" />
         </linearGradient>
+        {/* Side shading: lit from the upper left, so the pill reads round. */}
         <linearGradient id={ids.shade} x1="0" y1="0" x2="1" y2="0">
           <stop offset="0" stopColor="#fff" stopOpacity="0.2" />
           <stop offset="0.38" stopColor="#fff" stopOpacity="0" />
@@ -140,6 +152,7 @@ export function AmberSkin(props: EyesProps) {
         <clipPath id={clipR}>
           <motion.path d={lidPathR} />
         </clipPath>
+        {/* Two-step halo: a tight bright one and a wide soft one. */}
         <filter id={ids.glow} x="-300%" y="-150%" width="700%" height="400%">
           <feGaussianBlur in="SourceGraphic" stdDeviation="1.1" result="tight" />
           <feGaussianBlur in="SourceGraphic" stdDeviation="3.6" result="wide" />
@@ -154,6 +167,7 @@ export function AmberSkin(props: EyesProps) {
         </filter>
       </defs>
 
+      {/* Restrained chromatic split: only while reasoning. */}
       {split && (
         <g opacity={0.5} style={{ mixBlendMode: "screen" }}>
           <motion.rect x={splitLeftX} y={m.yL} width={EYE_W} height={m.hL} rx={EYE_W / 2} fill="#62d6ff" />

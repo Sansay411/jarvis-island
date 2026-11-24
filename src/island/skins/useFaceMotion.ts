@@ -1,6 +1,9 @@
 // Shared motion state for all eye skins: moods, audio reactivity, gaze,
-// blinking, idle glances, habits, one-shot emotes and tool-activity
-// micro-animations. Idle skins pay zero frame cost between blinks.
+// blinking, idle glances, habits (nodding to music, sleepy eyes at night,
+// watching a timer's last seconds, jumping when it rings), one-shot emotes
+// and the tool-activity micro-animations. With `calmness` 1 this is exactly
+// the motion of the original amber eyes; calmer looks scale amplitudes down
+// and soften the springs. Idle skins pay zero frame cost between blinks.
 
 import { animate, useMotionValue, useReducedMotion, useSpring, useTransform, type MotionValue } from "motion/react";
 import { useEffect, useRef } from "react";
@@ -113,6 +116,8 @@ export function useFaceMotion(props: EyesProps, options: FaceMotionOptions = {})
   const drift = useMotionValue(0);
   const glanceY = useMotionValue(0);
   const hop = useMotionValue(0);
+  // Per eye: height factor (squint, confusion) and eyelid drop and angle
+  // (sad: outer corners down; determined: inner corners down).
   const sizeL = useMotionValue(1);
   const sizeR = useMotionValue(1);
   const lidL = useMotionValue(0);
@@ -129,6 +134,7 @@ export function useFaceMotion(props: EyesProps, options: FaceMotionOptions = {})
     yOff.set(lookY);
   }, [lookY, yOff]);
 
+  // Live audio drives height in voice moods; otherwise the spring rests.
   const audioDriven = mood === "listening" || mood === "speaking";
   const open = () => (baseH.get() + (audioDriven ? lvl.get() * 13 : 0)) * widen.get();
   const hL = useTransform(() => Math.max(1.6, open() * blinkL.get() * sizeL.get()));
@@ -147,7 +153,8 @@ export function useFaceMotion(props: EyesProps, options: FaceMotionOptions = {})
     animate(blinkR, keys, { duration, ease: "easeInOut" });
   };
 
-  // Rare blinks on timers so idle costs nothing between blinks.
+  // Rare blinks, scheduled with timers so nothing runs between them; often
+  // while watching a timer, slow and heavy at night.
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => {
     const canBlink = (mood === "idle" || mood === "attentive") && !activity;
@@ -163,7 +170,8 @@ export function useFaceMotion(props: EyesProps, options: FaceMotionOptions = {})
     return () => window.clearTimeout(timer.current);
   }, [mood, watch, sleepy, activity]);
 
-  // Idle glances.
+  // Idle: now and then a glance aside (and a little up or down), held a
+  // moment, then back — the island looks alive without moving constantly.
   useEffect(() => {
     if (mood !== "idle" || reduced || watch || bob || activity) return;
     let t: number | undefined;
@@ -182,8 +190,15 @@ export function useFaceMotion(props: EyesProps, options: FaceMotionOptions = {})
     return () => window.clearTimeout(t);
   }, [mood, reduced, watch, bob, activity, calmness]);
 
-  // Tool-activity micro-animations. Always stops previous runs and resets cleanly
-  // so transitions between tools never stack noisily.
+  // Busy with a tool: one small animation per kind. Searching looks up and
+  // aside, reading runs along lines below, typing flicks down at the keys
+  // with a quick blink rhythm, a click squints and pops, looking at the
+  // screen sweeps wide-eyed, drawing follows an arc, files hop between two
+  // places, music bobs, the calendar looks up-left, memory rolls up as if
+  // recalling, time ticks left-right, system settings narrow a little, code
+  // scans narrowly, a connection pulses the eyes in turn, speech opens them
+  // in beats, anything else sways. Every run stops and resets on a change,
+  // so tools in a row never stack.
   useEffect(() => {
     if (!activity) return;
     const c = calmness;
@@ -421,7 +436,10 @@ export function useFaceMotion(props: EyesProps, options: FaceMotionOptions = {})
     }
   }, [mood, reduced, drift, calmness]);
 
-  // Subtle living shimmer while busy.
+  // A slow, barely visible shimmer: the light is alive, not printed. Only
+  // while JARVIS is busy: an endless animation repaints the blurred SVG at
+  // the panel's refresh rate and keeps DWM compositing an always-on-top
+  // transparent window — the idle island must cost nothing between blinks.
   useEffect(() => {
     if (reduced || mood === "sleep" || mood === "idle" || mood === "attentive") {
       life.set(1);
@@ -438,6 +456,7 @@ export function useFaceMotion(props: EyesProps, options: FaceMotionOptions = {})
     const c = calmness;
     switch (emote) {
       case "wink":
+        // The right eye becomes an arc (see arcR); a small tilt of the head.
         if (!reduced) animate(hop, [0, -0.8 * c, 0], { duration: 0.4 });
         break;
       case "surprised":
@@ -454,6 +473,7 @@ export function useFaceMotion(props: EyesProps, options: FaceMotionOptions = {})
       case "star":
         break;
       case "sad": {
+        // Lids slope down to the outer corners, the eyes sink a little.
         const ease = { duration: 0.35, ease: "easeOut" as const };
         animate(lidL, [0, 0.75, 0.75, 0], { duration: 2.1, times: [0, 0.15, 0.85, 1] });
         animate(lidR, [0, 0.75, 0.75, 0], { duration: 2.1, times: [0, 0.15, 0.85, 1] });
@@ -484,6 +504,7 @@ export function useFaceMotion(props: EyesProps, options: FaceMotionOptions = {})
         break;
       }
       case "squint":
+        // «Хм…»: both lids come down flat, the right one lower and slanted.
         animate(lidL, [0, 0.42, 0.42, 0], { duration: 1.3, times: [0, 0.2, 0.8, 1] });
         animate(lidR, [0, 0.72, 0.72, 0], { duration: 1.3, times: [0, 0.2, 0.8, 1] });
         animate(tiltR, [0, -9, -9, 0], { duration: 1.3, times: [0, 0.2, 0.8, 1] });
@@ -495,6 +516,7 @@ export function useFaceMotion(props: EyesProps, options: FaceMotionOptions = {})
         break;
       case "dizzy":
         if (!reduced) {
+          // Two loops around: the eyes orbit their place.
           const r = 2.4 * c;
           const n = 24;
           const xs = Array.from({ length: n + 1 }, (_, k) => r * Math.cos((k / n) * 4 * Math.PI) - (k === 0 || k === n ? r : 0));
@@ -504,20 +526,30 @@ export function useFaceMotion(props: EyesProps, options: FaceMotionOptions = {})
         }
         break;
       case "yawn":
+        // Open wide, then sink almost shut, slowly; then rest.
         animate(blinkL, [1, 1.25, 1.25, 0.12, 0.12, 1], { duration: 1.9, times: [0, 0.2, 0.4, 0.65, 0.85, 1] });
         animate(blinkR, [1, 1.25, 1.25, 0.12, 0.12, 1], { duration: 1.9, times: [0, 0.2, 0.4, 0.65, 0.85, 1] });
         break;
       case "wake":
+        // From a line to open, with a little overshoot and a blink.
         animate(blinkL, [0.05, 0.05, 1.15, 1, 0.1, 1], { duration: 0.75, times: [0, 0.1, 0.45, 0.6, 0.78, 1] });
         animate(blinkR, [0.05, 0.05, 1.15, 1, 0.1, 1], { duration: 0.75, times: [0, 0.1, 0.45, 0.6, 0.78, 1] });
         break;
     }
     return () => {
-      timers.forEach((id) => window.clearTimeout(id));
+      // A pending «tilt back» must still happen when the next emote cuts in.
+      if (timers.length) {
+        timers.forEach((id) => window.clearTimeout(id));
+        animate(tiltL, 0, { duration: 0.25 });
+        animate(tiltR, 0, { duration: 0.25 });
+      }
     };
-  }, [emote, emoteSeq, reduced, calmness]);
+    // Replays only on a new emote, not when the look or motion setting changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [emote, emoteSeq]);
 
   const showArcs = mood === "happy" || emote === "laugh" || emote === "boop";
+  // A wink closes one eye into a smiling arc; the other stays open.
   const arcL = showArcs;
   const arcR = showArcs || emote === "wink";
   const showHearts = emote === "heart";

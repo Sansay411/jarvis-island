@@ -5,12 +5,18 @@ import { useMotionValue, useReducedMotion } from "motion/react";
 import { useEffect, useState } from "react";
 import { JarvisFace } from "../island/skins/JarvisFace";
 import { SKINS, type EyeMood, type SkinId } from "../island/skins/types";
+import type { Emote } from "../store/emote";
 
-const DEMO_CYCLE: { mood: EyeMood; label: string }[] = [
+/** Moods and a few expressions the previews cycle through, 1.5 s each. */
+const DEMO_CYCLE: { mood: EyeMood; emote?: Emote; label: string }[] = [
   { mood: "thinking", label: "Думает" },
   { mood: "listening", label: "Слушает" },
   { mood: "speaking", label: "Говорит" },
   { mood: "happy", label: "Радость" },
+  { mood: "attentive", emote: "wink", label: "Подмигивает" },
+  { mood: "attentive", emote: "heart", label: "Сердечки" },
+  { mood: "attentive", emote: "surprised", label: "Удивление" },
+  { mood: "attentive", emote: "sad", label: "Грусть" },
   { mood: "error", label: "Ошибка" },
   { mood: "sleep", label: "Сон" },
   { mood: "attentive", label: "Внимание" },
@@ -33,6 +39,7 @@ export function SkinGallery({
 
   const activeDemo = cycling ? DEMO_CYCLE[step % DEMO_CYCLE.length]! : null;
   const previewMood: EyeMood = activeDemo ? activeDemo.mood : "attentive";
+  const previewEmote = activeDemo?.emote ?? null;
 
   useEffect(() => {
     if (!cycling) {
@@ -106,7 +113,7 @@ export function SkinGallery({
               onClick={() => onChange(s.id)}
             >
               <span className="skin-stage" aria-hidden="true">
-                <JarvisFace skin={s.id} mood={previewMood} level={demoLevel} scale={1.14} />
+                <JarvisFace skin={s.id} mood={previewMood} emote={previewEmote} emoteSeq={step} level={demoLevel} scale={1.14} />
               </span>
               <span className="skin-meta">
                 <span className="skin-head">

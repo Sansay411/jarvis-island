@@ -1,5 +1,6 @@
-// One-shot expressions of the eyes and what JARVIS is busy with (looking
-// up while it searches, reading, typing, scanning the screen). Expressions
+// One-shot expressions of the eyes and what JARVIS is busy with (one kind
+// of animation per kind of tool: searching, reading, typing, clicking,
+// looking at the screen, music, calendar, memory, code…). Expressions
 // come from the native side (`island:emote`), from the agent's own events
 // (a long job done → stars, cancelled → sad, a failed step → a squint), the
 // stopwatch and the voice session; each clears itself.
@@ -190,6 +191,25 @@ export function activityOf(tool: string): Activity {
   const name = tool.trim();
   if (name.startsWith("mcp__") || name === "mcp") return "connect";
   return TOOL_ACTIVITY[name] ?? "work";
+}
+
+/** The least time one tool's animation plays, so quick calls in a row read
+ *  as a steady rhythm instead of a flicker. */
+export const ACTIVITY_HOLD_MS = 700;
+
+/** What the face should show when the running tool becomes `next`: a first
+ *  activity starts at once, a change waits until the shown one has played
+ *  `hold` ms (`wait` is the rest; ask again then). */
+export function activityStep(
+  shown: Activity | null,
+  since: number,
+  next: Activity | null,
+  now: number,
+  hold = ACTIVITY_HOLD_MS,
+): { show: Activity | null; wait: number } {
+  if (next === shown || shown === null) return { show: next, wait: 0 };
+  const left = hold - (now - since);
+  return left > 0 ? { show: shown, wait: left } : { show: next, wait: 0 };
 }
 
 interface EmoteStore {

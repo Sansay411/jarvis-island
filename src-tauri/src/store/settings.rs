@@ -282,17 +282,29 @@ impl Default for PersonaSettings {
     }
 }
 
+/// Looks of JARVIS's eyes the UI knows; the first one is the default.
+pub const SKINS: [&str; 5] = ["amber", "orb", "ice", "pixel", "minimal"];
+
 /// Visual look of JARVIS's eyes and matching island accent (Settings → Характер).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppearanceSettings {
-    /// "amber", "orb", "ice", "pixel" or "minimal".
+    /// One of [`SKINS`]; anything else falls back to the default on load.
     pub skin: String,
 }
 
 impl Default for AppearanceSettings {
     fn default() -> Self {
-        AppearanceSettings { skin: "amber".into() }
+        AppearanceSettings { skin: SKINS[0].into() }
+    }
+}
+
+impl AppearanceSettings {
+    /// Replaces an unknown look (a newer or hand-edited file) with the default.
+    pub fn normalize(&mut self) {
+        if !SKINS.contains(&self.skin.as_str()) {
+            self.skin = SKINS[0].into();
+        }
     }
 }
 

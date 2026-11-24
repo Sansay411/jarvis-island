@@ -139,6 +139,27 @@ pub fn str_arg<'a>(args: &'a Value, key: &str) -> &'a str {
     args.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
+/// Every built-in tool, in registration order.
+fn builtin() -> Vec<Tool> {
+    system::tools()
+        .into_iter()
+        .chain(apps::tools())
+        .chain(files::tools())
+        .chain(shell::tools())
+        .chain(memory::tools())
+        .chain(screen::tools())
+        .chain(dev::tools())
+        .chain(browser::tools())
+        .chain(web::tools())
+        .chain(weather::tools())
+        .chain(file_actions::tools())
+        .chain(reminders::tools())
+        .chain(clipboard_history::tools())
+        .chain(executive::tools())
+        .chain(planner::tools())
+        .collect()
+}
+
 pub struct Registry {
     tools: BTreeMap<&'static str, Tool>,
     mcp: Arc<crate::mcp::Hub>,
@@ -154,26 +175,7 @@ pub struct ToolMeta {
 
 impl Registry {
     pub fn new(mcp: Arc<crate::mcp::Hub>) -> Self {
-        let mut tools = BTreeMap::new();
-        for t in system::tools()
-            .into_iter()
-            .chain(apps::tools())
-            .chain(files::tools())
-            .chain(shell::tools())
-            .chain(memory::tools())
-            .chain(screen::tools())
-            .chain(dev::tools())
-            .chain(browser::tools())
-            .chain(web::tools())
-            .chain(weather::tools())
-            .chain(file_actions::tools())
-            .chain(reminders::tools())
-            .chain(clipboard_history::tools())
-            .chain(executive::tools())
-            .chain(planner::tools())
-        {
-            tools.insert(t.name, t);
-        }
+        let tools = builtin().into_iter().map(|t| (t.name, t)).collect();
         Registry { tools, mcp }
     }
 
@@ -225,30 +227,21 @@ pub fn object(props: Value, required: &[&str]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
+    /// `src/store/toolNames.json` lists the built-in tools for the eyes'
+    /// activity mapping (`activityOf`, checked by `emote.test.ts`). A new
+    /// tool must be added there, and so get its own animation.
     #[test]
-    fn every_builtin_tool_is_mapped_in_frontend_emote_table() {
-        let src = include_str!("../../../src/store/emote.ts");
-        let tools = system::tools()
-            .into_iter()
-            .chain(apps::tools())
-            .chain(files::tools())
-            .chain(shell::tools())
-            .chain(memory::tools())
-            .chain(screen::tools())
-            .chain(dev::tools())
-            .chain(browser::tools())
-            .chain(web::tools())
-            .chain(weather::tools())
-            .chain(file_actions::tools())
-            .chain(reminders::tools())
-            .chain(clipboard_history::tools())
-            .chain(executive::tools())
-            .chain(planner::tools());
-        let missing: Vec<&str> = tools
-            .map(|t| t.name)
-            .filter(|name| !src.contains(&format!("{name}:")))
-            .collect();
-        assert!(missing.is_empty(), "Tools missing from TOOL_ACTIVITY in src/store/emote.ts: {missing:?}");
+    fn frontend_tool_list_matches_the_registry() {
+        let listed: BTreeSet<String> = serde_json::from_str(include_str!("../../../src/store/toolNames.json")).unwrap();
+        let registered: BTreeSet<String> = builtin().into_iter().map(|t| t.name.to_string()).collect();
+        let missing: Vec<&String> = registered.difference(&listed).collect();
+        assert!(missing.is_empty(), "add to src/store/toolNames.json: {missing:?}");
+        // The macOS build has fewer executive tools; the list follows Windows.
+        if cfg!(windows) {
+            let stale: Vec<&String> = listed.difference(&registered).collect();
+            assert!(stale.is_empty(), "no longer registered, remove from src/store/toolNames.json: {stale:?}");
+        }
     }
 }

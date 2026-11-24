@@ -68,6 +68,23 @@ function PixelBitmap({
   );
 }
 
+/** Top and height of one of the eye's three columns once the lid cuts it;
+ *  a tilted lid cuts the columns one step apart. The outer columns are one
+ *  cell shorter at both ends, so a tall eye reads as a pixel-art capsule. */
+function usePixelColumn(
+  sy: MotionValue<number>,
+  sh: MotionValue<number>,
+  cutBase: MotionValue<number>,
+  tiltStep: MotionValue<number>,
+  col: number,
+): [MotionValue<number>, MotionValue<number>] {
+  const cut = () => Math.max(0, cutBase.get() + (col - 1) * tiltStep.get());
+  const inset = () => (col !== 1 && sh.get() >= PX * 4 ? PX : 0);
+  const y = useTransform(() => sy.get() + Math.min(sh.get() - PX, Math.max(cut(), inset())));
+  const h = useTransform(() => Math.max(PX, sh.get() - Math.max(cut(), inset()) - inset()));
+  return [y, h];
+}
+
 function PixelEye({
   x,
   y,
@@ -92,30 +109,14 @@ function PixelEye({
   const cutBase = useTransform(() => snap(lid.get() * sh.get() * 0.52, PX));
   const tiltStep = useTransform(() => (Math.abs(tilt.get()) > 7 ? Math.sign(tilt.get()) * PX : 0));
 
-  const colH = (colIdx: number) =>
-    useTransform(() => {
-      const cut = Math.max(0, cutBase.get() + (colIdx - 1) * tiltStep.get());
-      return Math.max(PX, sh.get() - cut);
-    });
-  const colY = (colIdx: number) =>
-    useTransform(() => {
-      const cut = Math.max(0, cutBase.get() + (colIdx - 1) * tiltStep.get());
-      const eff = Math.min(sh.get() - PX, cut);
-      return sy.get() + eff;
-    });
-
   const c0x = sx;
   const c1x = useTransform(() => sx.get() + PX);
   const c2x = useTransform(() => sx.get() + PX * 2);
+  const [c0y, c0h] = usePixelColumn(sy, sh, cutBase, tiltStep, 0);
+  const [c1y, c1h] = usePixelColumn(sy, sh, cutBase, tiltStep, 1);
+  const [c2y, c2h] = usePixelColumn(sy, sh, cutBase, tiltStep, 2);
 
-  const c0y = colY(0);
-  const c1y = colY(1);
-  const c2y = colY(2);
-  const c0h = colH(0);
-  const c1h = colH(1);
-  const c2h = colH(2);
-
-  const botY = useTransform(() => sy.get() + sh.get() - PX);
+  const botY = useTransform(() => c1y.get() + c1h.get() - PX);
   const showGlint = useTransform(() => (sh.get() >= 6 && cutBase.get() < 4 ? 1 : 0));
   const glintY = useTransform(() => c0y.get());
 
@@ -128,8 +129,9 @@ function PixelEye({
       <motion.rect x={c0x} y={c0y} width={PX} height={c0h} fill={mainFill} shapeRendering="crispEdges" />
       <motion.rect x={c1x} y={c1y} width={PX} height={c1h} fill={mainFill} shapeRendering="crispEdges" />
       <motion.rect x={c2x} y={c2y} width={PX} height={c2h} fill={mainFill} shapeRendering="crispEdges" />
-      {/* Bottom shade row */}
-      <motion.rect x={sx} y={botY} width={PIXEL_W} height={PX} fill={shadeFill} opacity={0.55} shapeRendering="crispEdges" />
+      {/* Shade: the bottom cell of the middle column and the right column. */}
+      <motion.rect x={c1x} y={botY} width={PX} height={PX} fill={shadeFill} opacity={0.55} shapeRendering="crispEdges" />
+      <motion.rect x={c2x} y={c2y} width={PX} height={c2h} fill={shadeFill} opacity={0.35} shapeRendering="crispEdges" />
       {/* Crisp 2x2 pixel glint in upper-left cell */}
       <motion.rect x={c0x} y={glintY} width={PX} height={PX} fill={hiFill} opacity={showGlint} shapeRendering="crispEdges" />
     </>
