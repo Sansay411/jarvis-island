@@ -131,6 +131,7 @@ const TOOL_ACTIVITY: Record<string, Activity> = {
   window_layout: "click",
   app_launch: "click",
   open_target: "click",
+  game_play: "click",
 
   // Visual inspection of the screen
   screen_capture: "look",

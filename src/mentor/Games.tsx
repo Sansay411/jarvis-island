@@ -3,8 +3,16 @@
 // feed, spent on a skill.
 
 import { useEffect, useRef, useState } from "react";
+import { gamesIpc } from "../games/ipc";
+import type { BoardGameId } from "../games/types";
 import { mentorIpc } from "../store/mentor";
 import { ART, type ArtName } from "./art";
+
+const BOARD_GAMES: Array<{ id: BoardGameId; art: ArtName; title: string; meta: string; text: string }> = [
+  { id: "chess", art: "chess", title: "Шахматы с Джарвисом", meta: "Партия 1×1 · живой голос", text: "Настоящая партия за доской: комментирую ходы, шучу или играю строго по-деловому." },
+  { id: "checkers", art: "checkers", title: "Русские шашки", meta: "8×8 · дамки и серии боя", text: "Обязательный бой вперёд и назад, прорывы в дамки и живой спор за столом." },
+  { id: "battleship", art: "battleship", title: "Морской бой", meta: "10×10 · флот", text: "Честная морская дуэль без подглядывания: расставь корабли и проверим интуицию." },
+];
 
 export type GameId = "sprint" | "words" | "sudoku" | "schulte" | "memory";
 export const GAME_TITLE: Record<GameId, string> = {
@@ -34,10 +42,18 @@ export function GamePicker({ onPick }: { onPick: (g: GameId) => void }) {
   }, []);
   return (
     <div className="rs-games is-many">
-      {GAMES.map((g, k) => (
-        <button key={g.id} type="button" className={`rs-tile${k === 0 ? " is-feature" : ""}`} onClick={() => onPick(g.id)}>
+      {BOARD_GAMES.map((bg) => (
+        <button key={bg.id} type="button" className="rs-tile is-feature" onClick={() => void gamesIpc.open(bg.id)}>
+          <img className="rs-tile-art" src={ART[bg.art]} alt="" draggable={false} />
+          <span className="rs-tile-badge">С Джарвисом</span>
+          <b>{bg.title}</b>
+          <span className="rs-tile-meta">{bg.meta}</span>
+          <span className="rs-tile-text">{bg.text}</span>
+        </button>
+      ))}
+      {GAMES.map((g) => (
+        <button key={g.id} type="button" className="rs-tile" onClick={() => onPick(g.id)}>
           <img className="rs-tile-art" src={ART[g.art]} alt="" draggable={false} />
-          {k === 0 && <span className="rs-tile-badge">Новое</span>}
           <b>{GAME_TITLE[g.id]}</b>
           <span className="rs-tile-meta">
             {g.meta}

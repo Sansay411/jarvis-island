@@ -884,6 +884,9 @@ impl Agent {
         if let Some(line) = home.as_ref().and_then(|h| crate::mcp::home::now_block(h, chrono::Utc::now())) {
             extra.push_str(&line);
         }
+        if let Some(line) = self.app.try_state::<Arc<crate::games::GamesHub>>().and_then(|g| g.context_line()) {
+            extra.push_str(&line);
+        }
         let turn_context = prompt::turn_context(&turn.settings, &self.state().history, turn.heard, &extra);
         let skills_index = self.app.state::<Arc<crate::skills::SkillStore>>().index_entries();
         let vision_model = turn.settings.provider.vision_model.trim().to_string();

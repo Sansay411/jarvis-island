@@ -19,6 +19,7 @@ pub mod cloud;
 pub mod clips;
 pub mod error;
 pub mod filekit;
+pub mod games;
 pub mod geo;
 pub mod github;
 pub mod hub;
@@ -26,6 +27,7 @@ mod ipc;
 mod ipc_area;
 mod ipc_clips;
 mod ipc_files;
+mod ipc_games;
 mod ipc_hub;
 pub mod jobs;
 pub mod learn;
@@ -80,6 +82,7 @@ fn init_logging() {
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let chat = MenuItem::with_id(app, "chat", "Открыть чат", true, None::<&str>)?;
+    let games_item = MenuItem::with_id(app, "games", "Игры с Джарвисом", true, None::<&str>)?;
     let toggle = MenuItem::with_id(app, "toggle", "Показать или скрыть остров", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Настройки", true, None::<&str>)?;
     let update = MenuItem::with_id(app, "update", "Проверить обновления", true, None::<&str>)?;
@@ -87,7 +90,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Выйти из JARVIS", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&chat, &toggle, &sep, &cancel, &settings, &update, &sep2, &quit])?;
+    let menu = Menu::with_items(app, &[&chat, &games_item, &toggle, &sep, &cancel, &settings, &update, &sep2, &quit])?;
     TrayIconBuilder::with_id("jarvis")
         .icon(app.default_window_icon().cloned().expect("bundled icon"))
         .tooltip("JARVIS")
@@ -98,6 +101,9 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             "chat" => {
                 app.state::<AppState>().island.set_user_hidden(false);
                 emit_command(app, "open-workspace");
+            }
+            "games" => {
+                let _ = app.state::<Arc<games::GamesHub>>().open_window(None);
             }
             "cancel" => app.state::<Arc<agent::Agent>>().cancel(),
             "settings" => {
@@ -290,6 +296,7 @@ pub fn run() {
             let mentor = mentor::Mentor::new(Some(app.handle().clone()), app.state::<AppState>().store.clone())?;
             mentor::guard::spawn(app.handle().clone(), mentor.clone());
             app.manage(mentor);
+            app.manage(games::GamesHub::new(Some(app.handle().clone()), app.state::<AppState>().store.clone()));
             let bot = Arc::new(telegram::Bot::default());
             telegram::spawn(app.handle().clone(), bot.clone());
             app.manage(bot);
@@ -359,6 +366,14 @@ pub fn run() {
             if window.label() == ipc_agent::WELCOME_LABEL {
                 if matches!(event, WindowEvent::Destroyed) {
                     ipc_agent::on_welcome_destroyed(window.app_handle());
+                }
+                return;
+            }
+            if window.label() == games::GAMES_LABEL {
+                if matches!(event, WindowEvent::Destroyed) {
+                    if let Some(g) = window.app_handle().try_state::<Arc<games::GamesHub>>() {
+                        g.on_window_closed();
+                    }
                 }
                 return;
             }
@@ -541,6 +556,13 @@ pub fn run() {
             ipc_mentor::telegram_set_token,
             ipc_mentor::telegram_pair,
             ipc_mentor::telegram_unbind,
+            ipc_games::games_open,
+            ipc_games::games_ready,
+            ipc_games::games_stats,
+            ipc_games::games_record_finish,
+            ipc_games::games_sync_snapshot,
+            ipc_games::games_reply_cmd,
+            ipc_games::games_comment,
             overlay::overlay_ready,
             overlay::overlay_set_interactive_rects,
             overlay::overlay_dismiss_item,

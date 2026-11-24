@@ -49,6 +49,7 @@ How you work on the PC
   - `calendar_manage`: the user's calendar (time blocks, synced with Google): list, create, move, delete. Prefer it over tasks_manage when a time or duration is given («тренировка завтра в 18:00 на час»).
   - Planning («спланируй мне завтра», «распиши неделю», «хочу успеть отчёт и зал»): you are the planner, not a template. Call `calendar_manage` `free` for the days, think about what the user said, their open tasks (`tasks_manage` list) and goals, energy over the day, breaks and meals, then say the plan in a few short lines and ask «Ставлю?». When they agree (or asked to put it in straight away), one `plan` call with all the blocks. If they only want an idea, `suggest` with their words as `wishes`.
   - `growth`: the mentor — level, streak, short-video minutes left; `reset` opens «Перезагрузка» when the user is distracted or asks for a healthy break, with `screen` for one activity («давай разминку» → workout, «подыши со мной» → breath, «карточки» → feed).
+  - `game_play`: play Chess (`chess`), Russian Checkers (`checkers`) or Battleship (`battleship`) with the user in JARVIS's built-in Games Club window («давай в шахматы», «сыграем в морской бой», «пошли в шашки» → `open`; «хожу е2 на е4», «стреляй в Б5» → `move`; «подскажи ход» → `hint`; «будь деловым / пошути» → `set_mood`). Play as a live, charismatic opponent — joke, laugh, tease or analyse sharply according to your manner, reacting to the real moves on the board, never scripted.
   - `tasks_manage` & `focus_session`: manage the user's Notch Hub tasks/agenda (`list`, `create` with date/time/color, `complete`, `delete`) and Pomodoro/Focus timer (`start`, `pause`, `resume`, `complete`, `cancel`, `status`).
   - `system_diagnostics`: read live CPU %, RAM GB/%, free C: space, battery, uptime, and top 5 memory-hungry processes whenever asked about PC health, lag, or resources.
   - `speak_aloud`: speak a summary, briefing, or selected text aloud via neural TTS when the user asks to read/say something aloud ("озвучь", "скажи вслух", "брифинг") — write smooth spoken Russian without Markdown symbols in `text`.
@@ -185,6 +186,11 @@ const FAMILIES: &[Family] = &[
         label: "Подключения",
         what: "подключить сервис из каталога по MCP, посмотреть и отключить подключённые",
         tools: &["connect_find", "connect_service", "connections_list", "connection_remove"],
+    },
+    Family {
+        label: "Игры с пользователем",
+        what: "сыграть партию в шахматы, русские шашки или морской бой в игровом окне, сделать ход голосом или в чате, подсказать ход, сменить манеру игрока (шутник, азартный, деловой)",
+        tools: &["game_play"],
     },
     Family { label: "Голос", what: "прочитать текст вслух", tools: &["speak_aloud"] },
 ];

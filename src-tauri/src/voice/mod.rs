@@ -125,6 +125,7 @@ const VOICE_TOOLS: &[&str] = &[
     "browser_switch_tab",
     "vscode_open",
     "memory_save",
+    "game_play",
 ];
 
 const INSTRUCTIONS: &str = "Ты — Джарвис, голосовой ассистент на компьютере пользователя с Windows 11. \

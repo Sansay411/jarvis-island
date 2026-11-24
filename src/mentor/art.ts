@@ -2,7 +2,10 @@
 // soft clay in the installer's language (light grey, amber, JARVIS's eyes
 // on the rocket). Generated with Codex, 256 px WebP with alpha.
 
+import battleship from "./art/battleship.webp";
 import breath from "./art/breath.webp";
+import checkers from "./art/checkers.webp";
+import chess from "./art/chess.webp";
 import feed from "./art/feed.webp";
 import game from "./art/game.webp";
 import level from "./art/level.webp";
@@ -13,5 +16,5 @@ import trophy from "./art/trophy.webp";
 import words from "./art/words.webp";
 import workout from "./art/workout.webp";
 
-export const ART = { feed, games: game, workout, step, breath, sprint, words, streak, trophy, level } as const;
+export const ART = { feed, games: game, workout, step, breath, sprint, words, streak, trophy, level, chess, checkers, battleship } as const;
 export type ArtName = keyof typeof ART;

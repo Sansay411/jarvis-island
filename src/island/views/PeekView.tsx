@@ -176,6 +176,19 @@ export function PeekView() {
           <button
             type="button"
             className="icon-btn icon-btn-sm"
+            aria-label="Игры с Джарвисом"
+            title="Игры с Джарвисом"
+            onClick={() => {
+              if (isTauri()) void invoke("games_open", { game: null, difficulty: null, mood: null });
+              else window.open("/qa/games.html", "_blank");
+            }}
+          >
+            <Icon name="gamepad" size={14} />
+          </button>
+
+          <button
+            type="button"
+            className="icon-btn icon-btn-sm"
             aria-label="Календарь"
             title="Планировщик"
             onClick={() => isTauri() && void invoke("planner_open", { date: null })}

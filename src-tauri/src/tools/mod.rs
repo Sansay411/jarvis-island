@@ -17,6 +17,7 @@ pub mod executive;
 mod explain;
 mod file_actions;
 mod files;
+mod games;
 mod learn;
 mod memory;
 mod overlay;
@@ -178,6 +179,7 @@ fn builtin_tools() -> Vec<Tool> {
         .chain(overlay::tools())
         .chain(explain::tools())
         .chain(planner::tools())
+        .chain(games::tools())
         .chain(connect::tools())
         .chain(skills::tools())
         .collect()
