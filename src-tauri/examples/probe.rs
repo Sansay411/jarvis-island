@@ -134,11 +134,11 @@ recent={:?}",
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
                 let devs = jarvis_lib::voice::audio::list_devices();
-                let (io, mut mic) = jarvis_lib::voice::audio::AudioIo::start("", "").unwrap();
+                let (io, mut mic) = jarvis_lib::voice::audio::AudioIo::start("", "", Default::default(), Default::default()).unwrap();
                 let t0 = std::time::Instant::now();
                 let mut chunks = 0; let mut samples = 0; let mut max_in = 0f32;
                 while t0.elapsed() < std::time::Duration::from_millis(1500) {
-                    if let Ok(Some(c)) = tokio::time::timeout(std::time::Duration::from_millis(200), mic.recv()).await { chunks += 1; samples += c.len(); }
+                    if let Ok(Some(c)) = tokio::time::timeout(std::time::Duration::from_millis(200), mic.recv()).await { chunks += 1; samples += c.vad.len(); }
                     max_in = max_in.max(io.levels.input());
                 }
                 let tone: Vec<i16> = (0..9600).map(|i| ((i as f32 * 440.0 * 2.0 * std::f32::consts::PI / 24000.0).sin() * 0.05 * 32767.0) as i16).collect();
