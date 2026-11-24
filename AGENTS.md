@@ -187,3 +187,71 @@ with a sample week) and `/qa/reset.html?reason=budget|strict|voluntary&screen=fe
 * `src/mentor/Puzzles.tsx`: sudoku (4×4/6×6 with the clay icons, 9×9 in
   three levels, unique solution, notes, hints), Schulte table, memory pairs.
   QA: `/qa/reset.html?screen=game&game=sudoku|schulte|memory`.
+
+## Microphone stage (quiet and noisy mics)
+
+* `voice/conditioner.rs`: high-pass 90 Hz → speech-gated AGC (target
+  -20 dBFS, -6…+30 dB, soft limiter) → RNNoise (`nnnoiseless`, 48 kHz,
+  480-sample frames) → 16 kHz. Each `MicChunk` carries `vad` (denoised) and
+  `stt` (0.65 denoised mix in «Обычное», all denoised in «Сильное»); use
+  `Vad::push_pair`. Utterances are peak-normalised (-3 dBFS, ≤ +24 dB) before
+  recognition. Learned gain per device: store key `voice.mic_gains`.
+* `vad::Floor` echo guard is relative (floor + 12 dB and the user's speech
+  level - 25 dB); never add absolute dB thresholds back.
+* `voice/miclab.rs`: `voice_mic_monitor` (keepalive every 2 s) and
+  `voice_mic_test`; while a test runs the session ignores audio.
+  Settings → Голос → «Микрофон» (`MicCheck.tsx`), QA
+  `/qa/workspace-showcase.html?scene=settings-voice&mic=result`.
+* Measuring: `cargo test --lib live_quiet_noisy_speech -- --ignored --nocapture`
+  (real models); `JARVIS_VOICE_INPUT_ATTEN_DB=25` makes the debug WAV feeder
+  quieter.
+
+## Overlay, teach mode, cards, area
+
+* `overlay.rs`: one click-through `overlay` window, created on demand,
+  excluded from capture. Items (`ring`, `arrow`, `caption`, `card`) use
+  physical screen pixels; API `overlay::draw(app, items, replace)` /
+  `overlay::clear(app)` (never from a sync command on the main thread). On
+  Windows don't call `show()/hide()/set_position()` on it: use the main-thread
+  helpers. DOM nodes with `data-overlay-interactive` get the mouse (rects go to
+  Rust, a ~30 Hz tracker toggles click-through).
+* Tools `screen_point`, `screen_clear`, `guide_step` (teach mode: blocks
+  ≤ 150 s for the user's click, tool timeout 170 s, never clicks itself).
+  Targets: UIA element or coords of the last screenshot
+  (`screen::to_screen_rect`). QA `/qa/overlay.html?scene=ring|guide|arrow|card|done`.
+* Cards: `src/overlay/cards/*` (`normalize.ts`, `flowLayout.ts`, `math.ts`,
+  `CardView`) and `src-tauri/src/cards.rs` must stay in step (both normalise
+  idempotently); tools `explain_card`/`explain_clear` in `tools/explain.rs`.
+  The tool result omits the card; chat/history rebuild it from the stored
+  arguments (`cards::card_json`). QA `/qa/cards.html?bg=dark|light&mode=compact`.
+* Area: `area.rs` + `areapick` window (shortcut `Ctrl+Alt+A`), region capture
+  in `platform/capture.rs`; the pending area is attached as an image part to
+  the next chat or voice request. Circling with the cursor while listening
+  (`detect_circle`, setting `voice.circleToAsk`) attaches the bbox and rings
+  it on the overlay. QA `/qa/areapick.html`.
+
+## Skills, connections, repeats, models, welcome, looks
+
+* Skills: `skills/` (`SKILL.md` with front matter in the app data dir), tools
+  `skill_save|find|read|delete|install` (install is always confirmed and
+  grants nothing), index injected into the prompt, Settings → «Навыки».
+* MCP catalog data lives in `src/settings/mcpCatalog.json` (read by Rust via
+  `include_str!` in `mcp/catalog.rs`, with RU/EN `aliases`). Chat connects via
+  `tools/connect.rs` (`connect_find`, `connect_service`, …); secrets go only
+  through the island key prompt (`mcp:secret-prompt` / `mcp_secret_submit`),
+  never through the model. QA `/qa/notch-showcase.html?preset=secret`.
+* Repeats: `repeat.rs` (`next_after`, `describe_rule`, tested); a repeating
+  item moves to its next time as it fires (an unacknowledged alert never stalls
+  the series); missed by > 10 min → skipped silently. `reminder_skip` skips one.
+* Local models: `ai/probe.rs` (`model_probe`, Ollama `/api/show`+`/api/ps`,
+  LM Studio `/api/v0/models`, optional active test). Turn start probes
+  local/custom presets with a 3 s cap and caches per session.
+* Welcome: `welcome` window, `src/welcome/*`; shown on first start only when
+  no persona name, no memories, not done and < 3 dismissals. QA `/qa/welcome.html?step=0..5`.
+* Looks: `src/island/skins/*`, setting `appearance.skin`
+  (`amber|orb|ice|pixel|minimal`). A new built-in tool must be added to
+  `src/store/toolNames.json` and `TOOL_ACTIVITY` in `src/store/emote.ts`
+  (`tools::tests` and `emote.test.ts` fail otherwise). QA
+  `/qa/notch-showcase.html?preset=skin-<id>` or `?skin=<id>&activity=<kind>`.
+* New windows (`areapick`, `overlay`, `welcome`) must be listed in
+  `src-tauri/capabilities/default.json`.
