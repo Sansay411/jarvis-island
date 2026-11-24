@@ -69,18 +69,25 @@ pub fn chunk_db(chunk: &[f32]) -> f32 {
 /// by an artificially high default, while digital zero (-120 dB) stays sane.
 const FLOOR_MIN_DB: f32 = -90.0;
 const FLOOR_MAX_DB: f32 = -20.0;
-/// Reject only near-zero digital quantization noise, never quiet speech.
-const MIN_AUDIBLE_DB: f32 = -85.0;
+/// Where the user's louder speech chunks sit before anything is learned:
+/// the AGC target, so a normal microphone gets the old -45 dB guard.
+const SPEECH_REF_DB: f32 = super::conditioner::TARGET_RMS_DB;
+/// Over JARVIS's voice, a chunk must be at most this far below the user's
+/// usual speech level (relative replacement of the old absolute -45 dBFS).
+const ECHO_BELOW_SPEECH_DB: f32 = 25.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Floor {
     pub db: f32,
     seeded: bool,
+    /// The user's speech level: tracks the louder chunks of accepted
+    /// speech heard while JARVIS was silent (fast up, slow down).
+    pub speech_db: f32,
 }
 
 impl Default for Floor {
     fn default() -> Self {
-        Floor { db: -70.0, seeded: false }
+        Floor { db: -70.0, seeded: false, speech_db: SPEECH_REF_DB }
     }
 }
 
@@ -99,11 +106,20 @@ impl Floor {
         self.db = (self.db + (clamped - self.db) * a).clamp(FLOOR_MIN_DB, FLOOR_MAX_DB);
     }
 
-    /// Whether a chunk is loud enough over the learned room floor to be the
-    /// user speaking over JARVIS's voice. Purely relative to the room floor
-    /// (with only a digital-silence guard), so quiet microphones still work.
+    /// Learn from a chunk of the user's own accepted speech.
+    pub fn learn_speech(&mut self, db: f32) {
+        if !db.is_finite() || db < self.db + ECHO_MARGIN_DB {
+            return;
+        }
+        let a = if db > self.speech_db { 0.10 } else { 0.01 };
+        self.speech_db = (self.speech_db + (db - self.speech_db) * a).clamp(-75.0, -5.0);
+    }
+
+    /// Whether a chunk is loud enough to be the user speaking over JARVIS's
+    /// voice: clearly over the room and not far below the user's own speech
+    /// level, both relative, so quiet microphones still work.
     pub fn passes_echo_guard(&self, db: f32) -> bool {
-        db >= self.db + ECHO_MARGIN_DB && db > MIN_AUDIBLE_DB
+        db >= self.db + ECHO_MARGIN_DB && db >= self.speech_db - ECHO_BELOW_SPEECH_DB
     }
 }
 
@@ -182,6 +198,11 @@ impl Vad {
         self.floor.db
     }
 
+    /// The user's learned speech level on the detection stream.
+    pub fn speech_db(&self) -> f32 {
+        self.floor.speech_db
+    }
+
     pub fn is_active(&self) -> bool {
         self.in_speech && self.accepted
     }
@@ -253,6 +274,9 @@ impl Vad {
                 events.push(VadEvent::Progress(self.utterance_so_far(&self.stt_history)));
                 self.last_preview = seen;
             }
+            if self.accepted && !self.echo_guard {
+                self.floor.learn_speech(db);
+            }
         } else {
             self.floor.learn(db);
         }
@@ -302,23 +326,36 @@ mod tests {
         assert!((f.db + 60.0).abs() < 1.0);
         assert!(!f.passes_echo_guard(-52.0));
         assert!(f.passes_echo_guard(-30.0));
-        // Quiet mic at low absolute levels still passes when clearly above floor.
-        let mut quiet_mic = Floor::default();
-        for _ in 0..20 {
-            quiet_mic.learn(-72.0);
-        }
-        assert!((quiet_mic.db + 72.0).abs() < 1.0);
-        assert!(!quiet_mic.passes_echo_guard(-65.0));
-        assert!(quiet_mic.passes_echo_guard(-55.0));
-        assert!(quiet_mic.passes_echo_guard(-50.0));
-        // Pure digital silence clamps floor at FLOOR_MIN_DB and rejects quantization noise.
+        // A normal microphone in a silent room keeps the old -45 dB guard.
         let mut silent = Floor::default();
         for _ in 0..100 {
             silent.learn(-110.0);
         }
         assert!(silent.db >= FLOOR_MIN_DB);
-        assert!(!silent.passes_echo_guard(-86.0));
-        assert!(silent.passes_echo_guard(-50.0));
+        assert!(!silent.passes_echo_guard(-50.0));
+        assert!(silent.passes_echo_guard(-44.0));
+    }
+
+    #[test]
+    fn echo_guard_follows_a_quiet_users_own_level() {
+        // A quiet microphone (manual gain, or AGC not converged yet): room at
+        // -78 dB, the user's words around -48 dB.
+        let mut f = Floor::default();
+        for _ in 0..40 {
+            f.learn(-78.0);
+        }
+        assert!(!f.passes_echo_guard(-55.0), "before any speech the guard is the normal one");
+        for i in 0..200 {
+            // Syllables: louder vowels, weaker consonants.
+            f.learn_speech(if i % 3 == 0 { -46.0 } else { -56.0 });
+        }
+        assert!((f.speech_db + 47.0).abs() < 4.0, "speech level {}", f.speech_db);
+        assert!(f.passes_echo_guard(-55.0), "the quiet user can interrupt");
+        assert!(!f.passes_echo_guard(-74.0), "faint pickup still does not");
+        // Room noise never counts as the user's speech.
+        let before = f.speech_db;
+        f.learn_speech(-70.0);
+        assert_eq!(f.speech_db, before);
     }
 
     #[test]

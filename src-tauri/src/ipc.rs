@@ -232,6 +232,23 @@ pub fn voice_status(voice: State<'_, std::sync::Arc<crate::voice::VoiceManager>>
     VoiceStatus { state: voice.state(), metrics: voice.metrics.lock().clone() }
 }
 
+/// Settings → Голос: keep the processed microphone meter running (`on`,
+/// repeated every couple of seconds) or let it stop.
+#[tauri::command]
+pub fn voice_mic_monitor(voice: State<'_, std::sync::Arc<crate::voice::VoiceManager>>, on: bool, mic: crate::voice::miclab::MicParams) {
+    voice.mic_lab.monitor(&voice, on, &mic);
+}
+
+/// Settings → «Проверить микрофон»: ~6.5 s guided test, then levels and advice.
+#[tauri::command]
+pub async fn voice_mic_test(
+    voice: State<'_, std::sync::Arc<crate::voice::VoiceManager>>,
+    mic: crate::voice::miclab::MicParams,
+) -> AppResult<crate::voice::conditioner::MicTestResult> {
+    let vm = voice.inner().clone();
+    vm.mic_lab.test(&vm, &mic).await
+}
+
 #[tauri::command]
 pub async fn audio_devices() -> AppResult<crate::voice::audio::AudioDevices> {
     tokio::task::spawn_blocking(crate::voice::audio::list_devices)

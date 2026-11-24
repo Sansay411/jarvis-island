@@ -16,12 +16,12 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
-use super::conditioner::{
-    self, lookup_learned_gain, Conditioner, ConditionerConfig, GainMode, LearnedGains,
-};
+use super::conditioner::{self, start_gain_for, Conditioner, ConditionerConfig, FrameTelemetry, LearnedGains};
 use crate::error::{AppError, AppResult};
 
 pub const MIC_RATE: u32 = 16_000;
+/// The input name the debug WAV feeder reports.
+const TEST_INPUT_NAME: &str = "тестовые WAV-файлы";
 
 /// Do not pile up stuck threads for a wedged endpoint, but allow selecting
 /// another microphone/output while the old Windows call has not returned.
@@ -45,26 +45,10 @@ const CHUNK: usize = 512; // Silero window: 32 ms at 16 kHz
 const MIC_QUEUE: usize = 32;
 const MAX_MIC_DELAY: std::time::Duration = std::time::Duration::from_millis(1000);
 
+#[derive(Default)]
 pub struct Levels {
     input: AtomicU32,
     output: AtomicU32,
-    input_floor: AtomicU32,
-    input_db: AtomicU32,
-    floor_db: AtomicU32,
-    gain_db: AtomicU32,
-}
-
-impl Default for Levels {
-    fn default() -> Self {
-        Levels {
-            input: AtomicU32::new(0.0_f32.to_bits()),
-            output: AtomicU32::new(0.0_f32.to_bits()),
-            input_floor: AtomicU32::new(0.0_f32.to_bits()),
-            input_db: AtomicU32::new((-75.0_f32).to_bits()),
-            floor_db: AtomicU32::new((-75.0_f32).to_bits()),
-            gain_db: AtomicU32::new(0.0_f32.to_bits()),
-        }
-    }
 }
 
 impl Levels {
@@ -76,18 +60,6 @@ impl Levels {
     }
     pub fn output(&self) -> f32 {
         f32::from_bits(self.output.load(Ordering::Relaxed))
-    }
-    pub fn input_floor(&self) -> f32 {
-        f32::from_bits(self.input_floor.load(Ordering::Relaxed))
-    }
-    pub fn input_db(&self) -> f32 {
-        f32::from_bits(self.input_db.load(Ordering::Relaxed))
-    }
-    pub fn floor_db(&self) -> f32 {
-        f32::from_bits(self.floor_db.load(Ordering::Relaxed))
-    }
-    pub fn gain_db(&self) -> f32 {
-        f32::from_bits(self.gain_db.load(Ordering::Relaxed))
     }
 }
 
@@ -155,37 +127,13 @@ impl Resampler {
     }
 }
 
-fn rms(samples: &[f32]) -> f32 {
-    if samples.is_empty() {
-        return 0.0;
-    }
-    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
-}
-
 /// Map RMS to a perceptual 0..1 level for the visualiser.
-pub fn perceptual(r: f32) -> f32 {
+fn perceptual(r: f32) -> f32 {
     if r <= 1e-5 {
         return 0.0;
     }
     let db = 20.0 * r.log10(); // -100..0
-    perceptual_db(db)
-}
-
-/// Map dBFS to the 0..1 visualiser scale (-55..=-5 dBFS).
-pub fn perceptual_db(db: f32) -> f32 {
-    if !db.is_finite() {
-        return 0.0;
-    }
     ((db + 55.0) / 50.0).clamp(0.0, 1.0)
-}
-
-/// Map dBFS to the Settings microphone meter scale (-75..=-5 dBFS), so even
-/// quiet room floors remain visible with their noise-floor marker.
-pub fn meter_db(db: f32) -> f32 {
-    if !db.is_finite() {
-        return 0.0;
-    }
-    ((db + 75.0) / 70.0).clamp(0.0, 1.0)
 }
 
 /// Non-blocking raw mono audio tap `(sample_rate, mono_samples)` used by
@@ -293,20 +241,18 @@ pub fn is_headphones(name: &str) -> bool {
 /// One 32 ms (512-sample) 16 kHz conditioned microphone chunk.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MicChunk {
-    /// Conditioned 16 kHz audio for VAD, wake preview and level decisions.
+    /// Conditioned audio for VAD, wake preview and level decisions.
     pub vad: Vec<f32>,
-    /// Gently denoised 16 kHz audio for STT when in `auto` mode (`None` means
-    /// identical to `vad`).
+    /// The gently denoised mix for recognition in `auto` noise mode
+    /// (`None`: the same as `vad`).
     pub stt: Option<Vec<f32>>,
-    /// Pre-AGC (post-HPF) RMS in dBFS.
+    /// Pre-gain (post high-pass) level of this stretch in dBFS.
     pub raw_db: f32,
-    /// Post-conditioning VAD-stream RMS in dBFS.
-    pub post_db: f32,
-    /// Active AGC/manual gain in dB.
+    /// Gain applied, in dB (AGC or manual).
     pub gain_db: f32,
-    /// Post-conditioning noise floor in dBFS.
-    pub floor_db: f32,
-    /// True once AGC has seen enough speech to persist the learned gain.
+    /// Pre-gain room floor in dBFS.
+    pub raw_floor_db: f32,
+    /// The AGC has heard enough speech for its gain to be worth saving.
     pub learned: bool,
 }
 
@@ -315,11 +261,60 @@ impl MicChunk {
         self.stt.as_deref().unwrap_or(&self.vad)
     }
 
-    pub fn vad_pcm16(&self) -> Vec<i16> {
-        self.vad
-            .iter()
-            .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
-            .collect()
+    /// The recognition stream as PCM16 (realtime engine).
+    pub fn stt_pcm16(&self) -> Vec<i16> {
+        self.stt_samples().iter().map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).collect()
+    }
+}
+
+/// Cuts conditioned 16 kHz audio into 512-sample `MicChunk`s, keeping the
+/// detection and recognition streams aligned sample for sample.
+#[derive(Default)]
+struct Chunker {
+    vad: Vec<f32>,
+    stt: Vec<f32>,
+    raw_energy: f32,
+    raw_samples: usize,
+}
+
+impl Chunker {
+    /// `gated`: the echo gate closed for this stretch (silence instead).
+    fn push(&mut self, cond: &Conditioner, tel: &FrameTelemetry, vad_16k: &[f32], stt_16k: &[f32], gated: bool, mut emit: impl FnMut(MicChunk)) {
+        let dual = cond.dual_stream();
+        if dual && self.stt.len() != self.vad.len() {
+            self.stt.clear();
+            self.stt.extend_from_slice(&self.vad);
+        } else if !dual {
+            self.stt.clear();
+        }
+        if gated {
+            self.vad.resize(self.vad.len() + vad_16k.len(), 0.0);
+            if dual {
+                self.stt.resize(self.stt.len() + vad_16k.len(), 0.0);
+            }
+        } else {
+            self.vad.extend_from_slice(vad_16k);
+            if dual {
+                self.stt.extend_from_slice(stt_16k);
+            }
+        }
+        let raw = conditioner::db_to_lin(tel.raw_db);
+        self.raw_energy += raw * raw * vad_16k.len() as f32;
+        self.raw_samples += vad_16k.len();
+        while self.vad.len() >= CHUNK {
+            let raw_db = conditioner::rms_to_db((self.raw_energy / self.raw_samples.max(1) as f32).sqrt());
+            self.raw_energy = 0.0;
+            self.raw_samples = 0;
+            let stt = (dual && self.stt.len() >= CHUNK).then(|| self.stt.drain(..CHUNK).collect());
+            emit(MicChunk {
+                vad: self.vad.drain(..CHUNK).collect(),
+                stt,
+                raw_db,
+                gain_db: tel.gain_db,
+                raw_floor_db: tel.raw_floor_db,
+                learned: cond.has_learned_gain(),
+            });
+        }
     }
 }
 
@@ -412,7 +407,7 @@ impl AudioIo {
             None
         };
         if let Some(files) = test_input.clone() {
-            spawn_test_feeder(files, mic_tx.clone(), levels.clone(), cond_cfg);
+            spawn_test_feeder(files, mic_tx.clone(), levels.clone(), cond_cfg, start_gain_for(cond_cfg, &learned_gains, TEST_INPUT_NAME));
         }
         let test_mode = test_input.is_some();
         // With test input, JARVIS_VOICE_OUTPUT=null also replaces the speaker:
@@ -430,11 +425,8 @@ impl AudioIo {
             .spawn(move || {
                 if null_output {
                     drop(opening);
-                    let start_gain = match cond_cfg.gain {
-                        GainMode::Manual(db) => db,
-                        GainMode::Auto => 0.0,
-                    };
-                    let _ = ready_tx.send(Ok((MIC_RATE, SPEAKER_RATE, start_gain, "тестовые WAV-файлы".into(), "без устройства (тест)".into())));
+                    let start_gain = start_gain_for(cond_cfg, &learned_gains, TEST_INPUT_NAME);
+                    let _ = ready_tx.send(Ok((MIC_RATE, SPEAKER_RATE, start_gain, TEST_INPUT_NAME.into(), "без устройства (тест)".into())));
                     let frames = SPEAKER_RATE as usize / 50; // 20 ms
                     while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = cmd_rx.recv_timeout(std::time::Duration::from_millis(20)) {
                         if pz.load(Ordering::Acquire) {
@@ -469,17 +461,13 @@ impl AudioIo {
                     let in_conf: StreamConfig = in_cfg.config();
                     let in_ch = in_conf.channels as usize;
                     let in_rate = in_conf.sample_rate;
-                    let start_gain = match cond_cfg.gain {
-                        GainMode::Manual(db) => db.clamp(conditioner::MIN_GAIN_DB, conditioner::MAX_GAIN_DB),
-                        GainMode::Auto => lookup_learned_gain(&learned_gains, &in_dev_name),
-                    };
+                    let start_gain = start_gain_for(cond_cfg, &learned_gains, &in_dev_name);
                     let mut cond = Conditioner::new(in_rate, cond_cfg, start_gain);
                     let mut seen_gen = ctl_t.gen.load(Ordering::Acquire);
                     let mut mono = Vec::with_capacity(4096);
                     let mut vad_16k = Vec::with_capacity(2048);
                     let mut stt_16k = Vec::with_capacity(2048);
-                    let mut pending_vad: Vec<f32> = Vec::with_capacity(CHUNK * 2);
-                    let mut pending_stt: Vec<f32> = Vec::with_capacity(CHUNK * 2);
+                    let mut chunker = Chunker::default();
                     let lv_in = lv.clone();
                     let sp_in = sp.clone();
                     let ctl_in = ctl_t.clone();
@@ -507,64 +495,17 @@ impl AudioIo {
                         vad_16k.clear();
                         stt_16k.clear();
                         let tel = cond.process(&mono, echo_active, &mut vad_16k, &mut stt_16k);
-                        let post_rms = if !vad_16k.is_empty() {
-                            rms(&vad_16k)
-                        } else {
-                            conditioner::db_to_lin(tel.post_db)
-                        };
-                        Levels::set(&lv_in.input, perceptual(post_rms));
-                        Levels::set(&lv_in.input_floor, perceptual_db(tel.post_floor_db));
-                        Levels::set(&lv_in.input_db, tel.post_db);
-                        Levels::set(&lv_in.floor_db, tel.post_floor_db);
-                        Levels::set(&lv_in.gain_db, tel.gain_db);
-
-                        // Post-conditioning echo gate: compares post-AGC level
-                        // against speaker output so quiet mics can still barge
-                        // in while soft speaker pickup is muted.
+                        Levels::set(&lv_in.input, perceptual(conditioner::db_to_lin(tel.post_db)));
+                        // Echo gate: while JARVIS speaks through speakers, quiet
+                        // pickup is replaced by silence so the detector does not
+                        // interrupt on our own voice; real barge-in is louder.
+                        // Compared after the gain (frozen while JARVIS speaks),
+                        // so a quiet microphone is judged like a normal one.
                         let out_level = f32::from_bits(lv_in.output.load(Ordering::Relaxed));
-                        let gated = echo_active && perceptual(post_rms) < out_level * 0.70;
-
-                        let dual = cond.dual_stream();
-                        if dual && pending_stt.len() != pending_vad.len() {
-                            pending_stt.clear();
-                            pending_stt.extend_from_slice(&pending_vad);
-                        } else if !dual && !pending_stt.is_empty() {
-                            pending_stt.clear();
-                        }
-
-                        if gated {
-                            pending_vad.resize(pending_vad.len() + vad_16k.len(), 0.0);
-                            if dual {
-                                pending_stt.resize(pending_stt.len() + stt_16k.len(), 0.0);
-                            }
-                        } else {
-                            pending_vad.extend_from_slice(&vad_16k);
-                            if dual {
-                                pending_stt.extend_from_slice(&stt_16k);
-                            }
-                        }
-
-                        while pending_vad.len() >= CHUNK {
-                            let vad: Vec<f32> = pending_vad.drain(..CHUNK).collect();
-                            let stt = if dual && pending_stt.len() >= CHUNK {
-                                Some(pending_stt.drain(..CHUNK).collect())
-                            } else {
-                                None
-                            };
-                            let chunk = MicChunk {
-                                vad,
-                                stt,
-                                raw_db: tel.raw_db,
-                                post_db: tel.post_db,
-                                gain_db: tel.gain_db,
-                                floor_db: tel.post_floor_db,
-                                learned: cond.has_learned_gain(),
-                            };
-                            let _ = mic_tx.try_send(CapturedChunk {
-                                chunk,
-                                captured_at: std::time::Instant::now(),
-                            });
-                        }
+                        let gated = echo_active && perceptual(conditioner::db_to_lin(tel.dry_db)) < out_level * 0.85;
+                        chunker.push(&cond, &tel, &vad_16k, &stt_16k, gated, |chunk| {
+                            let _ = mic_tx.try_send(CapturedChunk { chunk, captured_at: std::time::Instant::now() });
+                        });
                     };
                     let err = |e| tracing::warn!("mic stream error: {e}");
                     *stage_t.lock() = format!("Микрофон «{in_dev_name}»");
@@ -649,6 +590,8 @@ impl AudioIo {
                             ms = opened.elapsed().as_millis() as u64,
                             in_rate,
                             start_gain_db = format_args!("{start_gain:.1}"),
+                            gain_mode = cond_cfg.gain.label(),
+                            noise = cond_cfg.noise.label(),
                             input = %in_dev,
                             output = %out_dev,
                             "audio devices opened"
@@ -786,59 +729,37 @@ impl AudioIo {
 /// See `JARVIS_VOICE_INPUT_WAV` in `AudioIo::start`. 2 s of silence, then
 /// each file followed by `JARVIS_VOICE_INPUT_GAP_S` (default 25) seconds of
 /// silence so the agent can answer, then silence until the session ends.
+/// `JARVIS_VOICE_INPUT_ATTEN_DB` (e.g. 25) plays the files that much quieter,
+/// like a weak microphone. The files go through the same conditioning.
 fn spawn_test_feeder(
     files: Vec<std::path::PathBuf>,
     tx: mpsc::Sender<CapturedChunk>,
     levels: Arc<Levels>,
     cond_cfg: ConditionerConfig,
+    start_gain: f32,
 ) {
     let chunks_per_second = MIC_RATE as usize / CHUNK;
     let gap: usize = std::env::var("JARVIS_VOICE_INPUT_GAP_S").ok().and_then(|v| v.parse().ok()).unwrap_or(25) * chunks_per_second;
-    tracing::warn!(?files, "voice test input: microphone replaced by WAV files");
+    let atten: f32 = std::env::var("JARVIS_VOICE_INPUT_ATTEN_DB").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let scale = conditioner::db_to_lin(-atten.abs()) / 32768.0;
+    tracing::warn!(?files, atten_db = atten.abs(), "voice test input: microphone replaced by WAV files");
     let _ = std::thread::Builder::new().name("voice-test-input".into()).spawn(move || {
-        let mut cond = Conditioner::new(MIC_RATE, cond_cfg, 0.0);
+        let mut cond = Conditioner::new(MIC_RATE, cond_cfg, start_gain);
         let mut vad_16k = Vec::with_capacity(CHUNK * 2);
         let mut stt_16k = Vec::with_capacity(CHUNK * 2);
-        let mut pending_vad: Vec<f32> = Vec::with_capacity(CHUNK * 2);
-        let mut pending_stt: Vec<f32> = Vec::with_capacity(CHUNK * 2);
+        let mut chunker = Chunker::default();
         let mut send = |raw_chunk: &[i16]| -> bool {
-            let f: Vec<f32> = raw_chunk.iter().map(|s| *s as f32 / 32768.0).collect();
+            let f: Vec<f32> = raw_chunk.iter().map(|s| *s as f32 * scale).collect();
             vad_16k.clear();
             stt_16k.clear();
             let tel = cond.process(&f, false, &mut vad_16k, &mut stt_16k);
-            let post_rms = if !vad_16k.is_empty() { rms(&vad_16k) } else { conditioner::db_to_lin(tel.post_db) };
-            Levels::set(&levels.input, perceptual(post_rms));
-            Levels::set(&levels.input_floor, perceptual_db(tel.post_floor_db));
-            Levels::set(&levels.input_db, tel.post_db);
-            Levels::set(&levels.floor_db, tel.post_floor_db);
-            Levels::set(&levels.gain_db, tel.gain_db);
-            let dual = cond.dual_stream();
-            pending_vad.extend_from_slice(&vad_16k);
-            if dual {
-                pending_stt.extend_from_slice(&stt_16k);
-            }
+            Levels::set(&levels.input, perceptual(conditioner::db_to_lin(tel.post_db)));
             std::thread::sleep(std::time::Duration::from_secs_f64(CHUNK as f64 / MIC_RATE as f64));
-            while pending_vad.len() >= CHUNK {
-                let vad: Vec<f32> = pending_vad.drain(..CHUNK).collect();
-                let stt = if dual && pending_stt.len() >= CHUNK {
-                    Some(pending_stt.drain(..CHUNK).collect())
-                } else {
-                    None
-                };
-                let chunk = MicChunk {
-                    vad,
-                    stt,
-                    raw_db: tel.raw_db,
-                    post_db: tel.post_db,
-                    gain_db: tel.gain_db,
-                    floor_db: tel.post_floor_db,
-                    learned: cond.has_learned_gain(),
-                };
-                if tx.blocking_send(CapturedChunk { chunk, captured_at: std::time::Instant::now() }).is_err() {
-                    return false;
-                }
-            }
-            true
+            let mut alive = true;
+            chunker.push(&cond, &tel, &vad_16k, &stt_16k, false, |chunk| {
+                alive &= tx.blocking_send(CapturedChunk { chunk, captured_at: std::time::Instant::now() }).is_ok();
+            });
+            alive
         };
         let silence = vec![0i16; CHUNK];
         for _ in 0..chunks_per_second * 2 {
@@ -1149,15 +1070,7 @@ mod tests {
     #[tokio::test]
     async fn delayed_audio_is_discarded_instead_of_replayed_seconds_later() {
         let (tx, rx) = mpsc::channel(8);
-        let mk = |v: f32| MicChunk {
-            vad: vec![v; 512],
-            stt: None,
-            raw_db: -40.0,
-            post_db: -20.0,
-            gain_db: 20.0,
-            floor_db: -60.0,
-            learned: false,
-        };
+        let mk = |v: f32| MicChunk { vad: vec![v; 512], stt: None, raw_db: -40.0, gain_db: 20.0, raw_floor_db: -60.0, learned: false };
         tx.send(CapturedChunk { chunk: mk(0.1), captured_at: std::time::Instant::now() - std::time::Duration::from_secs(2) }).await.unwrap();
         tx.send(CapturedChunk { chunk: mk(0.2), captured_at: std::time::Instant::now() }).await.unwrap();
         drop(tx);

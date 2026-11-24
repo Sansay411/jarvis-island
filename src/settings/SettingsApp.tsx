@@ -24,6 +24,8 @@ import "./settings.css";
 import { TitleBar } from "./TitleBar";
 import { Group, Row, Segmented, Switch } from "./controls";
 import { McpSection } from "./McpSection";
+import { MicCheck } from "./MicCheck";
+import type { MicGainMode, NoiseMode } from "./micLevels";
 import { CalendarSection, MentorSection, TelegramSection } from "./GrowthSections";
 import { ACTIVITIES, EMOTES, emote, useEmote, type Activity } from "../store/emote";
 import { LiveAudioBars, routineIconName, WsIcon } from "../workspace/WorkspaceIcons";
@@ -60,6 +62,9 @@ export interface Settings {
     outputDevice: string;
     duckMedia: boolean;
     cloudStt: boolean;
+    micGainMode: MicGainMode;
+    micGainDb: number;
+    noiseSuppression: NoiseMode;
   };
   persona: { userName: string; address: "ty" | "vy"; style: "witty" | "warm" | "concise" };
   shortcuts: { workspace: string; voice: string; clipboard: string };
@@ -171,6 +176,9 @@ const FALLBACK_SETTINGS_VIEW: SettingsView = {
       outputDevice: "",
       duckMedia: true,
       cloudStt: true,
+      micGainMode: "auto",
+      micGainDb: 0,
+      noiseSuppression: "auto",
     },
     persona: { userName: "Александр", address: "ty", style: "witty" },
     shortcuts: { workspace: "Ctrl+Alt+J", voice: "Ctrl+Alt+K", clipboard: "Ctrl+Alt+V" },
@@ -242,6 +250,11 @@ function normalizeSettingsView(v: SettingsView): SettingsView {
         ttsRate: typeof v.settings.voice.ttsRate === "number" ? v.settings.voice.ttsRate : 1.0,
         ttsPitch: typeof v.settings.voice.ttsPitch === "number" ? v.settings.voice.ttsPitch : 0,
         autoSpeakReplies: !!v.settings.voice.autoSpeakReplies,
+        micGainMode: v.settings.voice.micGainMode === "manual" ? "manual" : "auto",
+        micGainDb: typeof v.settings.voice.micGainDb === "number" ? v.settings.voice.micGainDb : 0,
+        noiseSuppression: (["off", "auto", "strong"] as const).includes(v.settings.voice.noiseSuppression)
+          ? v.settings.voice.noiseSuppression
+          : "auto",
       },
     },
   };
@@ -1484,6 +1497,16 @@ export default function SettingsApp({
                   </select>
                 </Row>
               </Group>
+
+              <MicCheck
+                value={{
+                  inputDevice: draft.voice.inputDevice,
+                  micGainMode: draft.voice.micGainMode,
+                  micGainDb: draft.voice.micGainDb,
+                  noiseSuppression: draft.voice.noiseSuppression,
+                }}
+                onChange={(patch) => set((s) => ({ ...s, voice: { ...s.voice, ...patch } }))}
+              />
             </>
           )}
 

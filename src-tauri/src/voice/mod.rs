@@ -22,6 +22,7 @@ pub mod edge;
 pub mod elevenlabs;
 mod intent;
 mod local;
+pub mod miclab;
 pub mod models;
 pub mod neural;
 pub mod phrases;
@@ -322,6 +323,13 @@ pub struct VoiceManager {
     tts_gen: Arc<AtomicU64>,
     tts_status: Arc<Mutex<TtsStatusPayload>>,
     tts_audio: Arc<Mutex<Option<(String, Instant, Arc<AudioOutput>)>>>,
+    /// The open microphone of the running session (Settings' meter and
+    /// test listen through it instead of opening the device again).
+    mic_audio: Mutex<std::sync::Weak<audio::AudioIo>>,
+    /// Settings → «Проверить микрофон» is recording: the session ignores
+    /// what it hears meanwhile.
+    mic_test: std::sync::atomic::AtomicBool,
+    pub mic_lab: miclab::MicLab,
 }
 
 impl VoiceManager {
@@ -342,6 +350,9 @@ impl VoiceManager {
             tts_gen: Arc::new(AtomicU64::new(0)),
             tts_status: Arc::new(Mutex::new(TtsStatusPayload::default())),
             tts_audio: Arc::new(Mutex::new(None)),
+            mic_audio: Mutex::new(std::sync::Weak::new()),
+            mic_test: std::sync::atomic::AtomicBool::new(false),
+            mic_lab: miclab::MicLab::default(),
         });
 
         // Allow internal subsystems (`speak_aloud`, Focus completion, etc.) to
@@ -377,6 +388,32 @@ impl VoiceManager {
                 output_device: devices.map(|d| d.1.to_string()),
             },
         );
+    }
+
+    fn set_mic_audio(&self, audio: &Arc<audio::AudioIo>) {
+        *self.mic_audio.lock() = Arc::downgrade(audio);
+    }
+
+    /// The session's open microphone, if a session is running.
+    pub fn mic_audio(&self) -> Option<Arc<audio::AudioIo>> {
+        self.mic_audio.lock().upgrade()
+    }
+
+    fn mic_test_running(&self) -> bool {
+        self.mic_test.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Gains learned per microphone (`conditioner::MIC_GAINS_KEY`).
+    pub fn mic_gains(&self) -> conditioner::LearnedGains {
+        let store = &self.app.state::<AppState>().store;
+        conditioner::parse_learned_gains(store.kv_get(conditioner::MIC_GAINS_KEY).as_deref())
+    }
+
+    pub fn save_mic_gains(&self, gains: &conditioner::LearnedGains) {
+        let store = &self.app.state::<AppState>().store;
+        if let Err(e) = store.kv_set(conditioner::MIC_GAINS_KEY, &conditioner::serialize_learned_gains(gains)) {
+            tracing::warn!("microphone gain not saved: {e}");
+        }
     }
 
     /// A conversation is on (waiting for the name does not count).
@@ -835,6 +872,10 @@ impl VoiceManager {
     /// settings, models downloaded), and pre-warm the free Edge Neural WS pool.
     pub fn apply_settings(self: &Arc<Self>) {
         let v = self.app.state::<AppState>().store.settings().voice;
+        // Sensitivity and noise suppression apply to an open microphone at once.
+        if let Some(audio) = self.mic_audio() {
+            audio.set_conditioner_config(conditioner::ConditionerConfig::from_voice_settings(&v));
+        }
         let chosen = if v.tts_voice.trim().is_empty() {
             tts::default_voice()
         } else {
@@ -1037,7 +1078,9 @@ impl VoiceManager {
         });
         sink.send(Message::Text(session.to_string().into())).await.map_err(|e| AppError::Network(e.to_string()))?;
 
-        let (audio, mut mic) = AudioIo::start(&cfg.input_device, &cfg.output_device)?;
+        let cond_cfg = conditioner::ConditionerConfig::from_voice_settings(&cfg);
+        let (audio, mut mic) = AudioIo::start(&cfg.input_device, &cfg.output_device, cond_cfg, self.mic_gains())?;
+        self.set_mic_audio(&audio);
         self.set_state(VoiceState::Listening, None, Some((&audio.input_device, &audio.output_device)));
 
         let (out_tx, mut out_rx) = mpsc::channel::<Value>(32);
@@ -1052,7 +1095,10 @@ impl VoiceManager {
             tokio::select! {
                 _ = cancel.cancelled() => break Err(AppError::Cancelled),
                 Some(chunk) = mic.recv() => {
-                    let bytes: Vec<u8> = chunk.iter().flat_map(|s| s.to_le_bytes()).collect();
+                    if self.mic_test_running() {
+                        continue;
+                    }
+                    let bytes: Vec<u8> = chunk.stt_pcm16().iter().flat_map(|s| s.to_le_bytes()).collect();
                     let msg = json!({ "type": "input_audio_buffer.append", "audio": b64.encode(bytes) });
                     if let Err(e) = sink.send(Message::Text(msg.to_string().into())).await {
                         break Err(AppError::Network(format!("Соединение голосового сервера прервано: {e}")));

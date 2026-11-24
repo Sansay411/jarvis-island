@@ -25,10 +25,14 @@ pub const TARGET_RMS_DB: f32 = -20.0;
 pub const MIN_GAIN_DB: f32 = -6.0;
 /// Maximum AGC / manual gain in dB.
 pub const MAX_GAIN_DB: f32 = 30.0;
-/// In `auto` mode, blend of denoised signal (`wet`) into the STT stream.
-/// VAD, wake preview and level meters use 100% denoised (`wet`); STT gets a
-/// delay-aligned mix to preserve fricatives/consonants for neural ASR while
-/// suppressing stationary hiss and rumble.
+/// In `auto` mode, the share of denoised (`wet`) audio in the recognition
+/// stream; VAD, wake preview and the meters hear 100 % wet. Measured with
+/// `live_quiet_noisy_speech_is_still_understood` (two local voices, speech
+/// 25 dB quieter, hiss at -62/-55/-50 dBFS): wet 0.35, 0.50 and 0.65 all
+/// gave 88.3 % word recall and 23/24 names, fully denoised 85.6 % and 21/24
+/// (the plain old path: 82.8 %, 17/24). 0.65 is the top of that plateau:
+/// the most hiss removed (about 9 dB on the mix) for the cloud recogniser
+/// without the losses of fully denoised audio.
 pub const AUTO_STT_WET_MIX: f32 = 0.65;
 /// SQLite `kv` key storing learned AGC gain per microphone name.
 pub const MIC_GAINS_KEY: &str = "voice.mic_gains";
@@ -117,8 +121,10 @@ impl ConditionerConfig {
 /// Telemetry from the most recently processed conditioner frame.
 #[derive(Debug, Clone, Copy)]
 pub struct FrameTelemetry {
-    /// Post-HPF, pre-AGC frame RMS in dBFS.
+    /// Post-HPF, pre-AGC RMS in dBFS.
     pub raw_db: f32,
+    /// After gain and limiter, before noise suppression, in dBFS.
+    pub dry_db: f32,
     /// Post-conditioning VAD-stream frame RMS in dBFS.
     pub post_db: f32,
     /// Learned pre-AGC noise floor in dBFS.
@@ -137,6 +143,7 @@ impl Default for FrameTelemetry {
     fn default() -> Self {
         FrameTelemetry {
             raw_db: -90.0,
+            dry_db: -90.0,
             post_db: -90.0,
             raw_floor_db: -70.0,
             post_floor_db: -70.0,
@@ -278,68 +285,64 @@ impl HighPass {
     }
 }
 
-/// Exact 3:1 low-pass FIR decimator (48 kHz -> 16 kHz) with an 11-tap
-/// Blackman-windowed sinc kernel (~0.10 ms group delay, >55 dB alias
-/// rejection above 9 kHz, exact 480 -> 160 sample framing).
+/// Exact 3:1 low-pass FIR decimator (48 kHz -> 16 kHz): a 63-tap
+/// Blackman-windowed sinc with its cut-off at 7 kHz (flat to ~5 kHz, the
+/// stop band from ~9 kHz, 0.65 ms group delay). Only every third output is
+/// computed, so 480 input samples give exactly 160 output samples.
 struct Decimator3 {
-    taps: [f32; 11],
-    hist: [f32; 11],
+    taps: [f32; DECIM_TAPS],
+    /// Ring of the last `DECIM_TAPS` inputs, stored twice so a window is
+    /// always one contiguous slice.
+    hist: [f32; DECIM_TAPS * 2],
     idx: usize,
     phase: usize,
 }
 
+const DECIM_TAPS: usize = 63;
+
 impl Decimator3 {
     fn new() -> Self {
-        const N: usize = 11;
-        let mid = (N - 1) as f64 / 2.0;
-        // Cutoff ~6.8 kHz at 48 kHz (normalized 0.1417).
-        let fc = 6_800.0 / WORK_RATE as f64;
-        let mut raw = [0.0f64; N];
-        let mut sum = 0.0;
+        let n = DECIM_TAPS;
+        let mid = (n - 1) as f64 / 2.0;
+        let fc = 7_000.0 / WORK_RATE as f64;
+        let mut raw = [0.0f64; DECIM_TAPS];
         for (i, slot) in raw.iter_mut().enumerate() {
-            let n = i as f64 - mid;
-            let sinc = if n.abs() < 1e-9 {
+            let x = i as f64 - mid;
+            let sinc = if x.abs() < 1e-9 {
                 2.0 * fc
             } else {
-                (2.0 * std::f64::consts::PI * fc * n).sin() / (std::f64::consts::PI * n)
+                (2.0 * std::f64::consts::PI * fc * x).sin() / (std::f64::consts::PI * x)
             };
-            let w = 0.42
-                - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / (N - 1) as f64).cos()
-                + 0.08 * (4.0 * std::f64::consts::PI * i as f64 / (N - 1) as f64).cos();
-            *slot = sinc * w;
-            sum += *slot;
+            let ph = 2.0 * std::f64::consts::PI * i as f64 / (n - 1) as f64;
+            *slot = sinc * (0.42 - 0.5 * ph.cos() + 0.08 * (2.0 * ph).cos());
         }
-        let mut taps = [0.0f32; N];
-        for i in 0..N {
-            taps[i] = (raw[i] / sum) as f32;
+        let sum: f64 = raw.iter().sum();
+        let mut taps = [0.0f32; DECIM_TAPS];
+        for (t, r) in taps.iter_mut().zip(raw.iter()) {
+            *t = (r / sum) as f32;
         }
-        Decimator3 { taps, hist: [0.0; N], idx: 0, phase: 0 }
+        Decimator3 { taps, hist: [0.0; DECIM_TAPS * 2], idx: 0, phase: 0 }
     }
 
     fn process(&mut self, input: &[f32], out: &mut Vec<f32>) {
-        out.reserve(input.len() / 3 + 1);
         for &x in input {
             self.hist[self.idx] = x;
-            self.idx = (self.idx + 1) % self.taps.len();
+            self.hist[self.idx + DECIM_TAPS] = x;
+            self.idx = (self.idx + 1) % DECIM_TAPS;
             self.phase += 1;
             if self.phase == 3 {
                 self.phase = 0;
-                let mut acc = 0.0f32;
-                let mut p = self.idx;
-                for &c in &self.taps {
-                    acc += self.hist[p] * c;
-                    p += 1;
-                    if p == self.taps.len() {
-                        p = 0;
-                    }
-                }
-                out.push(acc);
+                // Oldest sample first: hist[idx..idx + N].
+                let win = &self.hist[self.idx..self.idx + DECIM_TAPS];
+                let y: f32 = win.iter().zip(self.taps.iter()).map(|(a, b)| a * b).sum();
+                // The filter can ring a little over the limiter's ceiling.
+                out.push(y.clamp(-0.99, 0.99));
             }
         }
     }
 
     fn reset(&mut self) {
-        self.hist = [0.0; 11];
+        self.hist = [0.0; DECIM_TAPS * 2];
         self.idx = 0;
         self.phase = 0;
     }
@@ -356,7 +359,18 @@ pub struct Agc {
     post_floor_seeded: bool,
     onset_frames: u32,
     learned_speech_frames: u32,
+    /// Active speech energy (linear power, pre-gain), averaged over speech
+    /// frames only. Power averaging is dominated by the vowels, so weak
+    /// consonants and word tails barely move it.
+    speech_power: f32,
 }
+
+/// Share of each speech frame in `speech_power` (~0.33 s of speech)...
+const SPEECH_POWER_RATE: f32 = 0.03;
+/// ...and over the first 0.6 s of speech of a session, while the start
+/// level is only a guess (a new microphone converges within a second).
+const SPEECH_POWER_RATE_FIRST: f32 = 0.10;
+const FIRST_SPEECH_FRAMES: u32 = 60;
 
 impl Agc {
     pub fn new(initial_gain_db: f32) -> Self {
@@ -373,7 +387,14 @@ impl Agc {
             post_floor_seeded: false,
             onset_frames: 0,
             learned_speech_frames: 0,
+            // As if the speech the start gain was learned on were heard.
+            speech_power: db_to_lin(2.0 * (TARGET_RMS_DB - g)),
         }
+    }
+
+    /// The level of the user's active speech before gain, dBFS.
+    pub fn speech_level_db(&self) -> f32 {
+        10.0 * self.speech_power.max(1e-12).log10()
     }
 
     pub fn gain_db(&self) -> f32 {
@@ -397,6 +418,7 @@ impl Agc {
     pub fn set_gain_db(&mut self, gain_db: f32) {
         if gain_db.is_finite() {
             self.gain_db = gain_db.clamp(MIN_GAIN_DB, MAX_GAIN_DB);
+            self.speech_power = db_to_lin(2.0 * (TARGET_RMS_DB - self.gain_db));
         }
     }
 
@@ -445,7 +467,9 @@ impl Agc {
                         // Signal is well inside RNNoise's trained operating
                         // range: rely on its neural speech detector so steady
                         // fans/hiss never pump AGC.
-                        (vad >= 0.45 && raw_snr >= 3.0) || vad >= 0.72
+                        // Steady noise sits at its own floor (SNR ~0), so a
+                        // little SNR is required even when RNNoise is sure.
+                        (vad >= 0.45 && raw_snr >= 3.0) || (vad >= 0.72 && raw_snr >= 1.5)
                     } else {
                         // Very quiet signal before AGC has lifted it into
                         // RNNoise's sweet spot: allow strong SNR above room
@@ -463,9 +487,9 @@ impl Agc {
         } else {
             self.onset_frames = 0;
         }
-        // Require 2 consecutive frames (20 ms) so isolated clicks/keystrokes
-        // do not move the AGC gain.
-        let speech_active = self.onset_frames >= 2;
+        // Require 3 consecutive frames (30 ms) so isolated clicks/keystrokes
+        // and single noisy frames do not move the AGC gain.
+        let speech_active = self.onset_frames >= 3;
 
         match mode {
             GainMode::Manual(db) => {
@@ -474,11 +498,14 @@ impl Agc {
             GainMode::Auto => {
                 if speech_active {
                     self.learned_speech_frames = self.learned_speech_frames.saturating_add(1);
-                    let desired = (TARGET_RMS_DB - raw_db).clamp(MIN_GAIN_DB, MAX_GAIN_DB);
-                    // Fast attack (turn down quickly when voice gets loud,
-                    // ~100 ms), smooth release (boost steadily without
-                    // pumping, ~500 ms).
-                    let alpha = if desired < self.gain_db { 0.095 } else { 0.020 };
+                    let power = db_to_lin(2.0 * raw_db);
+                    let rate = if self.learned_speech_frames <= FIRST_SPEECH_FRAMES { SPEECH_POWER_RATE_FIRST } else { SPEECH_POWER_RATE };
+                    self.speech_power += (power - self.speech_power) * rate;
+                    let desired = (TARGET_RMS_DB - self.speech_level_db()).clamp(MIN_GAIN_DB, MAX_GAIN_DB);
+                    // Fast attack (a loud voice is turned down within
+                    // ~100 ms), smooth release (~200 ms on top of the
+                    // level average) so the boost never pumps.
+                    let alpha = if desired < self.gain_db { 0.10 } else { 0.05 };
                     self.gain_db = (self.gain_db + (desired - self.gain_db) * alpha).clamp(MIN_GAIN_DB, MAX_GAIN_DB);
                 }
             }
@@ -511,57 +538,80 @@ impl Agc {
 /// Consumes mono `f32` samples at the capture device's native sample rate and
 /// outputs conditioned 16 kHz streams:
 /// - `vad_out`: fully denoised (in `auto`/`strong`) or HPF+AGC (in `off`),
-///   used by Silero VAD, wake preview, level meters and realtime.
-/// - `stt_out`: in `auto` mode, a delay-aligned gentle mix of denoised + dry
-///   HPF+AGC audio for optimal neural ASR accuracy; in `off` and `strong`,
-///   `stt_out` is left empty because `vad_out` is used for both.
+///   used by Silero VAD, wake preview and the level meters.
+/// - `stt_out`: in `auto` mode, a delay-aligned mix of denoised and dry
+///   HPF+AGC audio for the recognisers; in `off` and `strong` it stays empty
+///   because `vad_out` is used for both.
+///
+/// Everything is allocated up front (the denoiser too, even when off), so
+/// `process` never allocates once its output vectors have grown.
 pub struct Conditioner {
-    in_rate: u32,
     cfg: ConditionerConfig,
     in_resampler: Option<Resampler>,
     hpf: HighPass,
-    denoise: Option<Box<DenoiseState<'static>>>,
+    denoise: Box<DenoiseState<'static>>,
     agc: Agc,
     prev_gain_lin: f32,
     /// Pending 48 kHz post-HPF samples waiting to form a 480-sample frame.
     pending_48k: Vec<f32>,
-    /// Previous dry (post-HPF, post-AGC) 480-sample frame for exact 1-frame
-    /// delay alignment with RNNoise overlap-add synthesis.
+    /// Previous dry (post-HPF, post-AGC) frame: RNNoise's output lags its
+    /// input by exactly one frame, so the dry part of the STT mix is delayed
+    /// the same way.
     prev_dry: [f32; RNNOISE_FRAME],
     has_prev_dry: bool,
     decim_vad: Decimator3,
     decim_stt: Decimator3,
     resampled_buf: Vec<f32>,
-    /// Last frame telemetry.
+    /// Telemetry of the last `process` call that completed a frame.
     telemetry: FrameTelemetry,
-    /// Configurable wet mix for `auto` STT stream (defaults to `AUTO_STT_WET_MIX`).
+    /// Wet share of the `auto` STT stream (defaults to `AUTO_STT_WET_MIX`).
     auto_wet_mix: f32,
+}
+
+/// Energy sums over the frames of one `process` call.
+#[derive(Default)]
+struct CallSums {
+    frames: u32,
+    raw: f32,
+    dry: f32,
+    post: f32,
+}
+
+impl CallSums {
+    fn add(&mut self, raw_rms: f32, dry_rms: f32, post_rms: f32) {
+        self.frames += 1;
+        self.raw += raw_rms * raw_rms;
+        self.dry += dry_rms * dry_rms;
+        self.post += post_rms * post_rms;
+    }
+
+    fn db(sum: f32, frames: u32) -> f32 {
+        rms_to_db((sum / frames.max(1) as f32).sqrt())
+    }
 }
 
 impl Conditioner {
     pub fn new(in_rate: u32, cfg: ConditionerConfig, initial_gain_db: f32) -> Self {
         let start_gain = match cfg.gain {
             GainMode::Manual(db) => db.clamp(MIN_GAIN_DB, MAX_GAIN_DB),
-            GainMode::Auto => initial_gain_db.clamp(MIN_GAIN_DB, MAX_GAIN_DB),
+            GainMode::Auto if initial_gain_db.is_finite() => initial_gain_db.clamp(MIN_GAIN_DB, MAX_GAIN_DB),
+            GainMode::Auto => 0.0,
         };
         let in_resampler = (in_rate != WORK_RATE).then(|| Resampler::new(in_rate, WORK_RATE));
-        let denoise = (cfg.noise != NoiseSuppression::Off).then(DenoiseState::new);
-        let mut telemetry = FrameTelemetry::default();
-        telemetry.gain_db = start_gain;
+        let telemetry = FrameTelemetry { gain_db: start_gain, ..FrameTelemetry::default() };
         Conditioner {
-            in_rate,
             cfg,
             in_resampler,
             hpf: HighPass::new(WORK_RATE, HIGHPASS_HZ),
-            denoise,
+            denoise: DenoiseState::new(),
             agc: Agc::new(start_gain),
             prev_gain_lin: db_to_lin(start_gain),
-            pending_48k: Vec::with_capacity(RNNOISE_FRAME * 4),
+            pending_48k: Vec::with_capacity(RNNOISE_FRAME * 8),
             prev_dry: [0.0; RNNOISE_FRAME],
             has_prev_dry: false,
             decim_vad: Decimator3::new(),
             decim_stt: Decimator3::new(),
-            resampled_buf: Vec::with_capacity(2048),
+            resampled_buf: Vec::with_capacity(4096),
             telemetry,
             auto_wet_mix: AUTO_STT_WET_MIX,
         }
@@ -569,10 +619,6 @@ impl Conditioner {
 
     pub fn config(&self) -> ConditionerConfig {
         self.cfg
-    }
-
-    pub fn in_rate(&self) -> u32 {
-        self.in_rate
     }
 
     pub fn telemetry(&self) -> FrameTelemetry {
@@ -596,11 +642,6 @@ impl Conditioner {
     /// suppression in Settings) without reopening the audio device.
     pub fn set_config(&mut self, cfg: ConditionerConfig) {
         if self.cfg.noise != cfg.noise {
-            if cfg.noise == NoiseSuppression::Off {
-                self.denoise = None;
-            } else if self.denoise.is_none() {
-                self.denoise = Some(DenoiseState::new());
-            }
             self.has_prev_dry = false;
             self.decim_stt.reset();
         }
@@ -610,7 +651,7 @@ impl Conditioner {
         self.cfg = cfg;
     }
 
-    /// Update the starting AGC gain (e.g. after a mic test calibrated it).
+    /// Update the AGC gain (e.g. after the microphone test calibrated it).
     pub fn set_gain_db(&mut self, gain_db: f32) {
         self.agc.set_gain_db(gain_db);
         self.prev_gain_lin = db_to_lin(self.agc.gain_db());
@@ -622,8 +663,10 @@ impl Conditioner {
         self.cfg.noise == NoiseSuppression::Auto
     }
 
-    /// Feed mono capture samples at `in_rate`. Appends 16 kHz conditioned
-    /// samples to `vad_out` (and `stt_out` when `noise == Auto`).
+    /// Feed mono capture samples at the device rate. Appends 16 kHz
+    /// conditioned samples to `vad_out` (and `stt_out` when `noise == Auto`).
+    /// Levels in the returned telemetry are averaged over the frames this
+    /// call completed (the previous telemetry if it completed none).
     pub fn process(
         &mut self,
         mono_in: &[f32],
@@ -641,23 +684,27 @@ impl Conditioner {
                 self.pending_48k.push(self.hpf.tick(s));
             }
         } else {
-            self.pending_48k.reserve(mono_in.len());
             for &s in mono_in {
                 self.pending_48k.push(self.hpf.tick(s));
             }
         }
 
+        let mut sums = CallSums::default();
         let mut consumed = 0usize;
         while self.pending_48k.len() - consumed >= RNNOISE_FRAME {
             let mut frame = [0.0f32; RNNOISE_FRAME];
             frame.copy_from_slice(&self.pending_48k[consumed..consumed + RNNOISE_FRAME]);
             consumed += RNNOISE_FRAME;
-            self.process_frame_48k(&frame, echo_active, vad_out, stt_out);
+            self.process_frame_48k(&frame, echo_active, vad_out, stt_out, &mut sums);
         }
         if consumed > 0 {
             self.pending_48k.drain(..consumed);
         }
-
+        if sums.frames > 0 {
+            self.telemetry.raw_db = CallSums::db(sums.raw, sums.frames);
+            self.telemetry.dry_db = CallSums::db(sums.dry, sums.frames);
+            self.telemetry.post_db = CallSums::db(sums.post, sums.frames);
+        }
         self.telemetry
     }
 
@@ -667,87 +714,75 @@ impl Conditioner {
         echo_active: bool,
         vad_out: &mut Vec<f32>,
         stt_out: &mut Vec<f32>,
+        sums: &mut CallSums,
     ) {
-        let raw_db = rms_to_db(rms_of(raw_frame));
+        let raw_rms = rms_of(raw_frame);
+        let raw_db = rms_to_db(raw_rms);
         let target_gain_lin = db_to_lin(self.agc.gain_db());
         let start_gain_lin = self.prev_gain_lin;
         let inv_n = 1.0 / RNNOISE_FRAME as f32;
 
-        // Apply smoothly ramped AGC gain + soft peak limiter before RNNoise so
-        // quiet mics enter RNNoise near -20 dBFS and loud mics never clip it.
+        // Smoothly ramped gain + soft peak limiter before RNNoise, so quiet
+        // mics enter it near -20 dBFS and loud ones never clip it.
         let mut dry = [0.0f32; RNNOISE_FRAME];
-        for i in 0..RNNOISE_FRAME {
+        for (i, (d, &x)) in dry.iter_mut().zip(raw_frame.iter()).enumerate() {
             let t = (i + 1) as f32 * inv_n;
             let g = start_gain_lin + (target_gain_lin - start_gain_lin) * t;
-            dry[i] = soft_limit(raw_frame[i] * g);
+            *d = soft_limit(x * g);
         }
         self.prev_gain_lin = target_gain_lin;
-        let dry_db = rms_to_db(rms_of(&dry));
+        let dry_rms = rms_of(&dry);
+        let dry_db = rms_to_db(dry_rms);
 
-        match self.cfg.noise {
+        let (post_rms, speech_prob, speech_active) = match self.cfg.noise {
             NoiseSuppression::Off => {
-                let speech_active = self.agc.update(self.cfg.gain, raw_db, dry_db, dry_db, None, echo_active);
+                let active = self.agc.update(self.cfg.gain, raw_db, dry_db, dry_db, None, echo_active);
                 self.decim_vad.process(&dry, vad_out);
-                self.telemetry = FrameTelemetry {
-                    raw_db,
-                    post_db: dry_db,
-                    raw_floor_db: self.agc.raw_floor_db(),
-                    post_floor_db: self.agc.post_floor_db(),
-                    gain_db: self.agc.gain_db(),
-                    speech_prob: 0.0,
-                    speech_active,
-                };
+                (dry_rms, 0.0, active)
             }
             NoiseSuppression::Auto | NoiseSuppression::Strong => {
-                let denoise = self.denoise.get_or_insert_with(DenoiseState::new);
-                let mut in_i16 = [0.0f32; RNNOISE_FRAME];
-                let mut out_i16 = [0.0f32; RNNOISE_FRAME];
-                for i in 0..RNNOISE_FRAME {
-                    in_i16[i] = dry[i] * 32_768.0;
+                // RNNoise works on 16-bit-scaled floats.
+                let mut scaled = [0.0f32; RNNOISE_FRAME];
+                for (o, &d) in scaled.iter_mut().zip(dry.iter()) {
+                    *o = d * 32_768.0;
                 }
-                let vad_prob = denoise.process_frame(&mut out_i16, &in_i16);
+                let mut out = [0.0f32; RNNOISE_FRAME];
+                let prob = self.denoise.process_frame(&mut out, &scaled);
                 let mut wet = [0.0f32; RNNOISE_FRAME];
-                for i in 0..RNNOISE_FRAME {
-                    wet[i] = soft_limit(out_i16[i] / 32_768.0);
+                for (w, &o) in wet.iter_mut().zip(out.iter()) {
+                    *w = soft_limit(o / 32_768.0);
                 }
-                let post_db = rms_to_db(rms_of(&wet));
-                let speech_active = self.agc.update(
-                    self.cfg.gain,
-                    raw_db,
-                    dry_db,
-                    post_db,
-                    Some(vad_prob),
-                    echo_active,
-                );
+                let wet_rms = rms_of(&wet);
+                let active = self.agc.update(self.cfg.gain, raw_db, dry_db, rms_to_db(wet_rms), Some(prob), echo_active);
                 self.decim_vad.process(&wet, vad_out);
 
                 if self.cfg.noise == NoiseSuppression::Auto {
                     let w = self.auto_wet_mix;
                     let d = 1.0 - w;
-                    let mut mixed = [0.0f32; RNNOISE_FRAME];
+                    let mut mixed = wet;
                     if self.has_prev_dry {
-                        for i in 0..RNNOISE_FRAME {
-                            mixed[i] = soft_limit(w * wet[i] + d * self.prev_dry[i]);
+                        for (m, (&we, &dr)) in mixed.iter_mut().zip(wet.iter().zip(self.prev_dry.iter())) {
+                            *m = soft_limit(w * we + d * dr);
                         }
-                    } else {
-                        mixed.copy_from_slice(&wet);
                     }
                     self.decim_stt.process(&mixed, stt_out);
                 }
                 self.prev_dry = dry;
                 self.has_prev_dry = true;
-
-                self.telemetry = FrameTelemetry {
-                    raw_db,
-                    post_db,
-                    raw_floor_db: self.agc.raw_floor_db(),
-                    post_floor_db: self.agc.post_floor_db(),
-                    gain_db: self.agc.gain_db(),
-                    speech_prob: vad_prob,
-                    speech_active,
-                };
+                (wet_rms, prob, active)
             }
-        }
+        };
+        sums.add(raw_rms, dry_rms, post_rms);
+        self.telemetry = FrameTelemetry {
+            raw_db,
+            dry_db,
+            post_db: rms_to_db(post_rms),
+            raw_floor_db: self.agc.raw_floor_db(),
+            post_floor_db: self.agc.post_floor_db(),
+            gain_db: self.agc.gain_db(),
+            speech_prob,
+            speech_active,
+        };
     }
 }
 
@@ -776,6 +811,15 @@ pub fn lookup_learned_gain(map: &LearnedGains, device_name: &str) -> f32 {
         .filter(|v| v.is_finite())
         .map(|v| v.clamp(MIN_GAIN_DB, MAX_GAIN_DB))
         .unwrap_or(0.0)
+}
+
+/// The gain a session on `device_name` starts with: the manual one, or the
+/// gain learned on that microphone last time.
+pub fn start_gain_for(cfg: ConditionerConfig, gains: &LearnedGains, device_name: &str) -> f32 {
+    match cfg.gain {
+        GainMode::Manual(db) => db.clamp(MIN_GAIN_DB, MAX_GAIN_DB),
+        GainMode::Auto => lookup_learned_gain(gains, device_name),
+    }
 }
 
 /// Update `device_name`'s saved gain if it shifted by at least 0.5 dB.
@@ -1058,6 +1102,21 @@ mod tests {
         out
     }
 
+    /// White noise through a one-pole low-pass (`pole` 0 = white, 0.9 =
+    /// hiss-like, 0.98 = fan-like), at `rms_db`.
+    fn colored_noise(len: usize, rms_db: f32, pole: f32, seed: u32) -> Vec<f32> {
+        let mut lp = 0.0f32;
+        let mut out: Vec<f32> = white_noise(len, 0.0, seed).into_iter().map(|w| {
+            lp = pole * lp + (1.0 - pole) * w;
+            lp
+        }).collect();
+        let scale = db_to_lin(rms_db) / rms_of(&out).max(1e-9);
+        for s in &mut out {
+            *s *= scale;
+        }
+        out
+    }
+
     #[test]
     fn highpass_removes_dc_and_50hz_hum_while_preserving_voice() {
         let sr = 48_000u32;
@@ -1134,16 +1193,25 @@ mod tests {
         let quiet_speech: Vec<f32> = sp.iter().zip(&bg).map(|(s, n)| s + n).collect();
         vad_out.clear();
         stt_out.clear();
-        for chunk in quiet_speech.chunks(480) {
+        let mut within_3db_at = None;
+        for (i, chunk) in quiet_speech.chunks(480).enumerate() {
             cond.process(chunk, false, &mut vad_out, &mut stt_out);
+            // The ideal gain for -45 dBFS speech is +25 dB.
+            if within_3db_at.is_none() && (cond.gain_db() - 25.0).abs() <= 3.0 {
+                within_3db_at = Some(i as f32 * 0.01);
+            }
         }
         let gain_after_speech = cond.gain_db();
+        let converged_s = within_3db_at.expect("never within 3 dB of the target");
+        println!("AGC: -45 dBFS speech within 3 dB of -20 dBFS after {converged_s:.2} s, gain {gain_after_speech:.1} dB");
+        assert!(converged_s <= 3.0, "too slow: {converged_s} s");
         assert!(
             gain_after_speech > 18.0 && gain_after_speech <= MAX_GAIN_DB,
             "AGC failed to converge on -45 dBFS speech: gain={gain_after_speech:.2} dB"
         );
         // Check last 1 s of conditioned STT audio is near -20 dBFS target
         let tail_db = rms_to_db(rms_of(&stt_out[stt_out.len() - 16_000..]));
+        println!("AGC: last second of the recognition stream at {tail_db:.1} dBFS");
         assert!(
             (tail_db - TARGET_RMS_DB).abs() < 6.0,
             "post-AGC speech not near target: tail_db={tail_db:.1} dB (gain={gain_after_speech:.1} dB)"
@@ -1171,6 +1239,34 @@ mod tests {
         let peak_stt = stt_out.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
         assert!(peak_vad < 1.0 && peak_stt < 1.0, "clipped: vad={peak_vad} stt={peak_stt}");
         assert!(cond.gain_db() < gain_after_speech - 5.0, "AGC did not back off on loud speech");
+    }
+
+    #[test]
+    fn agc_levels_speech_by_its_vowels_not_its_pauses_and_tails() {
+        // Words of 250 ms at -20 dBFS, each with a fading tail and a pause,
+        // in a quiet room: a normal microphone needs no boost.
+        for (active_db, want) in [(-20.0f32, 0.0f32), (-38.0, 18.0)] {
+            let mut cond = Conditioner::new(48_000, ConditionerConfig::default(), 0.0);
+            let (mut v, mut st) = (Vec::new(), Vec::new());
+            let word = speech_like(48_000, 0.25, active_db);
+            let mut signal = Vec::new();
+            for _ in 0..16 {
+                signal.extend_from_slice(&word);
+                let last = word[word.len() - 480..].to_vec();
+                for i in 0..12_000 {
+                    signal.push(last[i % 480] * (-(i as f32) / 1_900.0).exp());
+                }
+            }
+            let room = white_noise(signal.len(), -75.0, 3);
+            for (s, n) in signal.iter_mut().zip(room) {
+                *s += n;
+            }
+            for c in signal.chunks(480) {
+                cond.process(c, false, &mut v, &mut st);
+            }
+            println!("AGC: words at {active_db} dBFS with pauses -> gain {:.1} dB (ideal {want})", cond.gain_db());
+            assert!((cond.gain_db() - want).abs() <= 3.0, "gain {} for words at {active_db}", cond.gain_db());
+        }
     }
 
     #[test]
@@ -1238,22 +1334,25 @@ mod tests {
 
     #[test]
     fn rnnoise_suppresses_stationary_hiss_and_echo_freezes_agc() {
-        let mut cond = Conditioner::new(48_000, ConditionerConfig::default(), 15.0);
-        let mut vad_out = Vec::new();
-        let mut stt_out = Vec::new();
-
-        // Stationary noise at -45 dBFS + 15 dB gain = -30 dBFS entering RNNoise
-        let hiss = white_noise(48_000, -45.0, 555);
-        for c in hiss.chunks(480) {
-            cond.process(c, false, &mut vad_out, &mut stt_out);
+        // Mic hiss (pink-ish) and broadband white noise at -45 dBFS, +15 dB
+        // gain: -30 dBFS enters RNNoise.
+        for (name, pole, settle_s, min_db) in [("hiss", 0.9f32, 1usize, 25.0f32), ("white", 0.0, 2, 15.0)] {
+            let mut cond = Conditioner::new(48_000, ConditionerConfig::default(), 15.0);
+            let (mut vad_out, mut stt_out) = (Vec::new(), Vec::new());
+            let noise = colored_noise(48_000 * (settle_s + 1), -45.0, pole, 555);
+            for c in noise.chunks(480) {
+                cond.process(c, false, &mut vad_out, &mut stt_out);
+            }
+            let tail = &vad_out[16_000 * settle_s..];
+            let reduced = (-45.0 + 15.0) - rms_to_db(rms_of(tail));
+            println!("{name}: suppressed by {reduced:.1} dB after {settle_s} s; stt mix by {:.1} dB", (-30.0) - rms_to_db(rms_of(&stt_out[16_000 * settle_s..])));
+            assert!(reduced >= min_db, "{name}: RNNoise only took {reduced:.1} dB off");
+            assert!(cond.gain_db() == 15.0, "{name}: AGC moved on noise: {}", cond.gain_db());
         }
-        let post_noise_db = rms_to_db(rms_of(&vad_out[8_000..]));
-        assert!(
-            post_noise_db < -45.0,
-            "RNNoise did not suppress stationary noise: post_noise_db={post_noise_db:.1} dB"
-        );
 
         // Echo active: even loud speech-like audio must NOT move AGC gain
+        let mut cond = Conditioner::new(48_000, ConditionerConfig::default(), 15.0);
+        let (mut vad_out, mut stt_out) = (Vec::new(), Vec::new());
         let before = cond.gain_db();
         let echo_speech = speech_like(48_000, 1.0, -10.0);
         for c in echo_speech.chunks(480) {
@@ -1262,9 +1361,75 @@ mod tests {
         assert_eq!(cond.gain_db(), before, "AGC moved while echo_active=true");
     }
 
+    /// Index of the strongest sample.
+    fn peak_at(x: &[f32]) -> usize {
+        x.iter().enumerate().fold((0, 0.0f32), |(bi, bv), (i, &v)| if v.abs() > bv { (i, v.abs()) } else { (bi, bv) }).0
+    }
+
+    #[test]
+    fn latency_stays_within_twenty_ms_and_the_stt_mix_is_aligned() {
+        // A click at 0.5 s, fed in odd-sized callbacks like WASAPI does.
+        let mut click = vec![0.0f32; 48_000];
+        click[24_000] = 0.5;
+        // Off: high-pass + decimator only.
+        let mut off = Conditioner::new(48_000, ConditionerConfig { gain: GainMode::Manual(0.0), noise: NoiseSuppression::Off }, 0.0);
+        let (mut v_off, mut s_off) = (Vec::new(), Vec::new());
+        for c in click.chunks(441) {
+            off.process(c, false, &mut v_off, &mut s_off);
+        }
+        let lag_off = peak_at(&v_off) as f32 / 16.0 - 500.0;
+        // Auto with a dry-only mix: the dry path is delayed like RNNoise.
+        let mut auto = Conditioner::new(48_000, ConditionerConfig { gain: GainMode::Manual(0.0), noise: NoiseSuppression::Auto }, 0.0);
+        auto.set_auto_wet_mix(0.0);
+        let (mut v_auto, mut s_auto) = (Vec::new(), Vec::new());
+        for c in click.chunks(441) {
+            auto.process(c, false, &mut v_auto, &mut s_auto);
+        }
+        let lag_dry = peak_at(&s_auto) as f32 / 16.0 - 500.0;
+        println!("latency: off {lag_off:.2} ms, denoised path {lag_dry:.2} ms (plus up to 10 ms of framing)");
+        assert!((0.0..=2.0).contains(&lag_off), "off-mode latency {lag_off} ms");
+        assert!((lag_dry - lag_off - 10.0).abs() < 0.1, "dry delay {lag_dry} ms is not one RNNoise frame");
+        assert!(lag_dry + 10.0 <= 21.0, "worst-case latency {} ms", lag_dry + 10.0);
+
+        // RNNoise's own output lags its input by the same frame: the wet
+        // stream lines up with the delayed dry one (best match at lag 0).
+        let speech = speech_like(48_000, 2.0, -20.0);
+        let mut strong = Conditioner::new(48_000, ConditionerConfig { gain: GainMode::Manual(0.0), noise: NoiseSuppression::Auto }, 0.0);
+        strong.set_auto_wet_mix(0.0);
+        let (mut wet, mut dry) = (Vec::new(), Vec::new());
+        for c in speech.chunks(480) {
+            strong.process(c, false, &mut wet, &mut dry);
+        }
+        let corr = |lag: isize| -> f32 {
+            let (a, b) = (&wet[8_000..30_000], &dry[(8_000 + lag) as usize..(30_000 + lag) as usize]);
+            let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+            dot / (rms_of(a) * rms_of(b) * a.len() as f32).max(1e-9)
+        };
+        let best = (-200isize..=200).max_by(|&x, &y| corr(x).total_cmp(&corr(y))).unwrap();
+        println!("wet/dry best alignment at lag {best} samples (corr {:.3})", corr(best));
+        assert!(best.abs() <= 2, "wet and dry are {best} samples apart");
+    }
+
+    #[test]
+    fn decimator_rejects_what_would_alias_into_speech() {
+        let tone = |hz: f32| -> f32 {
+            let mut d = Decimator3::new();
+            let input: Vec<f32> = (0..48_000).map(|i| 0.5 * (2.0 * std::f32::consts::PI * hz * i as f32 / 48_000.0).sin()).collect();
+            let mut out = Vec::new();
+            d.process(&input, &mut out);
+            assert_eq!(out.len(), 16_000);
+            rms_to_db(rms_of(&out[1_000..])) - rms_to_db(rms_of(&input))
+        };
+        let (pass, edge, stop) = (tone(1_000.0), tone(4_000.0), tone(12_000.0));
+        println!("decimator: 1 kHz {pass:.2} dB, 4 kHz {edge:.2} dB, 12 kHz {stop:.1} dB");
+        assert!(pass.abs() < 0.1);
+        assert!(edge > -1.0);
+        assert!(stop < -50.0);
+    }
+
     #[test]
     fn peak_normalise_lifts_quiet_utterance_and_ignores_silence() {
-        let quiet: Vec<f32> = (0..1600).map(|i| 0.02 * (i as f32 * 0.1).sin()).collect();
+        let quiet: Vec<f32> = (0..1600).map(|i| 0.1 * (i as f32 * 0.1).sin()).collect();
         let norm = peak_normalize(&quiet);
         let peak = norm.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
         assert!((peak - PEAK_NORM_TARGET).abs() < 0.05, "peak={peak}");
@@ -1358,5 +1523,149 @@ mod tests {
         });
         assert_eq!(good.severity, "ok");
         assert!(good.advice.contains("Отлично слышно"), "{}", good.advice);
+    }
+}
+
+/// Live models (GigaAM, Silero, a Piper voice) on this PC: speech made by
+/// the local voice, 25 dB quieter and mixed with noise, through the old path
+/// (plain resampling) and through conditioning. Prints word recall per path.
+/// `cargo test --lib live_quiet_noisy_speech -- --ignored --nocapture`
+#[cfg(test)]
+mod live {
+    use super::*;
+    use crate::voice::audio::Resampler;
+    use crate::voice::stt::Recognizer;
+    use crate::voice::vad::{Vad, VadEvent};
+
+    const PHRASES: [&str; 6] = [
+        "Джарвис, какая сегодня погода?",
+        "Джарвис, поставь таймер на пять минут.",
+        "Открой браузер и найди рецепт блинов.",
+        "Джарвис, включи музыку погромче.",
+        "Напомни мне позвонить маме в семь вечера.",
+        "Джарвис, сколько времени?",
+    ];
+
+    fn words(t: &str) -> Vec<String> {
+        t.to_lowercase()
+            .replace('ё', "е")
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn noise(len: usize, rms_db: f32, seed: u32) -> Vec<f32> {
+        // Hiss-like: white noise through a one-pole low-pass.
+        let (mut x, mut lp) = (seed.max(1), 0.0f32);
+        let mut out: Vec<f32> = (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                lp = 0.85 * lp + 0.15 * ((x as f32 / u32::MAX as f32) * 2.0 - 1.0);
+                lp
+            })
+            .collect();
+        let k = db_to_lin(rms_db) / rms_of(&out).max(1e-9);
+        out.iter_mut().for_each(|s| *s *= k);
+        out
+    }
+
+    /// `Some(cfg)`: conditioned; `None`: the old path.
+    fn run(mic: &[f32], cfg: Option<(ConditionerConfig, f32)>, rec: &Recognizer) -> (Vec<String>, f32) {
+        let mut vad = Vad::new(&crate::voice::models::asset("silero-vad").unwrap().path()).unwrap();
+        let mut texts = Vec::new();
+        let mut cond = cfg.map(|(c, wet)| {
+            let mut k = Conditioner::new(48_000, c, 0.0);
+            k.set_auto_wet_mix(wet);
+            k
+        });
+        let mut rs = Resampler::new(48_000, 16_000);
+        let (mut v, mut s, mut pend_v, mut pend_s) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for block in mic.chunks(480) {
+            v.clear();
+            s.clear();
+            match cond.as_mut() {
+                Some(k) => {
+                    k.process(block, false, &mut v, &mut s);
+                }
+                None => rs.process(block, &mut v),
+            }
+            pend_v.extend_from_slice(&v);
+            pend_s.extend_from_slice(if s.len() == v.len() { &s } else { &v });
+            while pend_v.len() >= 512 {
+                let cv: Vec<f32> = pend_v.drain(..512).collect();
+                let cs: Vec<f32> = pend_s.drain(..512).collect();
+                for e in vad.push_pair(&cv, &cs) {
+                    if let VadEvent::Ended(pcm) = e {
+                        let pcm = if cond.is_some() { peak_normalize(&pcm) } else { pcm };
+                        texts.push(rec.transcribe(&pcm).map(|t| t.text).unwrap_or_default());
+                    }
+                }
+            }
+        }
+        (texts, cond.map(|k| k.gain_db()).unwrap_or(0.0))
+    }
+
+    fn recall(texts: &[String]) -> (f32, usize) {
+        let heard: Vec<String> = texts.iter().flat_map(|t| words(t)).collect();
+        let want: Vec<String> = PHRASES.iter().flat_map(|p| words(p)).collect();
+        let hit = want.iter().filter(|w| heard.contains(w)).count();
+        let names = texts.iter().filter(|t| crate::voice::wake::addressed(t).is_some()).count();
+        (hit as f32 / want.len() as f32, names)
+    }
+
+    #[test]
+    #[ignore]
+    fn live_quiet_noisy_speech_is_still_understood() {
+        let rec = Recognizer::load_default().expect("GigaAM");
+        let names_wanted = PHRASES.iter().filter(|p| p.starts_with("Джарвис")).count();
+        let paths: [(&str, Option<(ConditionerConfig, f32)>); 6] = [
+            ("old path", None),
+            ("off", Some((ConditionerConfig { gain: GainMode::Auto, noise: NoiseSuppression::Off }, 0.0))),
+            ("auto wet 0.35", Some((ConditionerConfig::default(), 0.35))),
+            ("auto wet 0.50", Some((ConditionerConfig::default(), 0.50))),
+            ("auto wet 0.65", Some((ConditionerConfig::default(), 0.65))),
+            ("strong", Some((ConditionerConfig { gain: GainMode::Auto, noise: NoiseSuppression::Strong }, 1.0))),
+        ];
+        // (recall sum, names, runs) per path over the noisy conditions.
+        let mut totals = [(0.0f32, 0usize, 0usize); 6];
+        for voice_id in ["piper-ruslan", "supertonic-3:1"] {
+            let Ok(voice) = crate::voice::neural::NeuralVoice::load(voice_id, 1.0) else {
+                println!("{voice_id}: not installed, skipped");
+                continue;
+            };
+            // The «microphone»: 2 s of room, then each phrase and 1.5 s of room.
+            let mut clean = vec![0.0f32; 96_000];
+            for p in PHRASES {
+                let (rate, pcm) = voice.synthesize(p).unwrap();
+                let mut up = Resampler::new(rate, 48_000);
+                let mut out = Vec::new();
+                up.process(&pcm, &mut out);
+                let k = db_to_lin(-20.0) / rms_of(&out).max(1e-9);
+                clean.extend(out.iter().map(|s| s * k));
+                clean.extend(std::iter::repeat(0.0).take(72_000));
+            }
+            for (label, atten, noise_db) in [("clean -20 dBFS", 0.0f32, -90.0f32), ("-25 dB, room -62", 25.0, -62.0), ("-25 dB, room -55", 25.0, -55.0), ("-25 dB, room -50", 25.0, -50.0)] {
+                let room = noise(clean.len(), noise_db, 7);
+                let mic: Vec<f32> = clean.iter().zip(&room).map(|(s, n)| s * db_to_lin(-atten) + n).collect();
+                for (i, (mode, cfg)) in paths.iter().enumerate() {
+                    let (texts, gain) = run(&mic, *cfg, &rec);
+                    let (r, n) = recall(&texts);
+                    if atten > 0.0 {
+                        totals[i].0 += r;
+                        totals[i].1 += n;
+                        totals[i].2 += 1;
+                    }
+                    println!("{voice_id:>14} | {label:>16} | {mode:<13} {gain:>5.1} dB | recall {:>5.1}% | names {n}/{names_wanted} | {texts:?}", r * 100.0);
+                }
+            }
+        }
+        println!("--- quiet (-25 dB) and noisy, all voices and rooms ---");
+        for (i, (mode, _)) in paths.iter().enumerate() {
+            let (r, n, runs) = totals[i];
+            println!("{mode:<13} | recall {:>5.1}% | names {n}/{}", r / runs.max(1) as f32 * 100.0, runs * names_wanted);
+        }
     }
 }
