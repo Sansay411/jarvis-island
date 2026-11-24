@@ -223,7 +223,8 @@ fn ext_of(p: &str) -> String {
 fn still_confirmed(tool: &str, args: &Value) -> bool {
     // An MCP tool is high only when its server calls it destructive. Sending
     // a file to Telegram leaves the computer, so it is always asked about.
-    matches!(tool, "input_key" | "input_click" | "ui_act" | "shell_run" | "connect_service")
+    // Installing a remote skill requires reviewing its preview every time.
+    matches!(tool, "input_key" | "input_click" | "ui_act" | "shell_run" | "connect_service" | "skill_install")
         || tool.starts_with(crate::mcp::PREFIX)
         || (tool == "file_action" && args.get("action").and_then(Value::as_str) == Some("telegram"))
 }
@@ -745,6 +746,7 @@ impl Agent {
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
         // Gathered once: the same text on every step keeps the cache warm.
         let turn_context = prompt::turn_context(&turn.settings, &self.state().history, turn.heard);
+        let skills_index = self.app.state::<Arc<crate::skills::SkillStore>>().index_entries();
         let vision_model = turn.settings.provider.vision_model.trim().to_string();
         let persist = turn.settings.privacy.store_history;
         // Whole-utterance matching only. Execute through the normal registry
@@ -814,7 +816,7 @@ impl Agent {
             let system = {
                 let st = self.state();
                 let memories = st.store.memories().unwrap_or_default();
-                prompt::system_prompt(&turn.settings, &memories, &names, turn.voice)
+                prompt::system_prompt(&turn.settings, &memories, &skills_index, &names, turn.voice)
             };
             let messages = self.context(system, &turn_context);
             let use_vision = !vision_model.is_empty() && messages.last().is_some_and(ChatMessage::has_images);
@@ -1056,6 +1058,38 @@ impl Agent {
             }
             title = "Отправить в Telegram «Избранное»".into();
             details = format!("Файлы:\n{}", paths.join("\n"));
+        }
+        if call.name == "skill_install" {
+            let url = args.get("url").and_then(Value::as_str).unwrap_or("");
+            let preview = self
+                .app
+                .state::<Arc<crate::skills::SkillStore>>()
+                .preview_install(url, &turn.cancel)
+                .await?;
+            title = format!("Установить навык: {}", preview.name);
+            let overwrite = if preview.exists {
+                "\nВнимание: навык с таким именем уже существует и будет обновлён."
+            } else {
+                ""
+            };
+            let body_excerpt = truncate_chars(&preview.body, 900);
+            details = format!(
+                "Навык: {} ({})\nОписание: {}\nИсточник: {}\nРазмер: {} байт{}\nТолько текстовая инструкция — новых прав не даёт.\n\n{}",
+                preview.name,
+                preview.slug,
+                preview.description,
+                preview.raw_url,
+                preview.size_bytes,
+                overwrite,
+                body_excerpt
+            );
+        }
+        if call.name == "skill_delete" {
+            let name = args.get("name").and_then(Value::as_str).unwrap_or("").trim();
+            if !name.is_empty() {
+                title = format!("Удалить навык «{name}»");
+                details = format!("Удалить сохранённый навык «{name}» с диска.");
+            }
         }
         tracing::info!(tool = %call.name, risk = risk.as_str(), title = %title, "confirmation requested");
         let (tx, rx) = oneshot::channel();

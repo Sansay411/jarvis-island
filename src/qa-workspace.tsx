@@ -15,7 +15,7 @@ import { useAgent, type ChatItem, type PlanStep } from "./store/agent";
 import { usePrefs } from "./store/prefs";
 import { ensureWorkspaceFeeds, useWorkspaceTts } from "./lib/workspace-ipc";
 
-type QaScene = "workspace-active" | "workspace-empty" | "settings-voice" | "settings-behaviour";
+type QaScene = "workspace-active" | "workspace-empty" | "settings-voice" | "settings-behaviour" | "settings-skills";
 
 const SAMPLE_PLAN: PlanStep[] = [
   { id: "s1", title: "Снимок раскладки окон и диагностика ресурсов ПК", status: "done" },
@@ -192,7 +192,7 @@ function IslandWorkspaceFrame() {
 function getInitialScene(): QaScene {
   if (typeof window === "undefined") return "workspace-active";
   const p = new URLSearchParams(window.location.search).get("scene");
-  if (p === "workspace-empty" || p === "settings-voice" || p === "settings-behaviour" || p === "workspace-active") {
+  if (p === "workspace-empty" || p === "settings-voice" || p === "settings-behaviour" || p === "settings-skills" || p === "workspace-active") {
     return p;
   }
   return "workspace-active";
@@ -228,6 +228,8 @@ function QaWorkspaceApp() {
         <IslandWorkspaceFrame />
       ) : scene === "settings-voice" ? (
         <SettingsApp initialSection="voice" />
+      ) : scene === "settings-skills" ? (
+        <SettingsApp initialSection="skills" />
       ) : (
         <SettingsApp initialSection="behaviour" />
       )}
@@ -259,6 +261,7 @@ function QaWorkspaceApp() {
             ["workspace-empty", "2 · Пустой чат + Сценарии"],
             ["settings-voice", "3 · Настройки: Голос HD"],
             ["settings-behaviour", "4 · Настройки: Автопилот"],
+            ["settings-skills", "5 · Настройки: Навыки"],
           ] as [QaScene, string][]
         ).map(([id, label]) => {
           const on = scene === id;

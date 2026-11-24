@@ -21,6 +21,7 @@ mod planner;
 mod reminders;
 pub mod screen;
 mod shell;
+mod skills;
 mod system;
 mod weather;
 mod web;
@@ -173,6 +174,7 @@ impl Registry {
             .chain(executive::tools())
             .chain(planner::tools())
             .chain(connect::tools())
+            .chain(skills::tools())
         {
             tools.insert(t.name, t);
         }

@@ -256,11 +256,19 @@ pub struct AgentSettings {
     pub full_control: bool,
     /// Folders the user works in; used to resolve "my project".
     pub project_roots: Vec<String>,
+    /// After a long multi-step task succeeds, offer in one line to save it as a skill.
+    pub learn_skills: bool,
 }
 
 impl Default for AgentSettings {
     fn default() -> Self {
-        AgentSettings { max_steps: 24, confirm_moderate: true, full_control: false, project_roots: Vec::new() }
+        AgentSettings {
+            max_steps: 24,
+            confirm_moderate: true,
+            full_control: false,
+            project_roots: Vec::new(),
+            learn_skills: true,
+        }
     }
 }
 
@@ -428,4 +436,16 @@ pub struct Settings {
     pub planner: PlannerSettings,
     pub mentor: MentorSettings,
     pub telegram: TelegramSettings,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    #[test]
+    fn old_settings_json_without_learn_skills_defaults_to_true() {
+        let legacy = r#"{"agent":{"maxSteps":24,"confirmModerate":true,"fullControl":false,"projectRoots":[]}}"#;
+        let parsed: Settings = serde_json::from_str(legacy).unwrap();
+        assert!(parsed.agent.learn_skills);
+    }
 }

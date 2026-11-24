@@ -1793,3 +1793,270 @@ details.more[open] {
   color: var(--amber);
   word-break: break-all;
 }
+
+/* ---------- skills ---------- */
+
+.skills-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.skills-search {
+  flex: 1;
+  min-width: 0;
+}
+.skills-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.skill-item {
+  border-bottom: 1px solid var(--line);
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.skill-item.is-disabled .skill-main {
+  opacity: 0.58;
+}
+.skill-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 14px 0;
+}
+.skill-main {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.skill-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.skill-name {
+  font-size: var(--fs-14);
+  font-weight: 560;
+  color: var(--text-1);
+}
+.skill-badge {
+  height: 19px;
+  padding: 0 7px;
+  border-radius: var(--r-pill);
+  font-size: 11px;
+  font-weight: 550;
+  display: inline-flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--text-2);
+}
+.skill-badge.is-learned {
+  background: rgba(255, 178, 63, 0.12);
+  color: var(--amber-hi);
+}
+.skill-badge.is-installed {
+  background: rgba(124, 217, 146, 0.1);
+  color: var(--ok);
+}
+.skill-meta {
+  font-size: var(--fs-12);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.skill-desc {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.skill-controls {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.skill-confirm-del {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.skill-drawer,
+.skill-new-wrap,
+.skill-preview {
+  overflow: hidden;
+}
+.skill-editor {
+  margin: 2px 0 16px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+}
+.skill-editor-head {
+  font-size: var(--fs-14);
+  font-weight: 600;
+  color: var(--text-1);
+  margin-bottom: 4px;
+}
+.skill-editor .row:first-of-type {
+  padding-top: 8px;
+}
+.skill-md-field {
+  padding: 14px 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.skill-md-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.skill-size {
+  font-size: 11.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.skill-size.is-over {
+  color: var(--danger);
+}
+.skill-md-textarea {
+  width: 100%;
+  margin-top: 6px;
+  min-height: 180px;
+  resize: vertical;
+  line-height: 1.55;
+  tab-size: 2;
+}
+.skill-source-note {
+  margin-top: 8px !important;
+  font-size: 12px !important;
+  word-break: break-word;
+}
+.skill-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.skill-install-note {
+  margin-top: 12px !important;
+}
+.skill-install-note code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--field);
+  color: var(--text-1);
+}
+.skill-install-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.skill-install-bar input {
+  flex: 1;
+  min-width: 0;
+}
+.skill-preview-card {
+  margin-top: 14px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.skill-preview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.skill-preview-title-wrap {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.skill-preview-url {
+  font-size: 11.5px;
+  color: var(--text-3);
+  word-break: break-all;
+}
+.skill-preview-warn {
+  margin-top: 0 !important;
+}
+.skill-preview-body {
+  margin: 0;
+  padding: 12px 14px;
+  max-height: 260px;
+  overflow: auto;
+  border-radius: 10px;
+  background: var(--field);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.skill-preview-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.skill-preview-safe {
+  flex: 1;
+  min-width: 200px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-3);
+}
+.skill-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 900px) {
+  .skill-row {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .skill-controls {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+@media (max-width: 680px) {
+  .skills-toolbar,
+  .skill-install-bar {
+    flex-wrap: wrap;
+  }
+  .skill-preview-foot {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .skill-preview-actions {
+    justify-content: flex-end;
+  }
+}
