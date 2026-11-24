@@ -77,20 +77,39 @@ export function activityOf(tool: string): Activity | null {
   return null;
 }
 
+export interface IslandGreet {
+  title: string;
+  sub: string;
+}
+
 interface EmoteStore {
   emote: Emote | null;
   /** Bumps on every emote, so the same one twice in a row replays. */
   seq: number;
+  /** One-shot welcome greeting card shown briefly on the island. */
+  greet: IslandGreet | null;
 }
 
-export const useEmote = create<EmoteStore>(() => ({ emote: null, seq: 0 }));
+export const useEmote = create<EmoteStore>(() => ({ emote: null, seq: 0, greet: null }));
 
 let clear: number | undefined;
+let clearGreet: number | undefined;
 
 export function emote(kind: Emote) {
   window.clearTimeout(clear);
   useEmote.setState((s) => ({ emote: kind, seq: s.seq + 1 }));
   clear = window.setTimeout(() => useEmote.setState({ emote: null }), DURATION[kind]);
+}
+
+export function showGreet(greet: IslandGreet) {
+  window.clearTimeout(clearGreet);
+  useEmote.setState({ greet });
+  clearGreet = window.setTimeout(() => useEmote.setState({ greet: null }), 5000);
+}
+
+export function dismissGreet() {
+  window.clearTimeout(clearGreet);
+  useEmote.setState({ greet: null });
 }
 
 /** Tools started and failed in the running turn. */
@@ -127,6 +146,9 @@ function onAgent(ev: AgentEvent) {
 
 export async function startEmoteFeed() {
   await listen<Emote>("island:emote", (e) => emote(e.payload));
+  await listen<IslandGreet>("island:greet", (e) => {
+    if (e.payload?.title) showGreet(e.payload);
+  });
   await listen<AgentEvent>("agent:event", (e) => onAgent(e.payload));
   // Started from zero (not a lap mark): a determined nod.
   await listen<{ running: boolean; accumulatedMs: number; startedAt: string | null; laps: number[] }>("stopwatch:changed", (e) => {

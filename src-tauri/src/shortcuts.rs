@@ -67,7 +67,11 @@ pub fn launch(app: &AppHandle, argv: Vec<String>) {
 #[tauri::command]
 pub fn island_frontend_ready(app: AppHandle) {
     let pending = STARTUP.lock().ready();
+    let has_cli = pending.iter().any(|a| matches!(a, LaunchAction::Cli(_)));
     for action in pending { dispatch(&app, action); }
+    if !has_cli {
+        crate::ipc_agent::maybe_open_welcome(&app);
+    }
 }
 
 pub fn emit_command(app: &AppHandle, action: &str) {

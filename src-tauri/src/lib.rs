@@ -332,6 +332,12 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == ipc_agent::WELCOME_LABEL {
+                if matches!(event, WindowEvent::Destroyed) {
+                    ipc_agent::on_welcome_destroyed(window.app_handle());
+                }
+                return;
+            }
             if window.label() != island::LABEL {
                 return;
             }
@@ -416,10 +422,14 @@ pub fn run() {
             ipc_agent::secret_clear,
             ipc_agent::provider_test,
             ipc_agent::memories_list,
+            ipc_agent::memory_add,
             ipc_agent::memory_delete,
             ipc_agent::history_clear,
             ipc_agent::tasks_recent,
             ipc_agent::settings_open,
+            ipc_agent::welcome_open,
+            ipc_agent::welcome_dismiss,
+            ipc_agent::welcome_complete,
             ipc_mcp::mcp_list,
             ipc_mcp::mcp_save,
             ipc_mcp::mcp_import,
