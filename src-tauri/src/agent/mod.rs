@@ -116,6 +116,10 @@ impl ApprovalScope {
         args["path"] = serde_json::to_value(&path)?;
         Ok(Self::FileRead(path))
     }
+
+    fn is_approved(scope: &AppResult<Self>, approvals: &HashSet<Self>) -> bool {
+        scope.as_ref().is_ok_and(|scope| approvals.contains(scope))
+    }
 }
 
 struct Inner {
@@ -566,10 +570,7 @@ impl Agent {
             Ok(v) => v,
             Err(e) => return json!({ "ok": false, "error": format!("invalid JSON arguments: {e}") }).to_string(),
         };
-        let scope = match ApprovalScope::prepare(name, &mut args) {
-            Ok(scope) => scope,
-            Err(e) => return json!({ "ok": false, "error": e.to_string() }).to_string(),
-        };
+        let scope = ApprovalScope::prepare(name, &mut args);
         let risk = match self.registry.describe(name, &args) {
             Some(t) => self.effective_risk(&turn, &scope, &t.name, t.risk, &args),
             None => return json!({ "ok": false, "error": format!("unknown tool {name}") }).to_string(),
@@ -1156,12 +1157,12 @@ impl Agent {
     }
 
     /// Policy adjustments on top of a tool's own risk assessment.
-    fn effective_risk(&self, turn: &Turn, scope: &ApprovalScope, name: &str, base: Risk, args: &Value) -> Risk {
+    fn effective_risk(&self, turn: &Turn, scope: &AppResult<ApprovalScope>, name: &str, base: Risk, args: &Value) -> Risk {
         match name {
             "file_read" => {
                 // Compare resolved paths, so `attached\..\other` and junctions
                 // pointing out of an attached folder are not treated as inside it.
-                let ApprovalScope::FileRead(p) = scope else {
+                let Ok(ApprovalScope::FileRead(p)) = scope else {
                     return base;
                 };
                 let attached = turn
@@ -1251,7 +1252,10 @@ impl Agent {
             }
             let args = args
                 .map_err(|e| AppError::invalid(format!("Аргументы не являются корректным JSON: {e}")))
-                .and_then(|mut a| ApprovalScope::prepare(&call.name, &mut a).map(|scope| (a, scope)));
+                .map(|mut a| {
+                    let scope = ApprovalScope::prepare(&call.name, &mut a);
+                    (a, scope)
+                });
             let tool = args.as_ref().ok().and_then(|(a, _)| self.registry.describe(&call.name, a));
             let (risk, parallel) = match (&tool, &args) {
                 (Some(t), Ok((a, scope))) => (self.effective_risk(turn, scope, &t.name, t.risk, a), t.parallel_safe),
@@ -1376,7 +1380,7 @@ impl Agent {
         Ok(approved)
     }
 
-    async fn execute_one(&self, turn: &Turn, call: &ToolCall, args: Value, scope: ApprovalScope, risk: Risk) -> AppResult<ToolOutput> {
+    async fn execute_one(&self, turn: &Turn, call: &ToolCall, args: Value, scope: AppResult<ApprovalScope>, risk: Risk) -> AppResult<ToolOutput> {
         let Some(tool) = self.registry.describe(&call.name, &args) else {
             return Err(AppError::not_found(format!("Инструмента «{}» нет. Доступные: {}", call.name, self.registry.names().join(", "))));
         };
@@ -1387,7 +1391,7 @@ impl Agent {
         let full = turn.settings.agent.full_control;
         let needs_confirm = match risk {
             Risk::High => !full || still_confirmed(&tool.name, &args),
-            Risk::Moderate => !full && turn.settings.agent.confirm_moderate && !self.inner.lock().approvals.contains(&scope),
+            Risk::Moderate => !full && turn.settings.agent.confirm_moderate && !ApprovalScope::is_approved(&scope, &self.inner.lock().approvals),
             Risk::Low => false,
         };
         if needs_confirm {
@@ -1404,10 +1408,12 @@ impl Agent {
                 });
                 return Ok(ToolOutput::fail("Пользователь отклонил это действие — не повторяй его без новой просьбы", json!({ "declined": true })));
             }
-            if risk == Risk::Moderate {
+        }
+        let resolution = scope.map(|scope| {
+            if needs_confirm && risk == Risk::Moderate {
                 self.inner.lock().approvals.insert(scope);
             }
-        }
+        });
 
         self.emit(AgentEvent::ToolStarted {
             turn_id: turn.id.clone(),
@@ -1432,7 +1438,10 @@ impl Agent {
             }),
         };
         let started = Instant::now();
-        let res = self.registry.run(&call.name, ctx, args).await;
+        let res = match resolution {
+            Ok(()) => self.registry.run(&call.name, ctx, args).await,
+            Err(e) => Err(e),
+        };
         tracing::info!(tool = %call.name, ms = started.elapsed().as_millis() as u64, ok = res.as_ref().map(|o| o.ok).unwrap_or(false), "tool finished");
 
         let (ok, summary, error) = match &res {
@@ -1466,6 +1475,20 @@ mod tests {
 
         assert!(approvals.contains(&scope_for(root.join("src").join("..").join("Cargo.toml"))));
         assert!(!approvals.contains(&scope_for(root.join("Cargo.lock"))));
+    }
+
+    #[test]
+    fn unresolved_file_read_does_not_have_cached_approval() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let approved = ApprovalScope::prepare("file_read", &mut serde_json::json!({ "path": root.join("Cargo.toml") })).unwrap();
+        let approvals = std::collections::HashSet::from([approved]);
+        let mut args = serde_json::json!({ "path": root.join("Cargo.toml").join("missing") });
+        let requested = args.clone();
+        let unresolved = ApprovalScope::prepare("file_read", &mut args);
+
+        assert!(unresolved.is_err());
+        assert!(!ApprovalScope::is_approved(&unresolved, &approvals));
+        assert_eq!(args, requested);
     }
 
     #[test]
