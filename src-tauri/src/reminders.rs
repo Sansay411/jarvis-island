@@ -205,6 +205,12 @@ impl Reminders {
     /// items, finishes them.
     pub fn done(&self, id: i64) -> AppResult<()> {
         if let Some(r) = self.list().into_iter().find(|r| r.id == id) {
+            // Already moved on to its next time when it fired: «Готово» only
+            // closes the alert, the series stays.
+            if r.repeat.is_some() && r.fired_at.is_none() {
+                self.changed();
+                return Ok(());
+            }
             if let (Some(rule), Some(_)) = (&r.repeat, &r.fired_at) {
                 let due = DateTime::parse_from_rfc3339(&r.due_at)
                     .map(|d| d.with_timezone(&Utc))
@@ -306,22 +312,25 @@ impl Reminders {
                 tracing::info!(id = r.id, kind = %r.kind, "repeating reminder missed grace window; skipped to next");
                 return;
             }
-            if r.kind == "action" {
-                let new_runs = r.runs.saturating_add(1);
-                let base = due.max(now).with_timezone(&Local);
-                let next = next_after(rule, base, new_runs);
-                let claimed = match next {
-                    Some(n) => self.store().advance_reminder_if_due(r.id, &r.due_at, &n.with_timezone(&Utc).to_rfc3339(), new_runs),
-                    None => self.store().finish_reminder_if_due(r.id, &r.due_at),
-                };
-                match claimed {
-                    Ok(true) => {}
-                    _ => return,
-                }
-                tracing::info!(id = r.id, "scheduled repeating action fired");
-                self.run_action(r.clone());
+            // A repeating item moves on to its next time as it fires, so the
+            // series keeps going even if the alert is never acknowledged.
+            let new_runs = r.runs.saturating_add(1);
+            let base = due.max(now).with_timezone(&Local);
+            let claimed = match next_after(rule, base, new_runs) {
+                Some(n) => self.store().advance_reminder_if_due(r.id, &r.due_at, &n.with_timezone(&Utc).to_rfc3339(), new_runs),
+                None => self.store().finish_reminder_if_due(r.id, &r.due_at),
+            };
+            if !matches!(claimed, Ok(true)) {
                 return;
             }
+            self.changed();
+            tracing::info!(id = r.id, kind = %r.kind, "repeating reminder fired");
+            if r.kind == "action" {
+                self.run_action(r.clone());
+            } else {
+                self.alert(r);
+            }
+            return;
         }
 
         match self.store().mark_fired(r.id, &r.due_at) {
@@ -333,6 +342,11 @@ impl Reminders {
             self.run_action(r.clone());
             return;
         }
+        self.alert(r);
+    }
+
+    /// The island alert and the spoken line for a reminder or timer.
+    fn alert(&self, r: &Reminder) {
         let _ = self.app.emit(
             EVT_FIRED,
             Fired { id: r.id, kind: r.kind.clone(), text: r.text.clone(), repeat_label: r.repeat_label.clone() },
