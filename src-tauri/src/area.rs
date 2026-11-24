@@ -270,6 +270,14 @@ impl AreaManager {
                     width: area.width,
                     height: area.height,
                 };
+                // A brief ring on the real screen confirms what was taken.
+                let ring = serde_json::json!({
+                    "kind": "ring", "id": "area-circled", "x": ev.rect.x, "y": ev.rect.y,
+                    "w": ev.rect.width, "h": ev.rect.height, "label": "Область прикреплена", "seconds": 2.5,
+                });
+                if let Err(e) = crate::overlay::draw(&self.app, vec![ring], false) {
+                    tracing::debug!("circled ring not drawn: {e}");
+                }
                 self.set_pending(area);
                 let _ = self.app.emit(EVT_CIRCLED, ev);
             }
