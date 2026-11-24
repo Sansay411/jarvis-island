@@ -322,7 +322,7 @@ function Shape() {
                 {d.name} <em>{d.value}</em>
               </span>
               <div className="sp-motion-track">
-                <span className="sp-motion-dot" style={{ transform: on ? "translateX(calc(100% * 0 + 260px))" : "none", transition: `transform var(${d.name}) var(--ease-out)` }} />
+                <span className="sp-motion-dot" style={{ left: on ? "calc(100% - 36px)" : "4px", transition: `left var(${d.name}) var(--ease-out)` }} />
               </div>
             </div>
           ))}
