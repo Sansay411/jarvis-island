@@ -160,6 +160,9 @@ pub struct VoiceSettings {
     /// Recognise finished requests with Yandex SpeechKit through Jarvis
     /// Cloud as well; the local model stays for the name and as a fallback.
     pub cloud_stt: bool,
+    /// Detect circling the cursor around a screen area while talking and
+    /// attach that region to the spoken request automatically.
+    pub circle_to_ask: bool,
 }
 
 impl Default for VoiceSettings {
@@ -181,6 +184,7 @@ impl Default for VoiceSettings {
             output_device: String::new(),
             duck_media: true,
             cloud_stt: true,
+            circle_to_ask: true,
         }
     }
 }
@@ -192,12 +196,19 @@ pub struct ShortcutSettings {
     pub voice: String,
     /// The clipboard history. Win+V belongs to Windows.
     pub clipboard: String,
+    /// Select a screen area and ask JARVIS about it.
+    pub area: String,
 }
 
 impl Default for ShortcutSettings {
     fn default() -> Self {
         // Ctrl+Alt+Space is commonly taken (IME switchers, launchers).
-        ShortcutSettings { workspace: "Ctrl+Alt+J".into(), voice: "Ctrl+Alt+K".into(), clipboard: "Ctrl+Alt+V".into() }
+        ShortcutSettings {
+            workspace: "Ctrl+Alt+J".into(),
+            voice: "Ctrl+Alt+K".into(),
+            clipboard: "Ctrl+Alt+V".into(),
+            area: "Ctrl+Alt+A".into(),
+        }
     }
 }
 

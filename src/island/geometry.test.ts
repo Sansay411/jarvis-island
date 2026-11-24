@@ -52,4 +52,11 @@ describe("notch geometry", () => {
       expect(dimsFor("compact", { ...ctx, notch: geometry })).toEqual({ w: 174, h: 36 });
     }
   });
+
+  it("grows the voice view when an area chip is attached", () => {
+    const plain = dimsFor("voice", ctx);
+    const withArea = dimsFor("voice", { ...ctx, voiceArea: true });
+    expect(withArea.w).toBe(plain.w);
+    expect(withArea.h).toBeGreaterThan(plain.h);
+  });
 });

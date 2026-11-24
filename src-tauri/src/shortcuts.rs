@@ -17,9 +17,10 @@ struct Bound {
     workspace: Option<Shortcut>,
     voice: Option<Shortcut>,
     clipboard: Option<Shortcut>,
+    area: Option<Shortcut>,
 }
 
-static BOUND: Mutex<Bound> = Mutex::new(Bound { workspace: None, voice: None, clipboard: None });
+static BOUND: Mutex<Bound> = Mutex::new(Bound { workspace: None, voice: None, clipboard: None, area: None });
 static PROBLEMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 enum LaunchAction {
@@ -109,6 +110,15 @@ pub fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                 }
             } else if b.clipboard.as_ref() == Some(shortcut) {
                 emit_command(app, "toggle-clips");
+            } else if b.area.as_ref() == Some(shortcut) {
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = crate::area::open_picker(&handle) {
+                        tracing::warn!("area picker failed: {e}");
+                        handle.state::<std::sync::Arc<crate::agent::Agent>>().post_report(e.to_string(), false);
+                        emit_command(&handle, "open-workspace");
+                    }
+                });
             }
         })
         .build()
@@ -126,7 +136,7 @@ fn parse(s: &str) -> Option<Shortcut> {
 pub fn apply(app: &AppHandle, cfg: &ShortcutSettings) -> Vec<String> {
     let gs = app.global_shortcut();
     let mut b = BOUND.lock();
-    for sc in [b.workspace.take(), b.voice.take(), b.clipboard.take()].into_iter().flatten() {
+    for sc in [b.workspace.take(), b.voice.take(), b.clipboard.take(), b.area.take()].into_iter().flatten() {
         let _ = gs.unregister(sc);
     }
     let mut problems = Vec::new();
@@ -151,6 +161,7 @@ pub fn apply(app: &AppHandle, cfg: &ShortcutSettings) -> Vec<String> {
     b.workspace = register("Чат", &cfg.workspace);
     b.voice = register("Голос", &cfg.voice);
     b.clipboard = register("История буфера", &cfg.clipboard);
+    b.area = register("Спроси про область", &cfg.area);
     *PROBLEMS.lock() = problems.clone();
     problems
 }

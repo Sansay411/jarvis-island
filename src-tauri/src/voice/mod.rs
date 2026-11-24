@@ -367,6 +367,9 @@ impl VoiceManager {
 
     fn set_state(&self, s: VoiceState, error: Option<String>, devices: Option<(&str, &str)>) {
         *self.state.lock() = s;
+        if let Some(area) = self.app.try_state::<Arc<crate::area::AreaManager>>() {
+            area.set_voice_listening(matches!(s, VoiceState::Listening | VoiceState::Hearing));
+        }
         let _ = self.app.emit(
             EVT_STATE,
             StateEvent {
@@ -826,6 +829,34 @@ impl VoiceManager {
                 let _ = ctl.send(Ctl::Wake);
             }
             None => self.start(false)?,
+        }
+        Ok(true)
+    }
+
+    /// Start listening (or refresh the invite window if already awake) when
+    /// voice is enabled and its speech models are installed. Used right after
+    /// picking a screen area so the user can either type or speak immediately.
+    pub fn start_listening_if_ready(self: &Arc<Self>) -> AppResult<bool> {
+        let v = self.app.state::<AppState>().store.settings().voice;
+        if !v.enabled {
+            return Ok(false);
+        }
+        if v.engine != "realtime" {
+            let ready = ["gigaam-v3", "silero-vad"]
+                .iter()
+                .all(|id| models::asset(id).is_some_and(|a| a.installed()));
+            if !ready {
+                return Ok(false);
+            }
+        }
+        self.stop_speaking();
+        let ctl = self.session.lock().as_ref().and_then(|s| s.ctl.clone());
+        match ctl {
+            Some(ctl) => {
+                let _ = ctl.send(Ctl::Wake);
+            }
+            None if !self.is_active() => self.start(false)?,
+            None => {}
         }
         Ok(true)
     }

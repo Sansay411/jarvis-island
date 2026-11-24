@@ -94,28 +94,51 @@ impl Drop for MemDc {
     }
 }
 
-/// Hide the island from captures while `f` runs.
-fn without_island<T>(island_hwnd: Option<isize>, f: impl FnOnce() -> T) -> T {
-    if let Some(h) = island_hwnd {
-        unsafe {
-            let _ = SetWindowDisplayAffinity(HWND(h as *mut _), WDA_EXCLUDEFROMCAPTURE);
+/// Mark a window excluded from screen capture (`WDA_EXCLUDEFROMCAPTURE`).
+/// Used on the area picker overlay so it can never appear in a capture.
+pub fn set_excluded_from_capture(hwnd: isize, excluded: bool) {
+    if hwnd == 0 {
+        return;
+    }
+    unsafe {
+        let affinity = if excluded { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE };
+        let _ = SetWindowDisplayAffinity(HWND(hwnd as *mut _), affinity);
+    }
+}
+
+/// Hide a set of windows from captures while `f` runs.
+fn without_windows<T>(hwnds: &[isize], f: impl FnOnce() -> T) -> T {
+    for &h in hwnds {
+        if h != 0 {
+            unsafe {
+                let _ = SetWindowDisplayAffinity(HWND(h as *mut _), WDA_EXCLUDEFROMCAPTURE);
+            }
         }
     }
     let out = f();
-    if let Some(h) = island_hwnd {
-        unsafe {
-            let _ = SetWindowDisplayAffinity(HWND(h as *mut _), WDA_NONE);
+    for &h in hwnds {
+        if h != 0 {
+            unsafe {
+                let _ = SetWindowDisplayAffinity(HWND(h as *mut _), WDA_NONE);
+            }
         }
     }
     out
 }
 
 pub fn capture_rect(rect: Rect, island_hwnd: Option<isize>) -> AppResult<Frame> {
+    let excluded: Vec<isize> = island_hwnd.into_iter().filter(|&h| h != 0).collect();
+    capture_region(rect, &excluded)
+}
+
+/// Capture an arbitrary physical-pixel screen region (including negative
+/// multi-monitor virtual-desktop coordinates), excluding `exclude_hwnds`.
+pub fn capture_region(rect: Rect, exclude_hwnds: &[isize]) -> AppResult<Frame> {
     if rect.width <= 0 || rect.height <= 0 {
         return Err(AppError::invalid("Пустая область захвата"));
     }
     let started = Instant::now();
-    without_island(island_hwnd, || {
+    without_windows(exclude_hwnds, || {
         let dc = MemDc::new(rect.width, rect.height)?;
         unsafe {
             BitBlt(dc.mem, 0, 0, rect.width, rect.height, Some(dc.screen), rect.x, rect.y, SRCCOPY | CAPTUREBLT)?;
@@ -206,4 +229,23 @@ pub fn encode(frame: Frame, max_side: u32) -> AppResult<EncodedCapture> {
         bytes: bytes.len(),
         data_url: format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes)),
     })
+}
+
+/// Encode a lightweight JPEG thumbnail data URL from a raw capture frame
+/// (used for the pending-area preview chip in the island UI).
+pub fn encode_thumbnail(frame: &Frame, max_side: u32) -> AppResult<String> {
+    let img = image::RgbaImage::from_raw(frame.width, frame.height, frame.pixels.clone())
+        .ok_or_else(|| AppError::internal("Некорректный кадр"))?;
+    let img = image::DynamicImage::ImageRgba8(img);
+    let img = if frame.width.max(frame.height) > max_side {
+        img.resize(max_side, max_side, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+    let rgb = img.to_rgb8();
+    let mut out = Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 75)
+        .encode_image(&rgb)
+        .map_err(|e| AppError::internal(format!("JPEG: {e}")))?;
+    Ok(format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(out.into_inner())))
 }

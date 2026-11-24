@@ -139,6 +139,35 @@ pub fn list_windows() -> Vec<WindowInfo> {
         .collect()
 }
 
+/// Visible non-minimized application windows in Z-order (topmost first),
+/// with their exact DWM visible frame bounds (without invisible resize borders).
+pub fn list_visible_windows_with_frames() -> Vec<WindowInfo> {
+    list_windows()
+        .into_iter()
+        .filter(|w| w.state != "minimized")
+        .map(|mut w| {
+            if let Ok(frame) = super::capture::window_frame(to_hwnd(w.hwnd)) {
+                if frame.width > 0 && frame.height > 0 {
+                    w.rect = frame;
+                }
+            }
+            w
+        })
+        .filter(|w| w.rect.width > 0 && w.rect.height > 0)
+        .collect()
+}
+
+/// Topmost non-JARVIS application window whose visible frame contains `(x, y)`
+/// in physical virtual-screen pixels.
+pub fn window_at_point(x: i32, y: i32) -> Option<WindowInfo> {
+    list_visible_windows_with_frames().into_iter().find(|w| {
+        x >= w.rect.x
+            && y >= w.rect.y
+            && x < w.rect.x + w.rect.width
+            && y < w.rect.y + w.rect.height
+    })
+}
+
 pub fn foreground_window() -> Option<WindowInfo> {
     let fg = unsafe { GetForegroundWindow() };
     if fg.is_invalid() {

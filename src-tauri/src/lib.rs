@@ -12,6 +12,7 @@
 
 pub mod agent;
 pub mod ai;
+pub mod area;
 pub mod bluetooth;
 pub mod cloud;
 pub mod clips;
@@ -21,6 +22,7 @@ pub mod geo;
 pub mod github;
 pub mod hub;
 mod ipc;
+mod ipc_area;
 mod ipc_clips;
 mod ipc_files;
 mod ipc_hub;
@@ -176,6 +178,15 @@ fn handle_cli(app: &tauri::AppHandle, argv: &[String]) -> bool {
                 if let Err(e) = app.state::<Arc<agent::Agent>>().new_conversation() {
                     tracing::warn!("new-conversation: {e}");
                 }
+            } else if cmd == "area-pick" {
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = area::open_picker(&handle) {
+                        tracing::warn!("area-pick failed: {e}");
+                        handle.state::<Arc<agent::Agent>>().post_report(e.to_string(), false);
+                        emit_command(&handle, "open-workspace");
+                    }
+                });
             } else if matches!(cmd.as_str(), "toggle-workspace" | "open-workspace" | "toggle-voice") {
                 app.state::<AppState>().island.set_user_hidden(false);
                 emit_command(app, cmd);
@@ -274,6 +285,9 @@ pub fn run() {
             telegram::spawn(app.handle().clone(), bot.clone());
             app.manage(bot);
             app.manage(jobs::JobManager::new(app.handle().clone()));
+            let area_mgr = area::AreaManager::new(app.handle().clone());
+            area_mgr.spawn_circle_watcher();
+            app.manage(area_mgr);
             app.manage(voice::VoiceManager::new(app.handle().clone()));
             app.manage(Arc::new(filekit::FileJobs::default()));
             let reminders = reminders::Reminders::new(app.handle().clone());
@@ -420,6 +434,13 @@ pub fn run() {
             ipc_agent::history_clear,
             ipc_agent::tasks_recent,
             ipc_agent::settings_open,
+            ipc_area::area_open_picker,
+            ipc_area::area_picker_state,
+            ipc_area::area_confirm_rect,
+            ipc_area::area_confirm_click,
+            ipc_area::area_cancel,
+            ipc_area::area_pending,
+            ipc_area::area_clear,
             ipc_mcp::mcp_list,
             ipc_mcp::mcp_save,
             ipc_mcp::mcp_import,

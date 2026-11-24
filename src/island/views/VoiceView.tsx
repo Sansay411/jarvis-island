@@ -11,6 +11,7 @@ import { ipc, isTauri } from "../../lib/ipc";
 import { inputLevel, outputLevel, useVoice, type VoiceState } from "../../store/voice";
 import { useIsland } from "../../store/island";
 import { useAgent } from "../../store/agent";
+import { useArea } from "../../store/area";
 import { useNextTimer, type Reminder } from "../../store/reminders";
 import { clock, elapsedMs, useStopwatch, useTick } from "../../store/stopwatch";
 
@@ -117,6 +118,29 @@ function VoiceClock() {
   return sw ? <StopwatchPill /> : null;
 }
 
+function VoiceAreaPill() {
+  const area = useArea((s) => s.pending);
+  const clear = useArea((s) => s.clear);
+  if (!area) return null;
+  return (
+    <div className="voice-area-chip" role="status" aria-live="polite">
+      <img className="voice-area-thumb" src={area.thumbDataUrl} alt="" />
+      <span className="voice-area-label">Область прикреплена</span>
+      <span className="voice-area-dims">
+        {area.width}×{area.height}
+      </span>
+      <button
+        type="button"
+        className="voice-area-clear"
+        aria-label="Убрать область"
+        onClick={() => void clear()}
+      >
+        <Icon name="close" size={11} />
+      </button>
+    </div>
+  );
+}
+
 function VoiceConfirm() {
   const pending = useAgent((s) => s.items.find((it) => it.kind === "tool" && it.status === "awaiting"));
   const confirm = useAgent((s) => s.confirm);
@@ -180,6 +204,7 @@ export function VoiceView() {
           ))
         )}
       </p>
+      <VoiceAreaPill />
       <VoiceClock />
       <VoiceConfirm />
     </div>

@@ -18,12 +18,14 @@ import { ensureWorkspaceFeeds, hasTauri, stripMarkdownForSpeech, workspaceIpc } 
 import type { EyeMood } from "../island/Eyes";
 import { usePrefs } from "./prefs";
 import { useVoice } from "./voice";
+import { useArea } from "./area";
+import type { PendingAreaPreview } from "../lib/agent-types";
 
 export type { PlanStep, PlanStepStatus };
 export type ToolStatus = "running" | "ok" | "failed" | "awaiting" | "declined";
 
 export type ChatItem =
-  | { kind: "user"; id: string; text: string; attachments: string[] }
+  | { kind: "user"; id: string; text: string; attachments: string[]; area?: PendingAreaPreview | null }
   | { kind: "assistant"; id: string; turnId: string; text: string; streaming: boolean }
   | {
       kind: "tool";
@@ -128,7 +130,9 @@ export const useAgent = create<AgentStore>((set, get) => ({
 
   send: async (text, attachments) => {
     if (get().activeTurn) return;
-    set((s) => ({ items: [...s.items, { kind: "user", id: uid(), text, attachments }] }));
+    const area = useArea.getState().pending;
+    if (area) useArea.setState({ pending: null });
+    set((s) => ({ items: [...s.items, { kind: "user", id: uid(), text, attachments, area }] }));
     if (!hasTauri()) {
       const turnId = uid();
       set({ activeTurn: turnId, phase: "thinking" });
@@ -238,7 +242,9 @@ export function applyAgentEvent(ev: AgentEvent) {
           phase: "thinking",
           planSteps: s.planTurnId === ev.turnId ? s.planSteps : [],
           planTurnId: ev.turnId,
-          items: known ? s.items : [...s.items, { kind: "user", id: uid(), text: ev.userText, attachments: [] }],
+          items: known
+            ? s.items
+            : [...s.items, { kind: "user", id: uid(), text: ev.userText, attachments: [], area: ev.area ?? null }],
         };
       });
       break;

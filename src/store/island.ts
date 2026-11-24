@@ -18,6 +18,9 @@ interface IslandStore {
   dropOnSend: boolean;
   workspaceOpen: boolean;
   voiceOpen: boolean;
+  /** Voice listening was auto-started right after picking a screen area: keep
+   *  the workspace visible so the user can either type or speak immediately. */
+  areaVoiceInvited: boolean;
   /** The clipboard history panel. */
   clipsOpen: boolean;
   /** The keyboard belongs to the panel (hotkey, or a click into the search). */
@@ -62,6 +65,7 @@ export const useIsland = create<IslandStore>((set) => ({
   dropOnSend: false,
   workspaceOpen: false,
   voiceOpen: false,
+  areaVoiceInvited: false,
   clipsOpen: false,
   clipsKeyboard: false,
   visible: true,
@@ -136,14 +140,18 @@ export function islandInputHandlers() {
 }
 
 export function resolveMode(
-  s: Pick<IslandStore, "hovered" | "dragOver" | "workspaceOpen" | "voiceOpen" | "clipsOpen" | "inputFocused"> & { pinned?: boolean },
+  s: Pick<IslandStore, "hovered" | "dragOver" | "workspaceOpen" | "voiceOpen" | "clipsOpen" | "inputFocused"> & {
+    pinned?: boolean;
+    areaVoiceInvited?: boolean;
+  },
 ): IslandMode {
   // Only a real file drag opens the drop zone: the native drop catcher
   // reports «enter» once Windows hands it files, so a plain press-and-drag
   // near the island changes nothing.
   if (s.dragOver) return "drop";
-  // A live voice session takes over; the workspace returns when it ends.
-  if (s.voiceOpen) return "voice";
+  // A live voice session takes over, except while the workspace is open with
+  // an invited mic right after selecting a screen area (user can type or speak).
+  if (s.voiceOpen && !(s.workspaceOpen && s.areaVoiceInvited)) return "voice";
   if (s.workspaceOpen) return "workspace";
   if (s.clipsOpen) return "clips";
   // Pinned: the opened island stays, whatever the pointer does.

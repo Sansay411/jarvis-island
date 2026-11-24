@@ -52,12 +52,35 @@ fn cg_rect(rect: Rect) -> CGRect {
     )
 }
 
+pub fn set_excluded_from_capture(_hwnd: isize, _excluded: bool) {}
+
 pub fn capture_rect(rect: Rect, island_hwnd: Option<isize>) -> AppResult<Frame> {
     let excluded = island_hwnd
         .filter(|id| *id != 0)
         .map(|id| window_id(HWND(id)))
         .transpose()?;
     capture(rect, None, excluded)
+}
+
+pub fn capture_region(rect: Rect, exclude_hwnds: &[isize]) -> AppResult<Frame> {
+    capture_rect(rect, exclude_hwnds.first().copied())
+}
+
+pub fn encode_thumbnail(frame: &Frame, max_side: u32) -> AppResult<String> {
+    let img = image::RgbaImage::from_raw(frame.width, frame.height, frame.pixels.clone())
+        .ok_or_else(|| AppError::internal("Некорректный кадр"))?;
+    let img = image::DynamicImage::ImageRgba8(img);
+    let img = if frame.width.max(frame.height) > max_side {
+        img.resize(max_side, max_side, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+    let rgb = img.to_rgb8();
+    let mut out = Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 75)
+        .encode_image(&rgb)
+        .map_err(|e| AppError::internal(format!("JPEG: {e}")))?;
+    Ok(format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(out.into_inner())))
 }
 
 pub fn window_frame(hwnd: HWND) -> AppResult<Rect> {

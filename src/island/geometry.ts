@@ -68,6 +68,8 @@ export interface DimsContext {
   confirm: boolean;
   /** A timer or stopwatch pill in the voice view. */
   voiceClock?: boolean;
+  /** A circled/picked screen area chip in the voice view. */
+  voiceArea?: boolean;
   /** Measured height of the file card. */
   filesH?: number;
   /** Measured height of the clipboard panel. */
@@ -121,7 +123,7 @@ function baseDimsFor(mode: IslandMode, ctx: DimsContext): Dims {
       }
     }
     case "voice":
-      return { w: 408, h: 98 + (ctx.voiceClock ? 34 : 0) + (ctx.confirm ? 48 : 0) };
+      return { w: 408, h: 98 + (ctx.voiceClock ? 34 : 0) + (ctx.voiceArea ? 34 : 0) + (ctx.confirm ? 48 : 0) };
     case "drop":
       return { w: 468, h: 144 };
     case "notice":

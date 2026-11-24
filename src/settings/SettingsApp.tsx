@@ -60,9 +60,10 @@ export interface Settings {
     outputDevice: string;
     duckMedia: boolean;
     cloudStt: boolean;
+    circleToAsk: boolean;
   };
   persona: { userName: string; address: "ty" | "vy"; style: "witty" | "warm" | "concise" };
-  shortcuts: { workspace: string; voice: string; clipboard: string };
+  shortcuts: { workspace: string; voice: string; clipboard: string; area: string };
   privacy: { storeHistory: boolean; allowScreen: boolean; allowClipboardRead: boolean };
   clipboard: { enabled: boolean; maxItems: number; keepDays: number; skipSecrets: boolean; ignoredApps: string[] };
   agent: { maxSteps: number; confirmModerate: boolean; fullControl: boolean; projectRoots: string[] };
@@ -171,9 +172,10 @@ const FALLBACK_SETTINGS_VIEW: SettingsView = {
       outputDevice: "",
       duckMedia: true,
       cloudStt: true,
+      circleToAsk: true,
     },
     persona: { userName: "Александр", address: "ty", style: "witty" },
-    shortcuts: { workspace: "Ctrl+Alt+J", voice: "Ctrl+Alt+K", clipboard: "Ctrl+Alt+V" },
+    shortcuts: { workspace: "Ctrl+Alt+J", voice: "Ctrl+Alt+K", clipboard: "Ctrl+Alt+V", area: "Ctrl+Alt+A" },
     privacy: { storeHistory: true, allowScreen: true, allowClipboardRead: true },
     clipboard: { enabled: true, maxItems: 200, keepDays: 30, skipSecrets: true, ignoredApps: ["KeepassXC.exe"] },
     agent: {
@@ -242,6 +244,11 @@ function normalizeSettingsView(v: SettingsView): SettingsView {
         ttsRate: typeof v.settings.voice.ttsRate === "number" ? v.settings.voice.ttsRate : 1.0,
         ttsPitch: typeof v.settings.voice.ttsPitch === "number" ? v.settings.voice.ttsPitch : 0,
         autoSpeakReplies: !!v.settings.voice.autoSpeakReplies,
+        circleToAsk: v.settings.voice.circleToAsk ?? true,
+      },
+      shortcuts: {
+        ...v.settings.shortcuts,
+        area: v.settings.shortcuts?.area ?? "Ctrl+Alt+A",
       },
     },
   };
@@ -1362,6 +1369,16 @@ export default function SettingsApp({
                     />
                   </Row>
                 )}
+                <Row
+                  label="Обвести курсором, пока говорю"
+                  hint="Пока задаёте вопрос голосом, обведите нужный участок экрана кругом — он автоматически прикрепится к запросу."
+                >
+                  <Switch
+                    label="Обвести курсором, пока говорю"
+                    checked={draft.voice.circleToAsk}
+                    onChange={(v) => set((s) => ({ ...s, voice: { ...s.voice, circleToAsk: v } }))}
+                  />
+                </Row>
               </Group>
 
                 <>
@@ -1712,6 +1729,17 @@ export default function SettingsApp({
                       onChange={(e) => set((s) => ({ ...s, shortcuts: { ...s.shortcuts, clipboard: e.target.value } }))}
                     />
                     <Keycaps value={draft.shortcuts.clipboard} />
+                  </div>
+                </Row>
+                <Row label="Спроси про область" hint="Выделите область экрана или кликните по окну, чтобы сразу задать вопрос.">
+                  <div className="inline">
+                    <input
+                      className="mono narrow-wide"
+                      value={draft.shortcuts.area}
+                      spellCheck={false}
+                      onChange={(e) => set((s) => ({ ...s, shortcuts: { ...s.shortcuts, area: e.target.value } }))}
+                    />
+                    <Keycaps value={draft.shortcuts.area} />
                   </div>
                 </Row>
               </Group>

@@ -42,6 +42,7 @@ import { UpdateCard } from "./views/UpdateCard";
 import { useUpdates } from "../store/updates";
 import { useMentor } from "../store/mentor";
 import { useAgenda } from "../store/agenda";
+import { useArea } from "../store/area";
 import { EventCard } from "./views/EventCard";
 import { MomentCard } from "./views/MomentCard";
 import "./island.css";
@@ -113,6 +114,7 @@ function useIslandController(nativeGeometry: NotchGeometry | null) {
       on("island:blur", () =>
         set({
           workspaceOpen: false,
+          areaVoiceInvited: false,
           hovered: false,
           clipsOpen: false,
           clipsKeyboard: false,
@@ -124,10 +126,15 @@ function useIslandController(nativeGeometry: NotchGeometry | null) {
     unsubs.push(
       on("island:command", (cmd) => {
         const s = useIsland.getState();
-        if (cmd === "toggle-workspace") set({ workspaceOpen: !s.workspaceOpen });
-        else if (cmd === "open-workspace") set({ workspaceOpen: true });
-        else if (cmd === "toggle-voice") void toggleVoice();
-        else if (cmd === "toggle-clips") toggleClips();
+        if (cmd === "toggle-workspace") set({ workspaceOpen: !s.workspaceOpen, areaVoiceInvited: false });
+        else if (cmd === "open-workspace") set({ workspaceOpen: true, areaVoiceInvited: false });
+        else if (cmd === "area-picked") {
+          set({ workspaceOpen: true, areaVoiceInvited: true });
+          void ipc.island.beginInput().then(() => window.dispatchEvent(new Event("jarvis:input-ready")));
+        } else if (cmd === "toggle-voice") {
+          set({ areaVoiceInvited: false });
+          void toggleVoice();
+        } else if (cmd === "toggle-clips") toggleClips();
       }),
     );
 
@@ -244,6 +251,7 @@ function useIslandController(nativeGeometry: NotchGeometry | null) {
 
   useEffect(() => {
     if (workspaceOpen) closeClips();
+    else useIsland.getState().set({ areaVoiceInvited: false });
   }, [workspaceOpen]);
 }
 
@@ -330,6 +338,7 @@ export function Island() {
   const xpGain = useMentor((s) => s.gain !== null);
   const eventCard = useAgenda((s) => s.card !== null);
   const eventSoon = useAgenda((s) => s.soon !== null);
+  const pendingArea = useArea((s) => s.pending !== null);
 
   const { emote: currentEmote, seq: emoteSeq } = useEmote();
   const runningTool = useAgent((s) => {
@@ -442,6 +451,7 @@ export function Island() {
         jobRows,
         clockRows,
         voiceClock,
+        voiceArea: pendingArea,
         lip: st.topCovered,
         confirm: confirmPending,
         filesH,
@@ -454,6 +464,7 @@ export function Island() {
       jobRows,
       clockRows,
       voiceClock,
+      pendingArea,
       st.topCovered,
       st.peekDeck,
       st.growthCard,

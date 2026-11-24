@@ -10,10 +10,28 @@ export interface PlanStep {
   status: PlanStepStatus;
 }
 
+export interface PendingAreaPreview {
+  id: string;
+  width: number;
+  height: number;
+  screenRect: { x: number; y: number; width: number; height: number };
+  thumbDataUrl: string;
+  source: "picker" | "window" | "circle";
+  windowTitle: string | null;
+}
+
 export type AgentEvent =
   /** `ambient`: a voice phrase heard without the name — shown only once the
    * model answers it; it may finish as `ignored` (not meant for JARVIS). */
-  | { type: "turnStarted"; turnId: string; conversationId: string; userText: string; voice?: boolean; ambient?: boolean }
+  | {
+      type: "turnStarted";
+      turnId: string;
+      conversationId: string;
+      userText: string;
+      voice?: boolean;
+      ambient?: boolean;
+      area?: PendingAreaPreview | null;
+    }
   | { type: "phase"; turnId: string; phase: AgentPhase }
   | { type: "textDelta"; turnId: string; text: string }
   | { type: "toolStarted"; turnId: string; callId: string; tool: string; title: string; args: unknown }

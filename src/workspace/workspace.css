@@ -1223,6 +1223,41 @@
   background: var(--graphite-4);
   color: var(--text-1);
 }
+.chip.chip-area {
+  max-width: 260px;
+  height: 28px;
+  padding: 0 6px 0 4px;
+  gap: 6px;
+  background: rgba(255, 178, 63, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 178, 63, 0.36);
+  color: var(--amber-hi);
+}
+.chip.chip-area.is-sent {
+  height: 24px;
+  padding-right: 9px;
+  background: var(--graphite-2);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  color: var(--text-2);
+}
+.chip-area-thumb {
+  width: 26px;
+  height: 20px;
+  border-radius: 999px;
+  object-fit: cover;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14);
+  flex: none;
+}
+.chip.chip-area.is-sent .chip-area-thumb {
+  width: 22px;
+  height: 16px;
+}
+.chip-area-text {
+  font-weight: 540;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .composer-box {
   display: flex;
@@ -1303,4 +1338,9 @@
 .mic-btn:hover {
   background: var(--graphite-3);
   color: var(--text-1);
+}
+.mic-btn.is-listening {
+  background: rgba(255, 178, 63, 0.16);
+  color: var(--amber);
+  box-shadow: inset 0 0 0 1px rgba(255, 178, 63, 0.45);
 }
