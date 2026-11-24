@@ -93,14 +93,16 @@ export type Kind = "chat" | "tts" | "stt" | "reg" | "usd" | "tenge";
 export type Counters = Partial<Record<Kind, number>>;
 
 /** What blocks a request, or null when it may go. */
-export function overLimit(kind: "chat" | "tts" | "stt", device: Counters, global: Counters, l: Limits): string | null {
+export function overLimit(kind: "chat" | "tts" | "stt", device: Counters, global: Counters, l: Limits, units = 0, cost = 0): string | null {
   const own = { chat: l.chat, tts: l.tts, stt: l.sttSeconds }[kind];
-  if ((device[kind] ?? 0) >= own) {
+  const used = device[kind] ?? 0;
+  if (used >= own || used + units > own) {
     const what = { chat: "запросов к модели", tts: "озвучек", stt: "распознавания речи" }[kind];
     return `Дневной лимит Jarvis Cloud для этого устройства (${what}) исчерпан. Он обновится в 00:00 UTC, или добавьте свой ключ в настройках.`;
   }
-  const spent = kind === "chat" ? (global.usd ?? 0) >= l.usd : (global.tenge ?? 0) >= l.tenge;
-  return spent ? "Общий дневной бюджет Jarvis Cloud на сегодня исчерпан. Он обновится в 00:00 UTC, или добавьте свой ключ в настройках." : null;
+  const spent = (kind === "chat" ? global.usd : global.tenge) ?? 0;
+  const budget = kind === "chat" ? l.usd : l.tenge;
+  return spent >= budget || spent + cost > budget ? "Общий дневной бюджет Jarvis Cloud на сегодня исчерпан. Он обновится в 00:00 UTC, или добавьте свой ключ в настройках." : null;
 }
 
 export const day = (now: Date) => now.toISOString().slice(0, 10);
