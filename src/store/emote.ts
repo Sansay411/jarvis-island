@@ -158,6 +158,8 @@ const TOOL_ACTIVITY: Record<string, Activity> = {
   // Long-term memory
   memory_save: "memory",
   memory_forget: "memory",
+  learn: "memory",
+  persona_set: "memory",
   skill_save: "memory",
   skill_find: "memory",
   skill_read: "memory",
@@ -203,6 +205,8 @@ const TOOL_ACTIVITY: Record<string, Activity> = {
 /** What a running tool looks like on the face. Unknown tools fall back to `work`. */
 export function activityOf(tool: string): Activity {
   const name = tool.trim();
+  // Home Assistant (lights, climate, sensors) looks like system controls, not a connection.
+  if (name.startsWith("mcp__") && /__(Hass[A-Za-z]+|GetLiveContext)$/.test(name)) return "system";
   if (name.startsWith("mcp__") || name === "mcp") return "connect";
   return TOOL_ACTIVITY[name] ?? "work";
 }

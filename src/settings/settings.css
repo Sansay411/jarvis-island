@@ -679,6 +679,15 @@
   min-width: 0;
   line-height: 1.45;
 }
+.lessons-group + .lessons-group {
+  margin-top: 14px;
+}
+.lesson-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-12);
+  color: var(--text-3);
+}
 .tasks li {
   display: grid;
   grid-template-columns: 8px minmax(0, 1fr) auto;

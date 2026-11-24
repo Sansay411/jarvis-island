@@ -17,6 +17,7 @@ pub mod executive;
 mod explain;
 mod file_actions;
 mod files;
+mod learn;
 mod memory;
 mod overlay;
 mod planner;
@@ -164,6 +165,7 @@ fn builtin_tools() -> Vec<Tool> {
         .chain(files::tools())
         .chain(shell::tools())
         .chain(memory::tools())
+        .chain(learn::tools())
         .chain(screen::tools())
         .chain(dev::tools())
         .chain(browser::tools())
@@ -203,7 +205,7 @@ impl Registry {
         if let Some(t) = self.tools.get(name) {
             return Some(ToolMeta { name: t.name.to_string(), risk: (t.risk)(args), title: (t.title)(args), parallel_safe: t.parallel_safe });
         }
-        let m = self.mcp.describe(name)?;
+        let m = self.mcp.describe(name, args)?;
         Some(ToolMeta { name: name.to_string(), risk: m.risk, title: m.title, parallel_safe: m.parallel_safe })
     }
 

@@ -874,22 +874,33 @@ impl Agent {
         }
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
         // Gathered once: the same text on every step keeps the cache warm.
-        let turn_context = prompt::turn_context(&turn.settings, &self.state().history, turn.heard);
+        let home = self.app.try_state::<Arc<crate::mcp::Hub>>().and_then(|h| h.home());
+        let mut extra = String::new();
+        if turn.settings.agent.self_learning {
+            if let Some(line) = crate::learn::habits::summary(&self.state().store, chrono::Local::now()) {
+                extra.push_str(&line);
+            }
+        }
+        if let Some(line) = home.as_ref().and_then(|h| crate::mcp::home::now_block(h, chrono::Utc::now())) {
+            extra.push_str(&line);
+        }
+        let turn_context = prompt::turn_context(&turn.settings, &self.state().history, turn.heard, &extra);
         let skills_index = self.app.state::<Arc<crate::skills::SkillStore>>().index_entries();
         let vision_model = turn.settings.provider.vision_model.trim().to_string();
         let persist = turn.settings.privacy.store_history;
+        // The request as said, and calls that failed on earlier steps: a retry
+        // that works under another name teaches an alias (`learn_from`).
+        let request = self.inner.lock().history.last().map(ChatMessage::joined_text).unwrap_or_default();
+        let mut failed: Vec<(String, Value)> = Vec::new();
         // Whole-utterance matching only. Execute through the normal registry
         // so cancellation, verification, events and risk policy stay intact.
         if turn.attachments.is_empty() && turn.area.is_none() {
             let text = self.inner.lock().history.last().map(ChatMessage::joined_text).unwrap_or_default();
-            // Small talk heard without the name is as likely the room's: the
-            // model decides about it, not a phrasebook.
-            if let Some(fast::Fast::Say(reply)) = fast::command(&text).filter(|_| !turn.heard.may_be_silent()) {
-                let _ = self.app.emit_to(crate::platform::island::LABEL, "island:emote", fast::emote_for(reply));
-                if let Some(tx) = &turn.deltas { let _ = tx.send(reply.to_string()); }
-                self.emit(AgentEvent::TextDelta { turn_id:turn.id.clone(), text:reply.to_string() });
-                self.push_history(conversation_id, ChatMessage::text(Role::Assistant, reply.to_string()), None, None, persist);
-                return Ok(false);
+            // Small talk: the face reacts at once, the model answers in
+            // character (heard without the name, it also decides whether the
+            // words were for JARVIS at all).
+            if let Some(fast::Fast::SmallTalk(emote)) = fast::command(&text).filter(|_| !turn.heard.may_be_silent()) {
+                let _ = self.app.emit_to(crate::platform::island::LABEL, "island:emote", emote);
             }
             if let Some(fast::Fast::Call(call)) = fast::command(&text) {
                 *steps += 1;
@@ -898,6 +909,7 @@ impl Agent {
                 self.push_history(conversation_id, request, None, None, persist);
                 self.emit(AgentEvent::Phase { turn_id:turn.id.clone(), phase:"acting" });
                 let results = self.execute_calls(turn, &[call]).await?;
+                self.learn_from(turn, &text, &mut failed, &results);
                 for (call, result) in results {
                     let title = self.title_for(&call);
                     let output = match result {
@@ -945,7 +957,16 @@ impl Agent {
             let system = {
                 let st = self.state();
                 let memories = st.store.memories().unwrap_or_default();
-                prompt::system_prompt(&turn.settings, &memories, &skills_index, &names, turn.voice)
+                let lessons = if turn.settings.agent.self_learning { crate::learn::cached() } else { Vec::new() };
+                prompt::system_prompt(&prompt::PromptInputs {
+                    settings: &turn.settings,
+                    memories: &memories,
+                    lessons: &lessons,
+                    skills: &skills_index,
+                    tools: &names,
+                    home: home.as_ref(),
+                    voice: turn.voice,
+                })
             };
             let messages = self.context(system, &turn_context);
             let has_images = messages.last().is_some_and(ChatMessage::has_images);
@@ -1032,6 +1053,7 @@ impl Agent {
             self.emit(AgentEvent::Phase { turn_id: turn.id.clone(), phase: "acting" });
 
             let results = self.execute_calls(turn, &calls).await?;
+            self.learn_from(turn, &request, &mut failed, &results);
             let mut images = Vec::new();
             for (call, res) in &results {
                 let (content, title, ok) = match res {
@@ -1071,6 +1093,40 @@ impl Agent {
     fn title_for(&self, call: &ToolCall) -> String {
         let args: Value = serde_json::from_str(&call.arguments).unwrap_or(json!({}));
         self.registry.describe(&call.name, &args).map(|t| t.title).unwrap_or_else(|| call.name.clone())
+    }
+
+    /// After a step: log what the user does (habits) and learn an alias from
+    /// a failed call that then worked with another name. `failed` holds the
+    /// failures of earlier steps; parallel calls of one step never teach
+    /// each other.
+    fn learn_from(&self, turn: &Turn, request: &str, failed: &mut Vec<(String, Value)>, results: &[(ToolCall, AppResult<ToolOutput>)]) {
+        if !turn.settings.agent.self_learning {
+            return;
+        }
+        let store = self.state().store.clone();
+        let mut fresh = Vec::new();
+        let mut learned = false;
+        for (call, res) in results {
+            let args: Value = serde_json::from_str(&call.arguments).unwrap_or(json!({}));
+            match res {
+                Ok(out) if out.ok => {
+                    crate::learn::habits::record(&store, &call.name, &args, chrono::Local::now());
+                    let Some((scope, from, to)) = crate::learn::infer_alias(failed, &call.name, &args, request) else { continue };
+                    if crate::learn::save(&store, crate::learn::Kind::Alias, &from, &to, &scope, "", "auto").is_ok() {
+                        tracing::info!(tool = %call.name, "alias learned from a retry");
+                        learned = true;
+                    }
+                    failed.retain(|(t, a)| !(t == &call.name && a.as_object().is_some_and(|o| o.values().any(|v| v.as_str().map(str::trim) == Some(from.as_str())))));
+                }
+                Ok(out) if out.data.get("declined").is_some() => {}
+                Ok(_) | Err(AppError::NotFound(_)) | Err(AppError::Platform(_)) | Err(AppError::Provider(_)) => fresh.push((call.name.clone(), args)),
+                Err(_) => {}
+            }
+        }
+        failed.extend(fresh);
+        if learned {
+            let _ = self.app.emit(crate::learn::EVT, ());
+        }
     }
 
     /// Policy adjustments on top of a tool's own risk assessment.
@@ -1152,13 +1208,27 @@ impl Agent {
         // Parse and assess everything first.
         let mut prepared = Vec::new();
         for call in calls {
-            let args: Result<Value, _> = serde_json::from_str(&call.arguments);
+            let mut call = call.clone();
+            let mut args: Result<Value, _> = serde_json::from_str(&call.arguments);
+            // The user's own word for a target that once failed and then
+            // worked under its real name goes straight to the real name.
+            if turn.settings.agent.self_learning {
+                if let Some((fixed, used)) = args.as_ref().ok().and_then(|a| crate::learn::rewrite_alias(&call.name, a)) {
+                    tracing::info!(tool = %call.name, "learned alias applied");
+                    let store = self.state().store.clone();
+                    for id in used {
+                        crate::learn::bump(&store, id);
+                    }
+                    call.arguments = fixed.to_string();
+                    args = Ok(fixed);
+                }
+            }
             let tool = args.as_ref().ok().and_then(|a| self.registry.describe(&call.name, a));
             let (risk, parallel) = match (&tool, &args) {
                 (Some(t), Ok(a)) => (self.effective_risk(turn, &t.name, t.risk, a), t.parallel_safe),
                 _ => (Risk::Low, false),
             };
-            prepared.push((call.clone(), args, risk, parallel));
+            prepared.push((call, args, risk, parallel));
         }
 
         let all_parallel = prepared.len() > 1 && prepared.iter().all(|(_, a, r, p)| a.is_ok() && *p && *r == Risk::Low);

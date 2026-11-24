@@ -37,6 +37,12 @@ pub struct SttEngine {
     last_used: Mutex<Option<Instant>>,
 }
 
+/// The recognised words with this user's known mishearings fixed
+/// (`learn` kind=hearing), before the name, the intent or the model see them.
+fn fixed(res: AppResult<Transcript>) -> AppResult<Transcript> {
+    res.map(|t| Transcript { text: crate::learn::fix_hearing(&t.text), ..t })
+}
+
 /// Free the model after this long without a voice session.
 const UNLOAD_AFTER: Duration = Duration::from_secs(180);
 
@@ -999,7 +1005,7 @@ impl VoiceManager {
                                 } else {
                                     engine.transcribe(&path, &utterance)
                                 };
-                                let _ = tx.send(Ev::Transcribed(res, ended, continues, seq));
+                                let _ = tx.send(Ev::Transcribed(fixed(res), ended, continues, seq));
                             });
                         }
                         VadEvent::Preview(pcm) if !pl.awake && pl.wake_enabled && pl.preview_job.is_none() => {
@@ -1008,7 +1014,7 @@ impl VoiceManager {
                             let engine=self.stt.clone();
                             let path=pl.model_path.clone();
                             let tx=ev_tx.clone();
-                            tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&conditioner::peak_normalize(&pcm));let _=tx.send(Ev::WakePreview(seq,res)); });
+                            tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&conditioner::peak_normalize(&pcm));let _=tx.send(Ev::WakePreview(seq,fixed(res))); });
                         }
                         VadEvent::Preview(_) => {}
                         VadEvent::Progress(pcm) if pl.awake && pl.progress_job.is_none() => {
@@ -1017,7 +1023,7 @@ impl VoiceManager {
                             let engine=self.stt.clone();
                             let path=pl.model_path.clone();
                             let tx=ev_tx.clone();
-                            tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&conditioner::peak_normalize(&pcm));let _=tx.send(Ev::Progress(seq,res)); });
+                            tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&conditioner::peak_normalize(&pcm));let _=tx.send(Ev::Progress(seq,fixed(res))); });
                         }
                         VadEvent::Progress(_) => {}
                         VadEvent::Quick(pcm) => {
@@ -1025,7 +1031,7 @@ impl VoiceManager {
                             let engine=self.stt.clone();
                             let path=pl.model_path.clone();
                             let tx=ev_tx.clone();
-                            tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&conditioner::peak_normalize(&pcm));let _=tx.send(Ev::Quick(seq,res)); });
+                            tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&conditioner::peak_normalize(&pcm));let _=tx.send(Ev::Quick(seq,fixed(res))); });
                         }
                     } }
                     pl.refresh_state(&vad);

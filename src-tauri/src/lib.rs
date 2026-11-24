@@ -28,6 +28,7 @@ mod ipc_clips;
 mod ipc_files;
 mod ipc_hub;
 pub mod jobs;
+pub mod learn;
 mod ipc_mcp;
 mod ipc_mentor;
 mod ipc_planner;
@@ -256,7 +257,9 @@ pub fn run() {
         .setup(|app| {
             let data_dir = app.path().app_local_data_dir()?;
             let store = Arc::new(store::Store::open(&data_dir.join("jarvis.db"))?);
+            learn::reload(&store);
             let settings = store.settings();
+            learn::set_enabled(settings.agent.self_learning);
 
             let window = app
                 .get_webview_window(island::LABEL)
@@ -302,6 +305,7 @@ pub fn run() {
             app.manage(updater::Updates::default());
             updater::spawn(app.handle().clone());
             reminders.spawn();
+            learn::reflect::spawn(app.handle().clone());
             let clips = clips::Clips::new(app.handle().clone());
             app.manage(clips.clone());
             clips.start();
@@ -450,6 +454,9 @@ pub fn run() {
             ipc_agent::memories_list,
             ipc_agent::memory_add,
             ipc_agent::memory_delete,
+            ipc_agent::lessons_list,
+            ipc_agent::lesson_delete,
+            ipc_agent::learn_reflect_now,
             ipc_agent::history_clear,
             ipc_agent::tasks_recent,
             ipc_agent::settings_open,

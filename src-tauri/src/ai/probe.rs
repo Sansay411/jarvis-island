@@ -137,8 +137,17 @@ pub fn needed_tokens_for(state: &AppState, registry: &Registry, base_url: &str) 
         specs.retain(|s| !matches!(s.name.as_str(), "web_search" | "web_fetch"));
     }
     let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
-    let sys = prompt::system_prompt(&settings, &memories, &[], &names, false);
-    let ctx = prompt::turn_context(&settings, &state.history, Heard::Addressed);
+    let lessons = crate::learn::cached();
+    let sys = prompt::system_prompt(&prompt::PromptInputs {
+        settings: &settings,
+        memories: &memories,
+        lessons: &lessons,
+        skills: &[],
+        tools: &names,
+        home: None,
+        voice: false,
+    });
+    let ctx = prompt::turn_context(&settings, &state.history, Heard::Addressed, "");
     estimate_needed_tokens(&sys, &ctx, &specs)
 }
 
@@ -976,7 +985,15 @@ mod tests {
         let specs = crate::tools::builtin_specs();
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
         let settings = Settings::default();
-        let sys = prompt::system_prompt(&settings, &[], &[], &names, false);
+        let sys = prompt::system_prompt(&prompt::PromptInputs {
+            settings: &settings,
+            memories: &[],
+            lessons: &[],
+            skills: &[],
+            tools: &names,
+            home: None,
+            voice: false,
+        });
         let est = estimate_needed_tokens(&sys, "[Контекст запроса]\n- Local time: 12:00", &specs);
         assert!(est >= 8_000 && est <= 25_000, "unexpected needed token estimate: {est}");
     }

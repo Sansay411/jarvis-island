@@ -255,3 +255,37 @@ with a sample week) and `/qa/reset.html?reason=budget|strict|voluntary&screen=fe
   `/qa/notch-showcase.html?preset=skin-<id>` or `?skin=<id>&activity=<kind>`.
 * New windows (`areapick`, `overlay`, `welcome`) must be listed in
   `src-tauri/capabilities/default.json`.
+
+## Learning, humour, Home Assistant
+
+* `learn/`: lessons in SQLite `lessons` (kinds `preference`, `humor`,
+  `alias`, `hearing`; sources `model` = the `learn` tool, `auto` = a retry
+  that worked, `reflect` = the daily review) with an in-memory copy.
+  `hearing` lessons rewrite whole words of every transcript in
+  `voice/local.rs` (`fixed`) before wake, intent and the model see them.
+  Scoped `alias` lessons (`app_launch.query`, `mcp__<server>__*.name`) rewrite
+  tool arguments in `Agent::execute_calls`; `infer_alias` learns them when a
+  call fails and the same call works with one target argument changed (not
+  when the new value is named in the request: «…в зале и на кухне»).
+* `learn/habits.rs`: `usage_log` of successful calls that say something about
+  the routine (apps, sites, HA intents, volume/brightness), a ±1 h summary in
+  the turn context. `learn/reflect.rs`: once in 20 h, idle, ≥ 6 new requests,
+  the model reads stored messages and returns JSON lessons/facts (validated
+  in `apply`). All of it follows `agent.selfLearning` (`learn::set_enabled`).
+* Small talk («спасибо», «привет») is no longer answered from a phrasebook:
+  `fast::Fast::SmallTalk(emote)` only plays the face, the model replies.
+* Persona: `persona.style` ∈ `STYLES` (witty, sarcastic, playful, warm,
+  concise) and `persona.humor` 0–100; `prompt::persona` builds the character,
+  manner, humour band and craft; tool `persona_set` changes them by voice.
+  `prompt::capability_map` lists every tool family in words (a new built-in
+  tool belongs in `FAMILIES`, else it lands in «Другое»).
+* `mcp/home.rs`: a server is Home Assistant when it lends `Hass*` or
+  `GetLiveContext` (2026 names are namespaced: `intent__HassTurnOn`,
+  `homeassistant__GetLiveContext`; use `home::base`). The snapshot comes from
+  `GetLiveContext` (YAML parsed by `parse_live_context`), refreshes every
+  5 min and 1.5 s after a change, is kept in kv `home.snapshot`; the map goes
+  into the system prompt, «Home now» into the turn context. HA marks every
+  intent destructive, so `home::risk` decides instead: lights/sockets low,
+  locks/alarms/valves/garage doors (and whole rooms that contain them) high.
+* QA: `/qa/workspace-showcase.html?scene=settings-memory` (lessons, sample
+  data) and `scene=settings-persona` (manners, humour slider).

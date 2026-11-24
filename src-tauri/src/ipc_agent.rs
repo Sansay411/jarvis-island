@@ -105,6 +105,7 @@ pub fn settings_save(app: AppHandle, state: State<'_, AppState>, settings: Setti
     {
         crate::shortcuts::apply(&app, &settings.shortcuts);
     }
+    crate::learn::set_enabled(settings.agent.self_learning);
     let _ = app.emit("settings:changed", ());
     if old.voice.wake_word != settings.voice.wake_word || old.voice.enabled != settings.voice.enabled || old.voice.engine != settings.voice.engine {
         app.state::<Arc<crate::voice::VoiceManager>>().apply_settings();
@@ -277,6 +278,26 @@ pub fn memory_add(state: State<'_, AppState>, text: String) -> AppResult<Memory>
 #[tauri::command]
 pub fn memory_delete(state: State<'_, AppState>, id: i64) -> AppResult<()> {
     state.store.delete_memory(id)
+}
+
+/// What JARVIS learned about working with the user (Settings → «Память»).
+#[tauri::command]
+pub fn lessons_list(state: State<'_, AppState>) -> AppResult<Vec<crate::learn::Lesson>> {
+    crate::learn::list(&state.store)
+}
+
+#[tauri::command]
+pub fn lesson_delete(app: AppHandle, state: State<'_, AppState>, id: i64) -> AppResult<()> {
+    crate::learn::forget(&state.store, id)?;
+    let _ = app.emit(crate::learn::EVT, ());
+    Ok(())
+}
+
+/// «Разобрать разговоры сейчас»: the daily review on demand. Returns how
+/// many lessons and facts changed.
+#[tauri::command]
+pub async fn learn_reflect_now(app: AppHandle) -> AppResult<usize> {
+    crate::learn::reflect::run_now(&app).await
 }
 
 #[tauri::command]

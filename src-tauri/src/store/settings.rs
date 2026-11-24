@@ -292,6 +292,9 @@ pub struct AgentSettings {
     pub project_roots: Vec<String>,
     /// After a long multi-step task succeeds, offer in one line to save it as a skill.
     pub learn_skills: bool,
+    /// Learn from use: lessons the agent infers, habits, the daily review of
+    /// conversations (`learn::reflect`).
+    pub self_learning: bool,
 }
 
 impl Default for AgentSettings {
@@ -302,6 +305,7 @@ impl Default for AgentSettings {
             full_control: false,
             project_roots: Vec::new(),
             learn_skills: true,
+            self_learning: true,
         }
     }
 }
@@ -314,13 +318,41 @@ pub struct PersonaSettings {
     pub user_name: String,
     /// "ty" or "vy".
     pub address: String,
-    /// "witty", "warm" or "concise".
+    /// One of [`STYLES`]: "witty", "sarcastic", "playful", "warm" or "concise".
     pub style: String,
+    /// How much JARVIS jokes, 0–100 (like TARS's humour setting).
+    #[serde(default = "unset_humor")]
+    pub humor: u8,
 }
+
+/// Settings saved before the humour slider read as «unset» (see `normalize`).
+fn unset_humor() -> u8 {
+    u8::MAX
+}
+
+/// Manners of speech Settings → Характер offers; the first is the default.
+pub const STYLES: [&str; 5] = ["witty", "sarcastic", "playful", "warm", "concise"];
 
 impl Default for PersonaSettings {
     fn default() -> Self {
-        PersonaSettings { user_name: String::new(), address: "ty".into(), style: "witty".into() }
+        PersonaSettings { user_name: String::new(), address: "ty".into(), style: "witty".into(), humor: 65 }
+    }
+}
+
+impl PersonaSettings {
+    /// An unknown manner becomes the default; settings from before the
+    /// humour slider get the level that matches the manner chosen then.
+    pub fn normalize(&mut self) {
+        if !STYLES.contains(&self.style.as_str()) {
+            self.style = STYLES[0].into();
+        }
+        if self.humor > 100 {
+            self.humor = match self.style.as_str() {
+                "concise" => 10,
+                "warm" => 40,
+                _ => 65,
+            };
+        }
     }
 }
 

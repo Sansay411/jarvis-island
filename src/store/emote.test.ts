@@ -24,6 +24,13 @@ describe("activityOf", () => {
     expect(activityOf("mcp")).toBe("connect");
   });
 
+  it("maps Home Assistant tools to system controls", () => {
+    expect(activityOf("mcp__home-assistant__intent__HassTurnOn")).toBe("system");
+    expect(activityOf("mcp__ha__HassLightSet")).toBe("system");
+    expect(activityOf("mcp__home-assistant__homeassistant__GetLiveContext")).toBe("system");
+    expect(activityOf("mcp__home-assistant__homeassistant__call_action")).toBe("connect");
+  });
+
   it("maps representative tools across all categories accurately", () => {
     expect(activityOf("web_search")).toBe("search");
     expect(activityOf("file_read")).toBe("read");

@@ -9,9 +9,11 @@
 //! tokens) live in Credential Manager; SQLite only knows their names.
 
 pub mod catalog;
+pub mod home;
 mod transport;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -32,6 +34,10 @@ use transport::Connection;
 pub const PREFIX: &str = "mcp__";
 const KV_SERVERS: &str = "mcp.servers";
 const KV_TOOLS: &str = "mcp.tools";
+/// The last Home Assistant snapshot (see [`home`]).
+const KV_HOME: &str = "home.snapshot";
+/// How often the home snapshot refreshes while Home Assistant is connected.
+const HOME_EVERY: Duration = Duration::from_secs(300);
 const EVT: &str = "mcp:changed";
 pub const EVT_SECRET_PROMPT: &str = "mcp:secret-prompt";
 pub const EVT_SECRET_PROMPT_CLOSED: &str = "mcp:secret-prompt-closed";
@@ -158,6 +164,13 @@ impl ToolDef {
     }
 }
 
+impl Server {
+    /// A Home Assistant server: it lends the Assist tools.
+    fn is_home(&self) -> bool {
+        self.tools.read().iter().any(|t| home::is_home_tool(home::base(&t.name)))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
@@ -251,6 +264,10 @@ pub struct Hub {
     reload_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<String>>>,
     /// Pending secure key prompts waiting on the island dialog.
     secret_prompts: Mutex<HashMap<String, oneshot::Sender<Option<BTreeMap<String, String>>>>>,
+    /// Devices, rooms and states of the connected Home Assistant.
+    home: RwLock<Option<home::Snapshot>>,
+    /// A refresh after a change is already on its way.
+    home_refresh_queued: Arc<AtomicBool>,
 }
 
 /// Holds each server at most once: a burst of `tools/list_changed`
@@ -436,12 +453,15 @@ impl Hub {
         let servers = configs.into_iter().map(|c| (c.id.clone(), Server::new(c.clone(), cache.remove(&c.id).unwrap_or_default()))).collect();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let reloads = ReloadQueue { tx, queued: Arc::default() };
+        let home = store.kv_get(KV_HOME).and_then(|s| serde_json::from_str(&s).ok());
         Arc::new(Hub {
             app,
             servers: RwLock::new(servers),
             reloads,
             reload_rx: Mutex::new(Some(rx)),
             secret_prompts: Mutex::new(HashMap::new()),
+            home: RwLock::new(home),
+            home_refresh_queued: Arc::default(),
         })
     }
 
@@ -513,10 +533,82 @@ impl Hub {
         self.exposed().into_iter().map(|(n, ..)| n).collect()
     }
 
-    pub fn describe(&self, name: &str) -> Option<Meta> {
+    /// Home Assistant marks every control intent destructive; its calls are
+    /// judged by what they reach instead (see [`home::risk`]).
+    pub fn describe(&self, name: &str, args: &Value) -> Option<Meta> {
         let (s, t) = self.find(name)?;
-        let risk = t.risk();
+        let risk = if s.is_home() {
+            let snap = self.home.read();
+            home::risk(home::base(&t.name), args, snap.as_ref().filter(|h| h.server == s.config.id))
+                .unwrap_or(if t.annotations.read_only_hint == Some(true) { Risk::Low } else { Risk::Moderate })
+        } else {
+            t.risk()
+        };
         Some(Meta { risk, title: format!("{} · {}", s.config.name, t.label()), parallel_safe: risk == Risk::Low })
+    }
+
+    // ---------- Home Assistant ----------
+
+    /// The last snapshot of the connected Home Assistant, if it is still connected.
+    pub fn home(&self) -> Option<home::Snapshot> {
+        let snap = self.home.read().clone()?;
+        let servers = self.servers.read();
+        servers.get(&snap.server).filter(|s| s.config.enabled && s.is_home()).map(|_| snap)
+    }
+
+    /// Exposed name of `GetLiveContext` and its server, when Home Assistant is connected.
+    fn live_context_tool(&self) -> Option<(String, Arc<Server>)> {
+        self.exposed().into_iter().find(|(_, s, t)| home::base(&t.name) == "GetLiveContext" && s.is_home()).map(|(n, s, _)| (n, s))
+    }
+
+    /// Where a word the user taught for a Home Assistant device or room
+    /// works (`learn` alias): `mcp__<server>__*.name` or `.area`.
+    pub fn home_alias_scope(&self, value: &str) -> Option<String> {
+        let snap = self.home()?;
+        let key = home::alias_key(&snap, value)?;
+        Some(format!("{PREFIX}{}__*.{key}", snap.server))
+    }
+
+    fn keep_home(&self, server: &Server, text: &str) -> Option<usize> {
+        let entities = home::parse_live_context(&home::result_text(text)?);
+        if entities.is_empty() {
+            return None;
+        }
+        let n = entities.len();
+        let snap = home::Snapshot {
+            server: server.config.id.clone(),
+            server_name: server.config.name.clone(),
+            at: chrono::Utc::now().to_rfc3339(),
+            entities,
+        };
+        if let Ok(json) = serde_json::to_string(&snap) {
+            let _ = self.store().kv_set(KV_HOME, &json);
+        }
+        *self.home.write() = Some(snap);
+        Some(n)
+    }
+
+    /// Read every device and its state from Home Assistant now.
+    pub async fn refresh_home(self: &Arc<Self>) -> AppResult<usize> {
+        let (name, server) = self.live_context_tool().ok_or_else(|| AppError::not_found("Home Assistant не подключён"))?;
+        let out = self.call_raw(&name, json!({}), &CancellationToken::new()).await?;
+        let text = out.data.get("text").and_then(Value::as_str).unwrap_or("");
+        self.keep_home(&server, text).ok_or_else(|| AppError::internal("Home Assistant не вернул список устройств"))
+    }
+
+    /// A change was made: read the new states in a moment (one refresh for a burst).
+    fn refresh_home_soon(self: &Arc<Self>) {
+        if self.home_refresh_queued.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let hub = self.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            hub.home_refresh_queued.store(false, Ordering::SeqCst);
+            if let Err(e) = hub.refresh_home().await {
+                tracing::debug!("home refresh after a change failed: {e}");
+            }
+        });
     }
 
     /// The live connection, starting the server if it is not running.
@@ -567,6 +659,22 @@ impl Hub {
     }
 
     pub async fn call(self: &Arc<Self>, name: &str, args: Value, cancel: &CancellationToken) -> AppResult<ToolOutput> {
+        let unfiltered = ["name", "area", "domain", "floor"].iter().all(|k| args.get(k).is_none_or(|v| v.as_str().is_some_and(str::is_empty)));
+        let out = self.call_raw(name, args, cancel).await?;
+        if let Some((server, tool)) = self.find(name).filter(|(s, _)| s.is_home()) {
+            let base = home::base(&tool.name);
+            if base == "GetLiveContext" && unfiltered && out.ok {
+                // The model read the whole home: that is a fresh snapshot too.
+                let text = out.data.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+                self.keep_home(&server, &text);
+            } else if out.ok && (home::is_control(base) || base == "call_action") {
+                self.refresh_home_soon();
+            }
+        }
+        Ok(out)
+    }
+
+    async fn call_raw(self: &Arc<Self>, name: &str, args: Value, cancel: &CancellationToken) -> AppResult<ToolOutput> {
         let (server, tool) = self.find(name).ok_or_else(|| AppError::not_found(format!("Инструмента «{name}» нет")))?;
         let params = json!({ "name": tool.name, "arguments": if args.is_object() { args } else { json!({}) } });
         // One retry when the server died or forgot the session since last time.
@@ -811,6 +919,27 @@ impl Hub {
                 }
             });
         }
+        // Home Assistant: keep the device map and states fresh while connected.
+        let hub = self.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            loop {
+                let wait = match hub.live_context_tool() {
+                    None => HOME_EVERY,
+                    Some(_) => match hub.refresh_home().await {
+                        Ok(n) => {
+                            tracing::debug!(devices = n, "home snapshot refreshed");
+                            HOME_EVERY
+                        }
+                        Err(e) => {
+                            tracing::info!("home snapshot not refreshed: {e}");
+                            HOME_EVERY * 3
+                        }
+                    },
+                };
+                tokio::time::sleep(wait).await;
+            }
+        });
         let hub = self.clone();
         tauri::async_runtime::spawn(async move {
             loop {

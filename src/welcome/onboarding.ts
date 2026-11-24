@@ -2,7 +2,7 @@
 // memory-fact formatting, goal-to-mentor-track mapping, and applying answers
 // to settings while respecting skipped steps.
 
-import type { Settings } from "../settings/SettingsApp";
+import type { PersonaStyle, Settings } from "../settings/SettingsApp";
 
 export const ONBOARDING_VERSION = 1;
 export const ONBOARDING_MAX_DISMISSALS = 3;
@@ -20,7 +20,7 @@ export interface OnboardingSettings {
 export interface OnboardingAnswers {
   userName: string;
   address: "ty" | "vy";
-  style: "witty" | "warm" | "concise";
+  style: PersonaStyle;
   occupation: OccupationKind | null;
   occupationDetail: string;
   goals: GoalId[];
@@ -212,7 +212,8 @@ export function answersFromSettings(settings: Settings): OnboardingAnswers {
   return {
     userName: settings.persona.userName ?? "",
     address: settings.persona.address === "vy" ? "vy" : "ty",
-    style: settings.persona.style === "warm" || settings.persona.style === "concise" ? settings.persona.style : "witty",
+    // Sarcasm and «балагур» are chosen in Settings; the first-run cards keep them.
+    style: (["witty", "sarcastic", "playful", "warm", "concise"] as const).find((st) => st === settings.persona.style) ?? "witty",
     occupation: null,
     occupationDetail: "",
     goals: [],

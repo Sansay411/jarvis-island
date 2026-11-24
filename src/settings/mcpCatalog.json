@@ -442,7 +442,7 @@
   {
     "id": "home-assistant",
     "name": "Home Assistant",
-    "aliases": ["умный дом", "home assistant", "хом ассистант", "свет", "розетки", "климат", "шторы", "датчики"],
+    "aliases": ["умный дом", "home assistant", "хом ассистант", "хоум ассистант", "свет", "розетки", "климат", "шторы", "датчики"],
     "category": "home",
     "description": "Свет, розетки, климат, шторы и сценарии умного дома голосом.",
     "transport": {
@@ -455,12 +455,12 @@
         "label": "Адрес Home Assistant",
         "target": "url",
         "initial": "http://homeassistant.local:8123",
-        "hint": "Включите интеграцию Model Context Protocol Server в Home Assistant."
+        "hint": "В Home Assistant: Настройки → Система → ИИ → Model Context Protocol → «Включить». Джарвис управляет устройствами, открытыми для голосовых ассистентов."
       },
       {
         "key": "token",
         "label": "Токен доступа",
-        "hint": "Профиль → Безопасность → Долгосрочные токены доступа.",
+        "hint": "Профиль администратора → Безопасность → Долгосрочные токены доступа.",
         "link": "https://www.home-assistant.io/docs/authentication/#your-account-profile",
         "target": "header",
         "name": "Authorization",

@@ -36,11 +36,11 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     noiseSuppression: "auto",
     },
     appearance: { skin: "amber" },
-    persona: { userName: "", address: "ty", style: "witty" },
+    persona: { userName: "", address: "ty", style: "witty", humor: 65 },
     shortcuts: { workspace: "Ctrl+Alt+J", voice: "Ctrl+Alt+K", clipboard: "Ctrl+Alt+V", area: "Ctrl+Alt+A" },
     privacy: { storeHistory: true, allowScreen: true, allowClipboardRead: false },
     clipboard: { enabled: true, maxItems: 100, keepDays: 7, skipSecrets: true, ignoredApps: [] },
-    agent: { maxSteps: 24, confirmModerate: true, fullControl: false, projectRoots: [], learnSkills: true },
+    agent: { maxSteps: 24, confirmModerate: true, fullControl: false, projectRoots: [], learnSkills: true, selfLearning: true },
     launchAtStartup: false,
     reduceMotion: false,
     updates: { autoCheck: true },
@@ -82,8 +82,8 @@ describe("shouldAutoOpenOnboarding", () => {
   });
 
   it("treats existing persona name or memories as already onboarded", () => {
-    expect(shouldAutoOpenOnboarding(makeSettings({ persona: { userName: "Мария", address: "vy", style: "warm" } }), 0)).toBe(false);
-    expect(shouldAutoOpenOnboarding(makeSettings({ persona: { userName: "   ", address: "ty", style: "witty" } }), 0)).toBe(true);
+    expect(shouldAutoOpenOnboarding(makeSettings({ persona: { userName: "Мария", address: "vy", style: "warm", humor: 65 } }), 0)).toBe(false);
+    expect(shouldAutoOpenOnboarding(makeSettings({ persona: { userName: "   ", address: "ty", style: "witty", humor: 65 } }), 0)).toBe(true);
     expect(shouldAutoOpenOnboarding(makeSettings(), 2)).toBe(false);
   });
 });
@@ -171,7 +171,7 @@ describe("applyOnboardingToSettings", () => {
     };
 
     const updated = applyOnboardingToSettings(base, answers, new Set([4]));
-    expect(updated.persona).toEqual({ userName: "Анна", address: "vy", style: "warm" });
+    expect(updated.persona).toEqual({ userName: "Анна", address: "vy", style: "warm", humor: 65 });
     expect(updated.mentor.tracks).toEqual(["code", "body"]);
     // Step 4 was skipped, so work hours remain untouched.
     expect(updated.planner.workStart).toBe("09:00");

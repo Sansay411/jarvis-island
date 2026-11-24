@@ -51,8 +51,9 @@ pub fn media_failure(data: &Value) -> String {
 /// What a whole utterance asks for when no model is needed.
 pub enum Fast {
     Call(ToolCall),
-    /// Small talk: answered at once, nothing to do.
-    Say(&'static str),
+    /// Small talk («спасибо», «привет»): the face reacts at once with this
+    /// emote, the model answers in character (a phrasebook sounded canned).
+    SmallTalk(&'static str),
 }
 
 /// How the recogniser hears the name (seen live: «Жервис», «Дарвис»).
@@ -92,27 +93,18 @@ fn bare(text: &str) -> String {
     s
 }
 
-/// Thanks and greetings, the whole utterance only.
+/// Thanks, praise and greetings (the whole utterance only), as the face
+/// that goes with them (see `store/emote.ts`).
 fn small_talk(s: &str) -> Option<&'static str> {
     let s = s.trim_end_matches(" брат").trim_end_matches(" бро").trim_end_matches([' ', ',']);
     Some(match s {
-        "спасибо" | "спасибо большое" | "большое спасибо" | "благодарю" | "от души" | "спс" | "пасиб" | "спасибо тебе" => "Обращайтесь.",
-        "отлично" | "супер" | "круто" | "класс" | "молодец" | "красава" | "умница" | "отлично сработано" => "Рад стараться.",
-        "привет" | "здравствуй" | "здравствуйте" | "доброе утро" | "добрый день" | "добрый вечер" => "Здравствуйте. Чем помочь?",
-        "как дела" | "как ты" | "как жизнь" | "как сам" => "Всё работает штатно. Чем займёмся?",
-        "ты тут" | "ты здесь" | "ты меня слышишь" | "слышишь меня" => "Да, слушаю.",
+        "спасибо" | "спасибо большое" | "большое спасибо" | "благодарю" | "от души" | "спс" | "пасиб" | "спасибо тебе" => "wink",
+        "отлично" | "супер" | "круто" | "класс" | "молодец" | "красава" | "умница" | "отлично сработано" => "heart",
+        "привет" | "здравствуй" | "здравствуйте" | "доброе утро" | "добрый день" | "добрый вечер" => "laugh",
+        "как дела" | "как ты" | "как жизнь" | "как сам" => "laugh",
+        "ты тут" | "ты здесь" | "ты меня слышишь" | "слышишь меня" => "surprised",
         _ => return None,
     })
-}
-
-/// The face that goes with a small-talk reply (see `store/emote.ts`).
-pub fn emote_for(reply: &str) -> &'static str {
-    match reply {
-        "Обращайтесь." => "wink",
-        "Рад стараться." => "heart",
-        "Да, слушаю." => "surprised",
-        _ => "laugh",
-    }
 }
 
 /// Sites said by name: opened directly instead of looking for an app.
@@ -161,8 +153,8 @@ fn command_with(text: &str, has_player: bool) -> Option<Fast> {
     let question = text.trim().ends_with('?');
     let owned = bare(text);
     let s = owned.as_str();
-    if let Some(reply) = small_talk(s) {
-        return Some(Fast::Say(reply));
+    if let Some(emote) = small_talk(s) {
+        return Some(Fast::SmallTalk(emote));
     }
     if let Some(action) = media(s, has_player).filter(|_| !question) {
         return Some(Fast::Call(call("media_control", json!({ "action": action }))));
@@ -531,15 +523,16 @@ mod tests {
     }
 
     #[test]
-    fn small_talk_is_answered_without_model() {
+    fn small_talk_is_recognised_for_the_face_and_left_to_the_model() {
         for text in ["Спасибо, Жервис.", "От души, брат.", "А Джарвис, как у тебя дела?", "Привет", "Джарвис, ты тут?"] {
-            let reply = match command(text) { Some(Fast::Say(r)) => Some(r), _ => None };
+            let emote = match command(text) { Some(Fast::SmallTalk(e)) => Some(e), _ => None };
             if text.contains("у тебя") {
-                assert!(reply.is_none(), "«как у тебя дела» is not in the list: {text}");
+                assert!(emote.is_none(), "«как у тебя дела» is not in the list: {text}");
             } else {
-                assert!(reply.is_some(), "not answered: {text}");
+                assert!(emote.is_some(), "not recognised: {text}");
             }
         }
+        assert!(matches!(command("Спасибо"), Some(Fast::SmallTalk("wink"))));
     }
 
     #[test]

@@ -26,6 +26,7 @@ import { TitleBar } from "./TitleBar";
 import { Group, Row, Segmented, Switch } from "./controls";
 import { McpSection } from "./McpSection";
 import { SkillsSection } from "./SkillsSection";
+import { LessonsSection } from "./LessonsSection";
 import { ModelSection, type ModelSectionQaMock } from "./ModelSection";
 import { MicCheck } from "./MicCheck";
 import type { MicGainMode, NoiseMode } from "./micLevels";
@@ -47,6 +48,8 @@ interface Preset {
   needsKey: boolean;
   dashscope: boolean;
 }
+
+export type PersonaStyle = "witty" | "sarcastic" | "playful" | "warm" | "concise";
 
 export interface Settings {
   provider: { preset: string; baseUrl: string; model: string; visionModel: string; temperature: number };
@@ -72,12 +75,12 @@ export interface Settings {
     micGainDb: number;
     noiseSuppression: NoiseMode;
   };
-  persona: { userName: string; address: "ty" | "vy"; style: "witty" | "warm" | "concise" };
+  persona: { userName: string; address: "ty" | "vy"; style: PersonaStyle; humor: number };
   appearance: { skin: SkinId };
   shortcuts: { workspace: string; voice: string; clipboard: string; area: string };
   privacy: { storeHistory: boolean; allowScreen: boolean; allowClipboardRead: boolean };
   clipboard: { enabled: boolean; maxItems: number; keepDays: number; skipSecrets: boolean; ignoredApps: string[] };
-  agent: { maxSteps: number; confirmModerate: boolean; fullControl: boolean; projectRoots: string[]; learnSkills: boolean };
+  agent: { maxSteps: number; confirmModerate: boolean; fullControl: boolean; projectRoots: string[]; learnSkills: boolean; selfLearning: boolean };
   launchAtStartup: boolean;
   reduceMotion: boolean;
   updates: { autoCheck: boolean };
@@ -189,7 +192,7 @@ const FALLBACK_SETTINGS_VIEW: SettingsView = {
       micGainDb: 0,
       noiseSuppression: "auto",
     },
-    persona: { userName: "Александр", address: "ty", style: "witty" },
+    persona: { userName: "Александр", address: "ty", style: "witty", humor: 65 },
     appearance: { skin: DEFAULT_SKIN },
     shortcuts: { workspace: "Ctrl+Alt+J", voice: "Ctrl+Alt+K", clipboard: "Ctrl+Alt+V", area: "Ctrl+Alt+A" },
     privacy: { storeHistory: true, allowScreen: true, allowClipboardRead: true },
@@ -200,6 +203,7 @@ const FALLBACK_SETTINGS_VIEW: SettingsView = {
       fullControl: true,
       projectRoots: ["C:\\Users\\-pin\\Documents\\Jarvis"],
       learnSkills: true,
+      selfLearning: true,
     },
     launchAtStartup: true,
     reduceMotion: false,
@@ -284,6 +288,12 @@ function normalizeSettingsView(v: SettingsView): SettingsView {
       agent: {
         ...v.settings.agent,
         learnSkills: v.settings.agent?.learnSkills ?? true,
+        selfLearning: v.settings.agent?.selfLearning ?? true,
+      },
+      persona: {
+        ...v.settings.persona,
+        style: STYLES.some((st) => st.id === v.settings.persona?.style) ? v.settings.persona.style : "witty",
+        humor: typeof v.settings.persona?.humor === "number" ? v.settings.persona.humor : 65,
       },
       onboarding: {
         done: Boolean(v.settings.onboarding?.done),
@@ -329,11 +339,26 @@ const SECTIONS: { id: Section; label: string; icon: IconName; hint: string }[] =
   { id: "mcp", label: "Подключения", icon: "globe", hint: "Инструменты других программ по протоколу MCP." },
 ];
 
-const STYLES: { id: Settings["persona"]["style"]; label: string; sample: [string, string] }[] = [
-  { id: "witty", label: "С юмором", sample: ["Громкость тридцать. Соседи пока не жаловались.", "Громкость тридцать. Соседи пока не жаловались."] },
+const STYLES: { id: PersonaStyle; label: string; sample: [string, string] }[] = [
+  { id: "witty", label: "С юмором", sample: ["Кухня в темноте. Холодильник теперь за главного.", "Кухня в темноте. Холодильник теперь за главного."] },
+  {
+    id: "sarcastic",
+    label: "Сарказм",
+    sample: ["Открыл ютуб. Одно коротенькое видео, конечно. Засекаю.", "Открыл ютуб. Одно коротенькое видео, конечно. Засекаю."],
+  },
+  { id: "playful", label: "Балагур", sample: ["Погнали! Диджей Джарвис за пультом.", "Погнали! Диджей Джарвис за пультом."] },
   { id: "warm", label: "Тёплая", sample: ["Готово, громкость тридцать. Как ты сегодня — не устал?", "Готово, громкость тридцать. Как вы сегодня — не устали?"] },
   { id: "concise", label: "Деловая", sample: ["Громкость тридцать процентов.", "Громкость тридцать процентов."] },
 ];
+
+/** What a humour setting means, said plainly (TARS-style percent). */
+function humorHint(level: number): string {
+  if (level <= 15) return "Почти без шуток: дружелюбно и по делу.";
+  if (level <= 40) return "Изредка, к месту — примерно каждый четвёртый ответ.";
+  if (level <= 70) return "Регулярно: в разговоре почти всегда, после дел — иногда.";
+  if (level <= 90) return "Очень смешно: шутка почти в каждом ответе.";
+  return "Максимум: шутит всегда, но дело — в первую очередь.";
+}
 
 const mb = (bytes: number) => `${Math.round(bytes / 1_000_000)} МБ`;
 
@@ -1019,6 +1044,31 @@ export default function SettingsApp({
     }
   }, []);
 
+  // «Юмор на восемьдесят» said to JARVIS changes the settings while this
+  // window is open: take the new values unless the same fields are being edited.
+  const latest = useRef<{ view: SettingsView | null; draft: Settings | null }>({ view: null, draft: null });
+  latest.current = { view, draft };
+  useEffect(() => {
+    if (!hasTauri()) return;
+    const off = listen("settings:changed", () => {
+      void invoke<SettingsView>("settings_get")
+        .then((v) => {
+          const norm = normalizeSettingsView(v);
+          const { view: old, draft: cur } = latest.current;
+          setView(norm);
+          if (!old || !cur || JSON.stringify(old.settings) === JSON.stringify(cur)) {
+            setDraft(structuredClone(norm.settings));
+          } else if (JSON.stringify(old.settings.persona) === JSON.stringify(cur.persona)) {
+            setDraft({ ...cur, persona: { ...norm.settings.persona } });
+          }
+        })
+        .catch(() => {});
+    });
+    return () => {
+      void off.then((f) => f());
+    };
+  }, []);
+
   useEffect(() => {
     if (!hasTauri()) return;
     if (section === "memory") {
@@ -1277,6 +1327,24 @@ export default function SettingsApp({
                     );
                   })}
                 </div>
+                <Row
+                  label={`Юмор: ${draft.persona.humor}%`}
+                  hint={`${humorHint(draft.persona.humor)} Можно сказать и голосом: «юмор на восемьдесят процентов».`}
+                >
+                  <div className="inline">
+                    <input
+                      className="slider"
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={draft.persona.humor}
+                      aria-label="Уровень юмора"
+                      onChange={(e) => set((s) => ({ ...s, persona: { ...s.persona, humor: Number(e.target.value) } }))}
+                    />
+                    <span className="slider-readout mono">{draft.persona.humor}%</span>
+                  </div>
+                </Row>
                 <p className="note">
                   Я разговариваю не только о задачах: можно просто поболтать о дне, фильмах, идеях. Что {vy ? "вы расскажете" : "ты расскажешь"} о себе, я запомню —
                   список в разделе «Память».
@@ -1952,6 +2020,7 @@ export default function SettingsApp({
                   </ul>
                 )}
               </Group>
+              <LessonsSection draft={draft} set={set} notify={notify} vy={vy} />
               <Group title="Последние задачи">
                 {tasks.length === 0 ? (
                   <p className="empty">Задач ещё не было.</p>

@@ -80,6 +80,27 @@ CREATE TABLE IF NOT EXISTS reminders (
     runs        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS reminders_due ON reminders(done, due_at);
+CREATE TABLE IF NOT EXISTS lessons (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL,
+    key        TEXT NOT NULL DEFAULT '',
+    value      TEXT NOT NULL,
+    scope      TEXT NOT NULL DEFAULT '',
+    note       TEXT NOT NULL DEFAULT '',
+    source     TEXT NOT NULL DEFAULT 'model',
+    hits       INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS usage_log (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    tool    TEXT NOT NULL,
+    target  TEXT NOT NULL,
+    hour    INTEGER NOT NULL,
+    weekday INTEGER NOT NULL,
+    at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS usage_log_at ON usage_log(at);
 "#;
 
 pub struct Store {
@@ -207,6 +228,7 @@ impl Store {
             settings.provider = Default::default();
         }
         settings.appearance.normalize();
+        settings.persona.normalize();
         settings
     }
 
@@ -535,6 +557,21 @@ mod tests {
         let cfg = s.settings();
         assert_eq!(cfg.appearance.skin, "amber");
         assert_eq!(cfg.persona.user_name, "Павел");
+    }
+
+    #[test]
+    fn humour_level_from_before_the_slider_follows_the_manner() {
+        let s = Store::in_memory().unwrap();
+        s.kv_set("settings", r#"{"persona":{"style":"concise"}}"#).unwrap();
+        assert_eq!(s.settings().persona.humor, 10);
+        s.kv_set("settings", r#"{"persona":{"style":"witty"}}"#).unwrap();
+        assert_eq!(s.settings().persona.humor, 65);
+        s.kv_set("settings", r#"{"persona":{"style":"sarcastic","humor":90}}"#).unwrap();
+        assert_eq!(s.settings().persona.humor, 90);
+        s.kv_set("settings", r#"{"persona":{"style":"pirate","humor":30}}"#).unwrap();
+        let p = s.settings().persona;
+        assert_eq!((p.style.as_str(), p.humor), ("witty", 30));
+        assert_eq!(Store::in_memory().unwrap().settings().persona.humor, 65);
     }
 
     #[test]
