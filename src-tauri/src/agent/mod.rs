@@ -289,9 +289,11 @@ impl Agent {
         if let Some(hit) = ai::probe::cached_probe(base_url, model) {
             return Some(hit);
         }
-        ai::probe::probe_model(&self.state(), &self.registry, preset, base_url, model, false, false)
-            .await
-            .ok()
+        // Never hold a turn up for long: a slow or absent server is found out
+        // by the request itself.
+        let state = self.state();
+        let probe = ai::probe::probe_model(&state, &self.registry, preset, base_url, model, false, false);
+        tokio::time::timeout(std::time::Duration::from_secs(3), probe).await.ok()?.ok()
     }
 
     fn emit(&self, ev: AgentEvent) {
