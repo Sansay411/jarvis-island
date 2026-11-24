@@ -156,6 +156,7 @@ pub struct ToolMeta {
     pub parallel_safe: bool,
 }
 
+/// Every built-in tool, in registration order.
 fn builtin_tools() -> Vec<Tool> {
     system::tools()
         .into_iter()
@@ -240,4 +241,26 @@ impl Registry {
 /// Convenience for building JSON schemas inline.
 pub fn object(props: Value, required: &[&str]) -> Value {
     json!({ "type": "object", "properties": props, "required": required, "additionalProperties": false })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// `src/store/toolNames.json` lists the built-in tools for the eyes'
+    /// activity mapping (`activityOf`, checked by `emote.test.ts`). A new
+    /// tool must be added there, and so get its own animation.
+    #[test]
+    fn frontend_tool_list_matches_the_registry() {
+        let listed: BTreeSet<String> = serde_json::from_str(include_str!("../../../src/store/toolNames.json")).unwrap();
+        let registered: BTreeSet<String> = builtin_tools().into_iter().map(|t| t.name.to_string()).collect();
+        let missing: Vec<&String> = registered.difference(&listed).collect();
+        assert!(missing.is_empty(), "add to src/store/toolNames.json: {missing:?}");
+        // The macOS build has fewer executive tools; the list follows Windows.
+        if cfg!(windows) {
+            let stale: Vec<&String> = listed.difference(&registered).collect();
+            assert!(stale.is_empty(), "no longer registered, remove from src/store/toolNames.json: {stale:?}");
+        }
+    }
 }

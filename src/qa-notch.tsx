@@ -25,7 +25,10 @@ import { primeShelfThumbs } from "./island/shelfThumbs";
 import { useBluetooth } from "./store/bluetooth";
 import { useMentor } from "./store/mentor";
 import { useMcpPrompt } from "./store/mcpPrompt";
-import { remember, upcoming, useAgenda, type CalEvent } from "./store/agenda";
+import { useAgenda, remember, upcoming, type CalEvent } from "./store/agenda";
+import { usePrefs } from "./store/prefs";
+import { ACTIVITIES, emote as triggerEmote, type Activity, type Emote } from "./store/emote";
+import { SKINS, normalizeSkin, type SkinId } from "./island/skins/types";
 import { isoDateTime } from "./planner/dates";
 import type { BtDevice } from "./lib/types";
 
@@ -97,7 +100,31 @@ type PresetId =
   | "moment-level"
   | "growth-card"
   | "focus-cal"
-  | "secret";
+  | "secret"
+  | "skin-amber"
+  | "skin-orb"
+  | "skin-ice"
+  | "skin-pixel"
+  | "skin-minimal";
+
+const SAMPLE_TOOL_FOR_ACTIVITY: Record<Activity, { tool: string; title: string }> = {
+  search: { tool: "web_search", title: "Ищу в интернете" },
+  read: { tool: "file_read", title: "Читаю документ" },
+  type: { tool: "input_type", title: "Печатаю текст" },
+  click: { tool: "input_click", title: "Нажимаю кнопку" },
+  look: { tool: "screen_capture", title: "Смотрю на экран" },
+  draw: { tool: "screen_point", title: "Показываю на экране" },
+  files: { tool: "files_search", title: "Ищу файлы" },
+  music: { tool: "media_control", title: "Переключаю трек" },
+  calendar: { tool: "calendar_manage", title: "Сверяю календарь" },
+  memory: { tool: "memory_save", title: "Запоминаю факт" },
+  time: { tool: "reminder_create", title: "Ставлю таймер" },
+  system: { tool: "system_volume", title: "Настраиваю систему" },
+  code: { tool: "shell_run", title: "Выполняю команду" },
+  connect: { tool: "mcp__github__list_issues", title: "Запрос к MCP" },
+  speak: { tool: "speak_aloud", title: "Озвучиваю ответ" },
+  work: { tool: "custom_unknown_tool", title: "Выполняю задачу" },
+};
 
 function makeCoverArtDataUrl(hue: "ocean" | "crimson" | "gold"): string {
   const c = document.createElement("canvas");
@@ -439,6 +466,11 @@ const PRESETS: Array<{ id: PresetId; label: string }> = [
   { id: "growth-card", label: "22. Рост: карточка на острове" },
   { id: "focus-cal", label: "23. Фокус: блок из календаря" },
   { id: "secret", label: "24. Подключение: ввод ключа" },
+  { id: "skin-amber", label: "Облик: Янтарь" },
+  { id: "skin-orb", label: "Облик: Сфера" },
+  { id: "skin-ice", label: "Облик: Лёд" },
+  { id: "skin-pixel", label: "Облик: Пиксель" },
+  { id: "skin-minimal", label: "Облик: Минимал" },
 ];
 
 const SOURCES: Array<{ id: string; label: string; app: string; track: string; artist: string; hue: "ocean" | "crimson" | "gold" }> = [
@@ -516,6 +548,37 @@ function buildBtDevices(variant: "pods" | "single" | "low" | "away"): BtDevice[]
 function QaHarness() {
   const [activePreset, setActivePreset] = useState<PresetId>("nook");
   const [sourceIdx, setSourceIdx] = useState<number>(0);
+  const [activeSkin, setActiveSkin] = useState<SkinId>("amber");
+  const [activeActivity, setActiveActivity] = useState<Activity | null>(null);
+
+  const selectSkin = (skin: SkinId) => {
+    setActiveSkin(skin);
+    usePrefs.getState().setSkin(skin);
+  };
+
+  const selectActivity = (act: Activity | null) => {
+    setActiveActivity(act);
+    if (!act) {
+      useAgent.setState({ activeTurn: null, phase: null, items: [] });
+      return;
+    }
+    const sample = SAMPLE_TOOL_FOR_ACTIVITY[act];
+    useAgent.setState({
+      activeTurn: "qa-turn",
+      phase: "acting",
+      items: [
+        {
+          kind: "tool",
+          id: `qa-tool-${act}`,
+          turnId: "qa-turn",
+          tool: sample.tool,
+          title: sample.title,
+          status: "running",
+          args: {},
+        },
+      ],
+    });
+  };
 
   const seedMedia = (idx: number, playing = true) => {
     const src = SOURCES[idx % SOURCES.length]!;
@@ -592,6 +655,7 @@ function QaHarness() {
           }
         : { activeTurn: null, phase: null, items: [] },
     );
+    setActiveActivity(id === "thinking" ? "search" : null);
     useWeather.setState({ card: id === "weather" ? SAMPLE_WEATHER : id === "weather-tomorrow" ? { ...SAMPLE_WEATHER, focus: "tomorrow" } : null, here: SAMPLE_WEATHER, loadedAt: Date.now() });
     useGithub.setState({ state: id === "github-connect" ? { login: null, activity: null, error: null } : buildSampleGithub(), loading: false, formError: null });
 
@@ -698,6 +762,14 @@ function QaHarness() {
         break;
 
       case "compact":
+      case "skin-amber":
+      case "skin-orb":
+      case "skin-ice":
+      case "skin-pixel":
+      case "skin-minimal":
+        if (id.startsWith("skin-")) {
+          selectSkin(normalizeSkin(id.slice("skin-".length)));
+        }
         useSystem.setState({ media: null, artwork: null });
         useHub.setState({ focus: EMPTY_FOCUS });
         useIsland.setState({
@@ -960,6 +1032,18 @@ function QaHarness() {
     const presetParam = params.get("preset") as PresetId | null;
     const valid = PRESETS.some((p) => p.id === presetParam) ? presetParam! : "nook";
     applyPreset(valid, initialSrc);
+
+    const skinParam = params.get("skin");
+    if (skinParam) selectSkin(normalizeSkin(skinParam));
+
+    const actParam = params.get("activity") as Activity | null;
+    if (actParam && ACTIVITIES.some((a) => a.id === actParam)) {
+      if (!presetParam) applyPreset("compact", initialSrc);
+      selectActivity(actParam);
+    }
+
+    const emoteParam = params.get("emote") as Emote | null;
+    if (emoteParam) window.setTimeout(() => triggerEmote(emoteParam), 120);
   }, []);
 
   const cycleSource = (idx: number) => {
@@ -1002,6 +1086,52 @@ function QaHarness() {
               Без музыки
             </button>
           </div>
+        </div>
+
+        <div style={styles.skinRow}>
+          <span style={styles.sourceHint}>Облик:</span>
+          {SKINS.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              data-skin-pick={s.id}
+              onClick={() => selectSkin(s.id)}
+              style={{
+                ...styles.sourceChip,
+                ...(activeSkin === s.id ? styles.sourceChipActive : null),
+              }}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+
+        <div style={styles.skinRow}>
+          <span style={styles.sourceHint}>Работа:</span>
+          <button
+            type="button"
+            onClick={() => selectActivity(null)}
+            style={{
+              ...styles.sourceChip,
+              ...(activeActivity === null ? styles.sourceChipActive : null),
+            }}
+          >
+            Нет
+          </button>
+          {ACTIVITIES.map((a) => (
+            <button
+              key={a.id}
+              type="button"
+              data-activity-pick={a.id}
+              onClick={() => selectActivity(a.id)}
+              style={{
+                ...styles.sourceChip,
+                ...(activeActivity === a.id ? styles.sourceChipActive : null),
+              }}
+            >
+              {a.label}
+            </button>
+          ))}
         </div>
 
         <div style={styles.presetGrid}>
@@ -1074,6 +1204,12 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: "0.01em",
   },
   sourceGroup: {
+    display: "flex",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 5,
+  },
+  skinRow: {
     display: "flex",
     alignItems: "center",
     flexWrap: "wrap",

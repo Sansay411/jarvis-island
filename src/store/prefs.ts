@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { hasTauri, workspaceIpc } from "../lib/workspace-ipc";
+import { DEFAULT_SKIN, normalizeSkin, type SkinId } from "../island/skins/types";
 
 export interface Prefs {
   reduceMotion: boolean;
@@ -12,8 +13,11 @@ export interface Prefs {
   autoSpeakReplies: boolean;
   /** Minutes before a calendar event the island shows it; 0 = off. */
   islandRemind: number;
+  /** Visual look for JARVIS's eyes and island accents. */
+  skin: SkinId;
   setFullControl: (enabled: boolean) => Promise<boolean>;
   setAutoSpeakReplies: (enabled: boolean) => Promise<boolean>;
+  setSkin: (skin: SkinId) => void;
 }
 
 export const usePrefs = create<Prefs>((set) => ({
@@ -22,6 +26,9 @@ export const usePrefs = create<Prefs>((set) => ({
   fullControl: false,
   autoSpeakReplies: false,
   islandRemind: 10,
+  skin: DEFAULT_SKIN,
+
+  setSkin: (skin: SkinId) => set({ skin: normalizeSkin(skin) }),
 
   setFullControl: async (enabled: boolean) => {
     set({ fullControl: enabled });
@@ -64,6 +71,7 @@ async function load() {
         agent?: { fullControl?: boolean };
         voice?: { autoSpeakReplies?: boolean };
         planner?: { islandRemind?: number };
+        appearance?: { skin?: string };
       };
     }>("settings_get");
     if (v?.settings) {
@@ -73,6 +81,7 @@ async function load() {
         fullControl: !!v.settings.agent?.fullControl,
         autoSpeakReplies: !!v.settings.voice?.autoSpeakReplies,
         islandRemind: v.settings.planner?.islandRemind ?? 10,
+        skin: normalizeSkin(v.settings.appearance?.skin),
       });
     }
   } catch {

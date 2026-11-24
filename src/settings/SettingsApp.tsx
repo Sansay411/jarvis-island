@@ -19,7 +19,8 @@ import {
   workspaceIpc,
   type RoutineItem,
 } from "../lib/workspace-ipc";
-import { Eyes, type EyeMood } from "../island/Eyes";
+import { Eyes, type EyeMood, type SkinId } from "../island/Eyes";
+import { DEFAULT_SKIN, normalizeSkin, skinCssVars } from "../island/skins/types";
 import "./settings.css";
 import { TitleBar } from "./TitleBar";
 import { Group, Row, Segmented, Switch } from "./controls";
@@ -27,7 +28,9 @@ import { McpSection } from "./McpSection";
 import { SkillsSection } from "./SkillsSection";
 import { ModelSection, type ModelSectionQaMock } from "./ModelSection";
 import { CalendarSection, MentorSection, TelegramSection } from "./GrowthSections";
+import { SkinGallery } from "./SkinGallery";
 import { ACTIVITIES, EMOTES, emote, useEmote, type Activity } from "../store/emote";
+import { usePrefs } from "../store/prefs";
 import { LiveAudioBars, routineIconName, WsIcon } from "../workspace/WorkspaceIcons";
 import { Icon, type IconName } from "../ui/Icon";
 import { startUpdatesFeed, useUpdates } from "../store/updates";
@@ -65,6 +68,7 @@ export interface Settings {
     circleToAsk: boolean;
   };
   persona: { userName: string; address: "ty" | "vy"; style: "witty" | "warm" | "concise" };
+  appearance: { skin: SkinId };
   shortcuts: { workspace: string; voice: string; clipboard: string; area: string };
   privacy: { storeHistory: boolean; allowScreen: boolean; allowClipboardRead: boolean };
   clipboard: { enabled: boolean; maxItems: number; keepDays: number; skipSecrets: boolean; ignoredApps: string[] };
@@ -178,6 +182,7 @@ const FALLBACK_SETTINGS_VIEW: SettingsView = {
       circleToAsk: true,
     },
     persona: { userName: "Александр", address: "ty", style: "witty" },
+    appearance: { skin: DEFAULT_SKIN },
     shortcuts: { workspace: "Ctrl+Alt+J", voice: "Ctrl+Alt+K", clipboard: "Ctrl+Alt+V", area: "Ctrl+Alt+A" },
     privacy: { storeHistory: true, allowScreen: true, allowClipboardRead: true },
     clipboard: { enabled: true, maxItems: 200, keepDays: 30, skipSecrets: true, ignoredApps: ["KeepassXC.exe"] },
@@ -264,6 +269,9 @@ function normalizeSettingsView(v: SettingsView): SettingsView {
     ...v,
     settings: {
       ...v.settings,
+      appearance: {
+        skin: normalizeSkin(v.settings.appearance?.skin),
+      },
       updates: v.settings.updates ?? { autoCheck: true },
       agent: {
         ...v.settings.agent,
@@ -297,7 +305,7 @@ const SECTIONS: { id: Section; label: string; icon: IconName; hint: string }[] =
   { id: "general", label: "Основное", icon: "settings", hint: "Запуск, обновления и сочетания клавиш." },
   { id: "model", label: "Модель", icon: "bolt", hint: "Нейросеть, которая понимает просьбы и выполняет задачи." },
   { id: "voice", label: "Голос", icon: "mic", hint: "Как Джарвис говорит и как слышит." },
-  { id: "persona", label: "Характер", icon: "chat", hint: "Обращение и манера разговора." },
+  { id: "persona", label: "Характер", icon: "chat", hint: "Облик, обращение и манера разговора." },
   { id: "behaviour", label: "Самостоятельность", icon: "target", hint: "Что Джарвис делает сам, а что — только с вашего разрешения." },
   { id: "mentor", label: "Наставник", icon: "timer", hint: "Короткие видео по минутам, а польза — в награду." },
   { id: "calendar", label: "Календарь", icon: "calendar", hint: "Планировщик и синхронизация с Google Календарём." },
@@ -346,11 +354,13 @@ function useGaze(anchor: React.RefObject<HTMLElement | null>) {
 
 function Face({
   mood,
+  skin,
   level,
   caption,
   activity = null,
 }: {
   mood: EyeMood;
+  skin: SkinId;
   level: MotionValue<number>;
   caption: ReactNode;
   activity?: Activity | null;
@@ -364,6 +374,7 @@ function Face({
       <div className="face-notch">
         <Eyes
           mood={mood}
+          skin={skin}
           level={level}
           lookX={still ? undefined : lookX}
           lookY={still ? 0 : lookY}
@@ -1055,6 +1066,7 @@ export default function SettingsApp({
         setShortcutProblems(await invoke<string[]>("shortcut_problems").catch(() => []));
       } else {
         setView({ ...view, settings: structuredClone(draft) });
+        usePrefs.getState().setSkin(draft.appearance.skin);
       }
       notify("ok", "Сохранено");
       setHappy(true);
@@ -1112,11 +1124,12 @@ export default function SettingsApp({
   const nonEdgeVoices = ttsVoices.filter((v) => !v.id.startsWith("edge:"));
 
   return (
-    <div className="settings">
+    <div className="settings" data-skin={draft.appearance.skin} style={skinCssVars(draft.appearance.skin)}>
       <TitleBar />
       <aside className="rail">
         <Face
           mood={mood}
+          skin={draft.appearance.skin}
           activity={demoActivity}
           level={preview.level}
           caption={
@@ -1157,6 +1170,13 @@ export default function SettingsApp({
 
           {section === "persona" && (
             <>
+              <Group title="Облик">
+                <SkinGallery
+                  value={draft.appearance.skin}
+                  reduceMotion={draft.reduceMotion}
+                  onChange={(skin) => set((s) => ({ ...s, appearance: { ...s.appearance, skin } }))}
+                />
+              </Group>
               <Group title="Мимика">
                 <p className="note">Нажмите — лицо слева покажет выражение. Двойной клик по глазам — «тык».</p>
                 <div className="expr-grid">

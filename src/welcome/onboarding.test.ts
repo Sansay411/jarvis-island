@@ -32,6 +32,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
       cloudStt: true,
     circleToAsk: true,
     },
+    appearance: { skin: "amber" },
     persona: { userName: "", address: "ty", style: "witty" },
     shortcuts: { workspace: "Ctrl+Alt+J", voice: "Ctrl+Alt+K", clipboard: "Ctrl+Alt+V", area: "Ctrl+Alt+A" },
     privacy: { storeHistory: true, allowScreen: true, allowClipboardRead: false },

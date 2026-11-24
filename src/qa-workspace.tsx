@@ -16,7 +16,7 @@ import { useAgent, type ChatItem, type PlanStep } from "./store/agent";
 import { usePrefs } from "./store/prefs";
 import { ensureWorkspaceFeeds, useWorkspaceTts } from "./lib/workspace-ipc";
 
-type QaScene = "workspace-active" | "workspace-empty" | "settings-voice" | "settings-behaviour" | "settings-skills" | "settings-model";
+type QaScene = "workspace-active" | "workspace-empty" | "settings-voice" | "settings-behaviour" | "settings-skills" | "settings-model" | "settings-persona";
 
 const QA_MODEL_MOCK: ModelSectionQaMock = {
   models: {
@@ -249,6 +249,7 @@ function getInitialScene(): QaScene {
     p === "settings-behaviour" ||
     p === "settings-skills" ||
     p === "settings-model" ||
+    p === "settings-persona" ||
     p === "workspace-active"
   ) {
     return p;
@@ -294,6 +295,8 @@ function QaWorkspaceApp() {
           qaInitialProvider={{ preset: "ollama", baseUrl: "", model: "qwen2.5:7b", visionModel: "" }}
           qaModelMock={QA_MODEL_MOCK}
         />
+      ) : scene === "settings-persona" ? (
+        <SettingsApp initialSection="persona" />
       ) : (
         <SettingsApp initialSection="behaviour" />
       )}
@@ -327,6 +330,7 @@ function QaWorkspaceApp() {
             ["settings-behaviour", "4 · Настройки: Автопилот"],
             ["settings-skills", "5 · Настройки: Навыки"],
             ["settings-model", "6 · Настройки: Модель"],
+            ["settings-persona", "7 · Настройки: Облик и Характер"],
           ] as [QaScene, string][]
         ).map(([id, label]) => {
           const on = scene === id;

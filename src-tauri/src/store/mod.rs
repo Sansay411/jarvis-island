@@ -206,6 +206,7 @@ impl Store {
             }
             settings.provider = Default::default();
         }
+        settings.appearance.normalize();
         settings
     }
 
@@ -514,9 +515,40 @@ mod tests {
         let s = Store::in_memory().unwrap();
         let mut cfg = s.settings();
         assert_eq!(cfg.provider.model, "deepseek-flash");
+        assert_eq!(cfg.appearance.skin, "amber");
         cfg.provider.model = "qwen3.8-max".into();
+        cfg.appearance.skin = "orb".into();
         s.save_settings(&cfg).unwrap();
-        assert_eq!(s.settings().provider.model, "qwen3.8-max");
+        let loaded = s.settings();
+        assert_eq!(loaded.provider.model, "qwen3.8-max");
+        assert_eq!(loaded.appearance.skin, "orb");
+    }
+
+    #[test]
+    fn settings_saved_before_appearance_default_to_amber_skin() {
+        let s = Store::in_memory().unwrap();
+        s.kv_set("settings", r#"{"persona":{"userName":"Павел","style":"warm"}}"#).unwrap();
+        let cfg = s.settings();
+        assert_eq!(cfg.appearance.skin, "amber");
+        assert_eq!(cfg.persona.user_name, "Павел");
+    }
+
+    #[test]
+    fn unknown_skin_falls_back_to_amber() {
+        let s = Store::in_memory().unwrap();
+        s.kv_set("settings", r#"{"appearance":{"skin":"neon"}}"#).unwrap();
+        assert_eq!(s.settings().appearance.skin, "amber");
+        s.kv_set("settings", r#"{"appearance":{"skin":"pixel"}}"#).unwrap();
+        assert_eq!(s.settings().appearance.skin, "pixel");
+    }
+
+    /// The looks the UI offers (`src/island/skins/types.ts`) and the ones the
+    /// settings accept are the same.
+    #[test]
+    fn skin_ids_match_the_frontend() {
+        let ts = include_str!("../../../src/island/skins/types.ts");
+        let ids: Vec<&str> = ts.match_indices("id: \"").map(|(i, m)| ts[i + m.len()..].split('"').next().unwrap()).collect();
+        assert_eq!(ids, super::settings::SKINS);
     }
 
     #[test]
