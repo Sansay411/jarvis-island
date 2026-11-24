@@ -177,6 +177,12 @@ pub struct VoiceSettings {
     /// Detect circling the cursor around a screen area while talking and
     /// attach that region to the spoken request automatically.
     pub circle_to_ask: bool,
+    /// Microphone sensitivity mode: "auto" (speech-gated AGC) or "manual".
+    pub mic_gain_mode: String,
+    /// Manual microphone boost in dB (-6..=30) when `mic_gain_mode == "manual"`.
+    pub mic_gain_db: f32,
+    /// Noise suppression mode: "off", "auto" (default), or "strong".
+    pub noise_suppression: String,
 }
 
 impl Default for VoiceSettings {
@@ -199,6 +205,9 @@ impl Default for VoiceSettings {
             duck_media: true,
             cloud_stt: true,
             circle_to_ask: true,
+            mic_gain_mode: "auto".into(),
+            mic_gain_db: 0.0,
+            noise_suppression: "auto".into(),
         }
     }
 }

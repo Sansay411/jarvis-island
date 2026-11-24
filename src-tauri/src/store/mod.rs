@@ -508,6 +508,10 @@ mod tests {
         assert_eq!(cfg.shortcuts.clipboard, "Ctrl+Alt+V");
         assert_eq!(cfg.shortcuts.workspace, "Ctrl+Alt+J");
         assert_eq!(cfg.persona.user_name, "Павел");
+        // Voice mic conditioning fields default cleanly on old settings JSON.
+        assert_eq!(cfg.voice.mic_gain_mode, "auto");
+        assert_eq!(cfg.voice.mic_gain_db, 0.0);
+        assert_eq!(cfg.voice.noise_suppression, "auto");
     }
 
     #[test]

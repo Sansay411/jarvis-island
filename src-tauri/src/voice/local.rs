@@ -18,7 +18,8 @@ use tauri::{Emitter, Listener, Manager};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::audio::{AudioIo, SPEAKER_RATE};
+use super::audio::{AudioIo, MicChunk, SPEAKER_RATE};
+use super::conditioner::{self, ConditionerConfig};
 use super::intent::{self, is_stop, Intent};
 use super::phrases::PhraseSplitter;
 use super::models;
@@ -232,6 +233,42 @@ enum Ev {
     Quick(u64, AppResult<Transcript>),
     /// Apps made quieter for the conversation.
     Ducked(AppResult<Vec<crate::platform::audio::Ducked>>),
+}
+
+/// Levels of the phrase being heard, for the log (never the audio itself):
+/// live problems with quiet or noisy microphones are diagnosed from these.
+#[derive(Default)]
+struct UttLevels {
+    chunks: u32,
+    raw: f32,
+    post: f32,
+}
+
+impl UttLevels {
+    fn add(&mut self, chunk: &MicChunk) {
+        let raw = conditioner::db_to_lin(chunk.raw_db);
+        let post = conditioner::rms_of(&chunk.vad);
+        self.chunks += 1;
+        self.raw += raw * raw;
+        self.post += post * post;
+    }
+
+    fn log(self, last: &MicChunk, vad: &Vad) {
+        if self.chunks == 0 {
+            return;
+        }
+        let n = self.chunks as f32;
+        tracing::info!(
+            speech_raw_db = format_args!("{:.1}", conditioner::rms_to_db((self.raw / n).sqrt())),
+            speech_db = format_args!("{:.1}", conditioner::rms_to_db((self.post / n).sqrt())),
+            gain_db = format_args!("{:.1}", last.gain_db),
+            raw_floor_db = format_args!("{:.1}", last.raw_floor_db),
+            floor_db = format_args!("{:.1}", vad.floor_db()),
+            user_level_db = format_args!("{:.1}", vad.speech_db()),
+            ms = self.chunks * 32,
+            "voice: utterance levels"
+        );
+    }
 }
 
 struct Pipeline {
@@ -741,13 +778,16 @@ impl VoiceManager {
         .await
         .map_err(|e| AppError::internal(e.to_string()))??;
         let (input,output)=(cfg.input_device.clone(),cfg.output_device.clone());
-        let opening=tokio::task::spawn_blocking(move || AudioIo::start(&input,&output));
+        let cond_cfg = ConditionerConfig::from_voice_settings(&cfg);
+        let gains = self.mic_gains();
+        let opening=tokio::task::spawn_blocking(move || AudioIo::start(&input,&output,cond_cfg,gains));
         let (audio, mut mic) = tokio::select! {
             _=cancel.cancelled()=>return Err(AppError::Cancelled),
             res=opening=>res.map_err(|e|AppError::internal(e.to_string()))??,
         };
         self.listener_failures.store(0, std::sync::atomic::Ordering::Relaxed);
         self.mic_failures.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.set_mic_audio(&audio);
         // Levels a previous run turned down and never put back (it crashed or
         // was killed): restore them by app name.
         if let Some(saved) = store.kv_get(DUCK_KEY).and_then(|j| serde_json::from_str::<Vec<crate::platform::audio::Ducked>>(&j).ok()).filter(|l| !l.is_empty()) {
@@ -857,6 +897,8 @@ impl VoiceManager {
         let mut level_tick = tokio::time::interval(Duration::from_millis(33));
         let mut last_mic=Instant::now();
         let mut stale_seen=0;
+        let mut utt_levels = UttLevels::default();
+        let mut mic_testing = false;
         // A voice user is not looking at the screen: say it aloud when an
         // action waits for confirmation (given only by clicking on the island —
         // a misheard «да» must not send a message).
@@ -880,14 +922,40 @@ impl VoiceManager {
                         stale_seen=mic.stale_chunks;
                         vad.reset();
                     }
-                    let pcm: Vec<f32> = chunk.iter().map(|s| *s as f32 / 32768.0).collect();
+                    // Settings → «Проверить микрофон» is listening: the test
+                    // phrase («Джарвис, какая сегодня погода») is not a request.
+                    if self.mic_test_running() {
+                        if !mic_testing {
+                            mic_testing = true;
+                            vad.reset();
+                            pl.refresh_state(&vad);
+                        }
+                        continue;
+                    }
+                    mic_testing = false;
                     // Our own voice through speakers must be louder to count.
                     vad.echo_guard = pl.audio.is_playing() && !pl.audio.headphones;
                     vad.wake_preview = !pl.awake && pl.wake_enabled && pl.resting_since.is_none();
                     vad.endpoint_preview = pl.awake;
                     vad.quick_preview = pl.awake || (pl.wake_enabled && pl.resting_since.is_none());
-                    for event in vad.push(&pcm) { match event {
+                    let events = vad.push_pair(&chunk.vad, chunk.stt_samples());
+                    if vad.is_active() {
+                        utt_levels.add(&chunk);
+                    }
+                    if events.iter().any(|e| matches!(e, VadEvent::Ended(_))) {
+                        std::mem::take(&mut utt_levels).log(&chunk, &vad);
+                        // Remember what this microphone needs for next time.
+                        if chunk.learned {
+                            let mut gains = self.mic_gains();
+                            if conditioner::update_learned_gain(&mut gains, &pl.audio.input_device, chunk.gain_db) {
+                                self.save_mic_gains(&gains);
+                            }
+                        }
+                    }
+                    for event in events { match event {
                         VadEvent::Started => {
+                            utt_levels = UttLevels::default();
+                            utt_levels.add(&chunk);
                             pl.utterance_seq += 1;
                             pl.hearing_since=Some(Instant::now());
                             pl.hearing_continues = pl.last_ended.is_some_and(|e| continues_thought(e.elapsed(),pl.first_audio_pending));
@@ -906,6 +974,7 @@ impl VoiceManager {
                             tracing::debug!("voice: tail of an answered phrase dropped");
                         }
                         VadEvent::Ended(utterance) => {
+                            let utterance = conditioner::peak_normalize(&utterance);
                             pl.ended_seq = pl.utterance_seq;
                             pl.transcribing += 1;
                             let ended = Instant::now();
@@ -939,7 +1008,7 @@ impl VoiceManager {
                             let engine=self.stt.clone();
                             let path=pl.model_path.clone();
                             let tx=ev_tx.clone();
-                            tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&pcm);let _=tx.send(Ev::WakePreview(seq,res)); });
+                            tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&conditioner::peak_normalize(&pcm));let _=tx.send(Ev::WakePreview(seq,res)); });
                         }
                         VadEvent::Preview(_) => {}
                         VadEvent::Progress(pcm) if pl.awake && pl.progress_job.is_none() => {
@@ -948,7 +1017,7 @@ impl VoiceManager {
                             let engine=self.stt.clone();
                             let path=pl.model_path.clone();
                             let tx=ev_tx.clone();
-                            tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&pcm);let _=tx.send(Ev::Progress(seq,res)); });
+                            tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&conditioner::peak_normalize(&pcm));let _=tx.send(Ev::Progress(seq,res)); });
                         }
                         VadEvent::Progress(_) => {}
                         VadEvent::Quick(pcm) => {
@@ -956,7 +1025,7 @@ impl VoiceManager {
                             let engine=self.stt.clone();
                             let path=pl.model_path.clone();
                             let tx=ev_tx.clone();
-                            tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&pcm);let _=tx.send(Ev::Quick(seq,res)); });
+                            tokio::task::spawn_blocking(move || { let res=engine.transcribe(&path,&conditioner::peak_normalize(&pcm));let _=tx.send(Ev::Quick(seq,res)); });
                         }
                     } }
                     pl.refresh_state(&vad);

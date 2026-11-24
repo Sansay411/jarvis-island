@@ -404,6 +404,8 @@ pub fn run() {
             ipc::voice_toggle,
             ipc::voice_stop,
             ipc::voice_status,
+            ipc::voice_mic_monitor,
+            ipc::voice_mic_test,
             ipc::audio_devices,
             ipc::stt_models,
             ipc::stt_download,

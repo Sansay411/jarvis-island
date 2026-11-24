@@ -46,6 +46,8 @@ tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 sha2 = "0.11"
 # Pure-Rust MP3 frame decoder (#![forbid(unsafe_code)], +crt-static safe) for Edge Neural TTS streaming.
 nanomp3 = "0.2"
+# Pure-Rust RNNoise port for microphone noise suppression (48 kHz, 480-sample frames).
+nnnoiseless = { version = "=0.5.2", default-features = false }
 # Speech: GigaAM recognition, Silero VAD, neural TTS (static, CRT-static libs).
 sherpa-onnx = "1.13.8"
 # Model archives from the sherpa-onnx releases are .tar.bz2.

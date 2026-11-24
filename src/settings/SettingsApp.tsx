@@ -27,6 +27,8 @@ import { Group, Row, Segmented, Switch } from "./controls";
 import { McpSection } from "./McpSection";
 import { SkillsSection } from "./SkillsSection";
 import { ModelSection, type ModelSectionQaMock } from "./ModelSection";
+import { MicCheck } from "./MicCheck";
+import type { MicGainMode, NoiseMode } from "./micLevels";
 import { CalendarSection, MentorSection, TelegramSection } from "./GrowthSections";
 import { SkinGallery } from "./SkinGallery";
 import { ACTIVITIES, EMOTES, emote, useEmote, type Activity } from "../store/emote";
@@ -66,6 +68,9 @@ export interface Settings {
     duckMedia: boolean;
     cloudStt: boolean;
     circleToAsk: boolean;
+    micGainMode: MicGainMode;
+    micGainDb: number;
+    noiseSuppression: NoiseMode;
   };
   persona: { userName: string; address: "ty" | "vy"; style: "witty" | "warm" | "concise" };
   appearance: { skin: SkinId };
@@ -180,6 +185,9 @@ const FALLBACK_SETTINGS_VIEW: SettingsView = {
       duckMedia: true,
       cloudStt: true,
       circleToAsk: true,
+      micGainMode: "auto",
+      micGainDb: 0,
+      noiseSuppression: "auto",
     },
     persona: { userName: "Александр", address: "ty", style: "witty" },
     appearance: { skin: DEFAULT_SKIN },
@@ -291,6 +299,11 @@ function normalizeSettingsView(v: SettingsView): SettingsView {
         ttsPitch: typeof v.settings.voice.ttsPitch === "number" ? v.settings.voice.ttsPitch : 0,
         autoSpeakReplies: !!v.settings.voice.autoSpeakReplies,
         circleToAsk: v.settings.voice.circleToAsk ?? true,
+        micGainMode: v.settings.voice.micGainMode === "manual" ? "manual" : "auto",
+        micGainDb: typeof v.settings.voice.micGainDb === "number" ? v.settings.voice.micGainDb : 0,
+        noiseSuppression: (["off", "auto", "strong"] as const).includes(v.settings.voice.noiseSuppression)
+          ? v.settings.voice.noiseSuppression
+          : "auto",
       },
       shortcuts: {
         ...v.settings.shortcuts,
@@ -1587,6 +1600,16 @@ export default function SettingsApp({
                   </select>
                 </Row>
               </Group>
+
+              <MicCheck
+                value={{
+                  inputDevice: draft.voice.inputDevice,
+                  micGainMode: draft.voice.micGainMode,
+                  micGainDb: draft.voice.micGainDb,
+                  noiseSuppression: draft.voice.noiseSuppression,
+                }}
+                onChange={(patch) => set((s) => ({ ...s, voice: { ...s.voice, ...patch } }))}
+              />
             </>
           )}
 

@@ -2446,3 +2446,212 @@ details.more[open] {
     animation: none;
   }
 }
+
+/* ---------- microphone: meter and guided test ---------- */
+
+.mic-check {
+  padding: 16px 0 18px;
+  border-bottom: 1px solid var(--line);
+}
+.mic-check-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+.mic-check-title {
+  font-size: var(--fs-14);
+  font-weight: 500;
+  color: var(--text-1);
+}
+.mic-check-read {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 14px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.mic-check-read b {
+  font-weight: 500;
+  color: var(--text-2);
+}
+.mic-check-err {
+  color: var(--danger);
+}
+.mic-check-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.mic-check-device {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.mic-meter {
+  position: relative;
+  height: 10px;
+  border-radius: var(--r-pill);
+  background: #1c1c21;
+  box-shadow: inset 0 0 0 1px var(--line);
+  overflow: visible;
+}
+.mic-meter-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  transform-origin: left center;
+  background: linear-gradient(90deg, var(--amber-lo), var(--amber) 70%, var(--amber-hi));
+  opacity: 0.72;
+  transition: opacity var(--dur-med) var(--ease-out), box-shadow var(--dur-med) var(--ease-out);
+}
+.mic-meter.is-speech .mic-meter-fill {
+  opacity: 1;
+  box-shadow: 0 0 14px var(--amber-glow);
+}
+.mic-meter-target {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: var(--line-strong);
+}
+.mic-meter-floor {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--text-2);
+  z-index: 1;
+}
+.mic-meter-floor i {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.mic-test {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 26px;
+  min-height: 34px;
+}
+.mic-test .btn {
+  flex: none;
+}
+.mic-test-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.mic-test-step.is-say {
+  color: var(--amber-hi);
+  font-weight: 500;
+}
+.mic-test-bar {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: #24242a;
+  overflow: hidden;
+}
+.mic-test-bar span {
+  display: block;
+  height: 100%;
+  transform-origin: left center;
+  background: var(--amber);
+  transition: transform 120ms linear;
+}
+.mic-result {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: var(--r-md);
+  background: var(--field);
+  border: 1px solid var(--line-strong);
+}
+.mic-result-advice {
+  position: relative;
+  padding-left: 16px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--text-1);
+}
+.mic-result-advice::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.45em;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+.mic-result.is-warn .mic-result-advice::before {
+  background: var(--warn);
+}
+.mic-result.is-error .mic-result-advice::before {
+  background: var(--danger);
+}
+.mic-result-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.mic-result-grid div,
+.mic-result-heard {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.mic-result-grid span,
+.mic-result-heard span {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.mic-result-grid b {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+}
+.mic-result-grid em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.mic-result-heard {
+  margin-top: 12px;
+}
+.mic-result-heard q,
+.mic-result-heard em {
+  font-size: 13px;
+  color: var(--text-2);
+  font-style: normal;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mic-meter-fill,
+  .mic-test-bar span {
+    transition: none;
+  }
+}

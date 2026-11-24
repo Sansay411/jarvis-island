@@ -65,24 +65,61 @@ pub fn chunk_db(chunk: &[f32]) -> f32 {
 }
 
 /// Room noise floor: fast down, slow up, learned from non-speech chunks.
+/// Clamped to `FLOOR_MIN_DB..=FLOOR_MAX_DB` so quiet mics are never held back
+/// by an artificially high default, while digital zero (-120 dB) stays sane.
+const FLOOR_MIN_DB: f32 = -90.0;
+const FLOOR_MAX_DB: f32 = -20.0;
+/// Where the user's louder speech chunks sit before anything is learned:
+/// the AGC target, so a normal microphone gets the old -45 dB guard.
+const SPEECH_REF_DB: f32 = super::conditioner::TARGET_RMS_DB;
+/// Over JARVIS's voice, a chunk must be at most this far below the user's
+/// usual speech level (relative replacement of the old absolute -45 dBFS).
+const ECHO_BELOW_SPEECH_DB: f32 = 25.0;
+
 #[derive(Debug, Clone, Copy)]
-pub struct Floor(pub f32);
+pub struct Floor {
+    pub db: f32,
+    seeded: bool,
+    /// The user's speech level: tracks the louder chunks of accepted
+    /// speech heard while JARVIS was silent (fast up, slow down).
+    pub speech_db: f32,
+}
 
 impl Default for Floor {
     fn default() -> Self {
-        Floor(-55.0)
+        Floor { db: -70.0, seeded: false, speech_db: SPEECH_REF_DB }
     }
 }
 
 impl Floor {
     pub fn learn(&mut self, db: f32) {
-        let a = if db < self.0 { 0.3 } else { 0.03 };
-        self.0 = (self.0 + (db - self.0) * a).max(-75.0);
+        if !db.is_finite() {
+            return;
+        }
+        let clamped = db.clamp(FLOOR_MIN_DB, FLOOR_MAX_DB);
+        if !self.seeded {
+            self.db = clamped;
+            self.seeded = true;
+            return;
+        }
+        let a = if clamped < self.db { 0.3 } else { 0.03 };
+        self.db = (self.db + (clamped - self.db) * a).clamp(FLOOR_MIN_DB, FLOOR_MAX_DB);
     }
 
-    /// Whether a chunk is loud enough to be the user over JARVIS's voice.
+    /// Learn from a chunk of the user's own accepted speech.
+    pub fn learn_speech(&mut self, db: f32) {
+        if !db.is_finite() || db < self.db + ECHO_MARGIN_DB {
+            return;
+        }
+        let a = if db > self.speech_db { 0.10 } else { 0.01 };
+        self.speech_db = (self.speech_db + (db - self.speech_db) * a).clamp(-75.0, -5.0);
+    }
+
+    /// Whether a chunk is loud enough to be the user speaking over JARVIS's
+    /// voice: clearly over the room and not far below the user's own speech
+    /// level, both relative, so quiet microphones still work.
     pub fn passes_echo_guard(&self, db: f32) -> bool {
-        db >= self.0 + ECHO_MARGIN_DB && db > -45.0
+        db >= self.db + ECHO_MARGIN_DB && db >= self.speech_db - ECHO_BELOW_SPEECH_DB
     }
 }
 
@@ -105,8 +142,11 @@ pub struct Vad {
     pub endpoint_preview: bool,
     utterance_start: usize,
     last_preview: usize,
-    /// Recent samples; `history[0]` is sample number `history_base`.
+    /// Recent VAD-stream (denoised) samples; `history[0]` is `history_base`.
     history: VecDeque<f32>,
+    /// Parallel STT-stream (gently denoised mix in `auto`) samples, aligned
+    /// sample-for-sample with `history`.
+    stt_history: VecDeque<f32>,
     history_base: usize,
     /// Absolute sample index where the last `Ended` audio begins (padding
     /// included) — subtitles of transcribed files.
@@ -148,13 +188,19 @@ impl Vad {
             utterance_start: 0,
             last_preview: 0,
             history: VecDeque::with_capacity(HISTORY),
+            stt_history: VecDeque::with_capacity(HISTORY),
             history_base: 0,
             last_segment_start: 0,
         })
     }
 
     pub fn floor_db(&self) -> f32 {
-        self.floor.0
+        self.floor.db
+    }
+
+    /// The user's learned speech level on the detection stream.
+    pub fn speech_db(&self) -> f32 {
+        self.floor.speech_db
     }
 
     pub fn is_active(&self) -> bool {
@@ -162,12 +208,22 @@ impl Vad {
     }
 
     pub fn push(&mut self, chunk: &[f32]) -> Vec<VadEvent> {
-        let db = chunk_db(chunk);
-        self.det.accept_waveform(chunk);
-        self.quick.accept_waveform(chunk);
-        self.history.extend(chunk.iter().copied());
+        self.push_pair(chunk, chunk)
+    }
+
+    /// Feed aligned VAD (denoised) and STT (gently denoised) 16 kHz chunks.
+    /// Detection decisions and `Preview` use `vad_chunk`; `Ended`, `Progress`
+    /// and `Quick` return audio sliced from the parallel `stt_chunk` history.
+    pub fn push_pair(&mut self, vad_chunk: &[f32], stt_chunk: &[f32]) -> Vec<VadEvent> {
+        let stt_src = if stt_chunk.len() == vad_chunk.len() { stt_chunk } else { vad_chunk };
+        let db = chunk_db(vad_chunk);
+        self.det.accept_waveform(vad_chunk);
+        self.quick.accept_waveform(vad_chunk);
+        self.history.extend(vad_chunk.iter().copied());
+        self.stt_history.extend(stt_src.iter().copied());
         while self.history.len() > HISTORY {
             self.history.pop_front();
+            self.stt_history.pop_front();
             self.history_base += 1;
         }
         let mut events = Vec::new();
@@ -183,7 +239,7 @@ impl Vad {
             if self.accepted {
                 let start = seg.start().max(0) as usize;
                 self.last_segment_start = start.saturating_sub(PAD_BEFORE).max(self.history_base);
-                events.push(VadEvent::Ended(self.padded(start, seg.samples())));
+                events.push(VadEvent::Ended(self.padded_from(&self.stt_history, start, seg.samples())));
             }
             self.det.pop();
             self.accepted = false;
@@ -194,7 +250,7 @@ impl Vad {
             && seen.saturating_sub(self.utterance_start) <= QUICK_MAX + (QUICK_SILENCE_S * 16_000.) as usize
         {
             self.quick_sent = true;
-            events.push(VadEvent::Quick(self.utterance_so_far()));
+            events.push(VadEvent::Quick(self.utterance_so_far(&self.stt_history)));
         }
         if detected {
             if !self.accepted && (!self.echo_guard || self.floor.passes_echo_guard(db)) {
@@ -215,8 +271,11 @@ impl Vad {
                 self.last_preview=seen;
             }
             if self.accepted && self.endpoint_preview && !self.echo_guard && length >= PROGRESS_FROM && seen.saturating_sub(self.last_preview) >= PROGRESS_EVERY {
-                events.push(VadEvent::Progress(self.utterance_so_far()));
+                events.push(VadEvent::Progress(self.utterance_so_far(&self.stt_history)));
                 self.last_preview = seen;
+            }
+            if self.accepted && !self.echo_guard {
+                self.floor.learn_speech(db);
             }
         } else {
             self.floor.learn(db);
@@ -225,21 +284,21 @@ impl Vad {
         events
     }
 
-    /// The phrase with some audio before and after it, from the history;
+    /// The phrase with some audio before and after it, from `buf`;
     /// the bare segment if that part of the history is gone.
-    fn padded(&self, start: usize, segment: &[f32]) -> Vec<f32> {
-        let seen = self.history_base + self.history.len();
+    fn padded_from(&self, buf: &VecDeque<f32>, start: usize, segment: &[f32]) -> Vec<f32> {
+        let seen = self.history_base + buf.len();
         let from = start.saturating_sub(PAD_BEFORE).max(self.history_base);
         let to = (start + segment.len() + PAD_AFTER).min(seen);
         if start < self.history_base || from >= to {
             return segment.to_vec();
         }
-        self.history.range(from - self.history_base..to - self.history_base).copied().collect()
+        buf.range(from - self.history_base..to - self.history_base).copied().collect()
     }
 
-    fn utterance_so_far(&self) -> Vec<f32> {
+    fn utterance_so_far(&self, buf: &VecDeque<f32>) -> Vec<f32> {
         let from = self.utterance_start.saturating_sub(PAD_BEFORE).max(self.history_base);
-        self.history.range(from - self.history_base..).copied().collect()
+        buf.range(from - self.history_base..).copied().collect()
     }
 
     /// Forget a half-heard utterance.
@@ -247,6 +306,7 @@ impl Vad {
         self.det.reset();
         self.quick.reset();
         self.history.clear();
+        self.stt_history.clear();
         self.history_base = 0;
         self.in_speech = false;
         self.accepted = false;
@@ -263,16 +323,39 @@ mod tests {
         for _ in 0..40 {
             f.learn(-60.0);
         }
-        assert!((f.0 + 60.0).abs() < 1.0);
+        assert!((f.db + 60.0).abs() < 1.0);
         assert!(!f.passes_echo_guard(-52.0));
         assert!(f.passes_echo_guard(-30.0));
-        // Never below the absolute minimum, even in a silent room.
-        let mut quiet = Floor::default();
+        // A normal microphone in a silent room keeps the old -45 dB guard.
+        let mut silent = Floor::default();
         for _ in 0..100 {
-            quiet.learn(-110.0);
+            silent.learn(-110.0);
         }
-        assert!(quiet.0 >= -75.0);
-        assert!(!quiet.passes_echo_guard(-50.0));
+        assert!(silent.db >= FLOOR_MIN_DB);
+        assert!(!silent.passes_echo_guard(-50.0));
+        assert!(silent.passes_echo_guard(-44.0));
+    }
+
+    #[test]
+    fn echo_guard_follows_a_quiet_users_own_level() {
+        // A quiet microphone (manual gain, or AGC not converged yet): room at
+        // -78 dB, the user's words around -48 dB.
+        let mut f = Floor::default();
+        for _ in 0..40 {
+            f.learn(-78.0);
+        }
+        assert!(!f.passes_echo_guard(-55.0), "before any speech the guard is the normal one");
+        for i in 0..200 {
+            // Syllables: louder vowels, weaker consonants.
+            f.learn_speech(if i % 3 == 0 { -46.0 } else { -56.0 });
+        }
+        assert!((f.speech_db + 47.0).abs() < 4.0, "speech level {}", f.speech_db);
+        assert!(f.passes_echo_guard(-55.0), "the quiet user can interrupt");
+        assert!(!f.passes_echo_guard(-74.0), "faint pickup still does not");
+        // Room noise never counts as the user's speech.
+        let before = f.speech_db;
+        f.learn_speech(-70.0);
+        assert_eq!(f.speech_db, before);
     }
 
     #[test]
