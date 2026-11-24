@@ -111,6 +111,7 @@ body.overlay-window {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  width: max-content;
   max-width: 260px;
   padding: 5px 10px;
   border-radius: var(--r-pill);
@@ -184,6 +185,8 @@ body.overlay-window {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  /* Intrinsic width, so it does not shrink near the right edge. */
+  width: max-content;
   min-width: 220px;
   max-width: 390px;
   padding: 12px 14px;

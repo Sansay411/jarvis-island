@@ -164,6 +164,44 @@ export function placeCaption(
   return clampToViewport(sideX, targetRect.y + (targetRect.h - pillH) / 2, pillW, pillH, vp, pad, ISLAND_SAFE_TOP);
 }
 
+/** True when the straight segment `a`→`b` passes through `box` (grown by `gap`). */
+export function segmentHitsRect(a: Point2D, b: Point2D, box: CssRect, gap = 8): boolean {
+  const grown: CssRect = { x: box.x - gap, y: box.y - gap, w: box.w + gap * 2, h: box.h + gap * 2 };
+  const inside = (p: Point2D) =>
+    p.x >= grown.x && p.x <= grown.x + grown.w && p.y >= grown.y && p.y <= grown.y + grown.h;
+  const steps = 24;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    if (inside({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })) return true;
+  }
+  return false;
+}
+
+/**
+ * Where an arrow to `to` starts when the caller gives no `from`: the open
+ * diagonal (then the sides), skipping directions whose path would cross
+ * the caption or labels in `avoid`.
+ */
+export function arrowStart(to: Point2D, vp: ViewportSize, avoid: readonly CssRect[] = []): Point2D {
+  const fromRight = to.x < vp.width * 0.65;
+  const fromBelow = to.y < vp.height * 0.62;
+  const dx = fromRight ? 128 : -128;
+  const dy = fromBelow ? 92 : -92;
+  const offsets: Array<[number, number]> = [
+    [dx, dy],
+    [dx, -dy],
+    [-dx, dy],
+    [-dx, -dy],
+    [dx * 1.3, 0],
+    [-dx * 1.3, 0],
+  ];
+  const starts = offsets.map(([ox, oy]) => clampToViewport(to.x + ox, to.y + oy, 8, 8, vp, 24, ISLAND_SAFE_TOP));
+  const clear = starts.find(
+    (s) => Math.hypot(s.x - to.x, s.y - to.y) > 60 && !avoid.some((box) => segmentHitsRect(s, to, box)),
+  );
+  return clear ?? starts[0]!;
+}
+
 /**
  * Compute a smooth quadratic Bezier arrow pointing to `to` (stopping neatly at
  * the outer margin of `targetRect` when provided so the tip never covers the control).
@@ -173,16 +211,9 @@ export function computeArrowGeometry(
   from: Point2D | undefined,
   targetRect: CssRect | undefined,
   vp: ViewportSize,
+  avoid: readonly CssRect[] = [],
 ): ArrowCurve {
-  let start = from;
-  if (!start) {
-    // Approach from whichever horizontal/vertical quadrant has more open space.
-    const fromRight = to.x < vp.width * 0.65;
-    const fromBelow = to.y < vp.height * 0.62;
-    const dx = fromRight ? 108 : -108;
-    const dy = fromBelow ? 78 : -78;
-    start = clampToViewport(to.x + dx, to.y + dy, 8, 8, vp, 24, ISLAND_SAFE_TOP);
-  }
+  const start = from ?? arrowStart(to, vp, avoid);
 
   // Pull the arrow tip back to the outer edge of the target ring (+10px breathing space).
   let end = { ...to };

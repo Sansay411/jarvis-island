@@ -11,6 +11,7 @@ import {
   physicalToCssRect,
   placeCaption,
   placeCard,
+  rectsOverlap,
   type ViewportSize,
 } from "./coords";
 import type {
@@ -27,13 +28,8 @@ import type {
   Point2D,
   ScreenRect,
 } from "./types";
+import { liveItems, mergeItems, wrapItem, type ActiveItem } from "./items";
 import "./overlay.css";
-
-interface ActiveItem {
-  key: string;
-  item: OverlayItem;
-  expiresAt: number | null;
-}
 
 export interface OverlayQaProps {
   items: OverlayItem[];
@@ -56,7 +52,6 @@ const DEFAULT_MONITOR: OverlayMonitor = {
   scale: 1,
 };
 
-const DEFAULT_RING_SECONDS = 8;
 const CARD_DEFAULT_W = 316;
 const CARD_DEFAULT_H = 160;
 const PILL_EST_W = 340;
@@ -73,24 +68,6 @@ function toneColors(tone: OverlayTone | undefined): { ink: string; hi: string; g
     default:
       return { ink: "#ffb23f", hi: "#ffd88f", glow: "rgba(255, 178, 63, 0.48)" };
   }
-}
-
-let seqCounter = 1;
-
-function wrapItem(item: OverlayItem, now: number): ActiveItem {
-  const key = ("id" in item && item.id) ? item.id : `ov-${seqCounter++}`;
-  if (item.kind === "card") {
-    return { key, item, expiresAt: null };
-  }
-  if (item.persistent) {
-    return { key, item, expiresAt: null };
-  }
-  const secs = typeof item.seconds === "number" ? item.seconds : DEFAULT_RING_SECONDS;
-  return {
-    key,
-    item,
-    expiresAt: secs > 0 ? now + secs * 1000 : null,
-  };
 }
 
 function rectsEqual(a: ScreenRect[], b: ScreenRect[]): boolean {
@@ -210,6 +187,24 @@ export default function OverlayApp({ qa }: OverlayAppProps) {
     height: typeof window !== "undefined" ? window.innerHeight : 1080,
   }));
 
+  // Real sizes of captions and ring labels (`data-measure`), so they are
+  // placed by what they are, not by a guess.
+  const [sizes, setSizes] = useState<Record<string, { w: number; h: number }>>({});
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const next: Record<string, { w: number; h: number }> = {};
+    root.querySelectorAll<HTMLElement>("[data-measure]").forEach((el) => {
+      const k = el.dataset.measure;
+      if (k) next[k] = { w: el.offsetWidth, h: el.offsetHeight };
+    });
+    const keys = Object.keys(next);
+    const same =
+      keys.length === Object.keys(sizes).length &&
+      keys.every((k) => sizes[k]?.w === next[k]?.w && sizes[k]?.h === next[k]?.h);
+    if (!same) setSizes(next);
+  });
+
   // Sync QA harness props directly.
   useEffect(() => {
     if (!qa) return;
@@ -243,16 +238,7 @@ export default function OverlayApp({ qa }: OverlayAppProps) {
       if (payload.monitor) setMonitor(payload.monitor);
       const now = Date.now();
       const incoming = payload.items.map((it) => wrapItem(it, now));
-      setActive((prev) => {
-        if (payload.replace) return incoming;
-        const next = [...prev];
-        for (const item of incoming) {
-          const idx = next.findIndex((x) => x.key === item.key);
-          if (idx >= 0) next[idx] = item;
-          else next.push(item);
-        }
-        return next;
-      });
+      setActive((prev) => mergeItems(prev, incoming, payload.replace));
     };
 
     const syncSettings = async () => {
@@ -311,7 +297,7 @@ export default function OverlayApp({ qa }: OverlayAppProps) {
     const timer = window.setTimeout(() => {
       const now = Date.now();
       setActive((prev) => {
-        const remaining = prev.filter((a) => a.expiresAt === null || a.expiresAt > now);
+        const remaining = liveItems(prev, now);
         if (remaining.length === 0 && prev.length > 0 && isTauri()) {
           void invoke("overlay_dismiss_item", { id: null, empty: true }).catch(() => {});
         }
@@ -405,6 +391,41 @@ export default function OverlayApp({ qa }: OverlayAppProps) {
       )
     : undefined;
 
+  const sizeOf = (k: string, w: number, h: number) => sizes[k] ?? { w, h };
+
+  const captionBoxes = new Map<string, CssRect>();
+  for (const { key, item } of captions) {
+    const explicit =
+      typeof item.x === "number" && typeof item.y === "number"
+        ? physicalToCssPoint({ x: item.x, y: item.y }, monitor)
+        : undefined;
+    const targetCss = item.targetRect ? physicalToCssRect(item.targetRect, monitor) : primaryRingCss;
+    const size = sizeOf(`cap-${key}`, PILL_EST_W, PILL_EST_H);
+    const pos = placeCaption(explicit, targetCss, viewport, size.w, size.h);
+    captionBoxes.set(key, { x: pos.x, y: pos.y, w: size.w, h: size.h });
+  }
+
+  const labelBoxes = new Map<string, CssRect>();
+  for (const { key, item } of rings) {
+    if (!item.label || !item.label.trim()) continue;
+    const css = physicalToCssRect({ x: item.x, y: item.y, w: item.w, h: item.h }, monitor);
+    const size = sizeOf(`lbl-${key}`, 160, 28);
+    const cx = css.x + css.w / 2 - size.w / 2;
+    const tries = [
+      { x: cx, y: css.y - size.h - 14 },
+      { x: cx, y: css.y + css.h + 14 },
+      { x: css.x + css.w + 14, y: css.y + css.h / 2 - size.h / 2 },
+      { x: css.x - size.w - 14, y: css.y + css.h / 2 - size.h / 2 },
+    ].map((p) => clampToViewport(p.x, p.y, size.w, size.h, viewport, 12, 12));
+    const fits = (p: Point2D) => {
+      const box = { x: p.x, y: p.y, w: size.w, h: size.h };
+      return !rectsOverlap(box, css, 4) && ![...captionBoxes.values()].some((c) => rectsOverlap(box, c, 6));
+    };
+    const pos = tries.find(fits) ?? tries[0]!;
+    labelBoxes.set(key, { x: pos.x, y: pos.y, w: size.w, h: size.h });
+  }
+  const arrowAvoid = [...captionBoxes.values(), ...labelBoxes.values()];
+
   return (
     <div
       ref={rootRef}
@@ -494,7 +515,7 @@ export default function OverlayApp({ qa }: OverlayAppProps) {
           const targetCss = item.targetRect
             ? physicalToCssRect(item.targetRect, monitor)
             : primaryRingCss;
-          const curve = computeArrowGeometry(toCss, fromCss, targetCss, viewport);
+          const curve = computeArrowGeometry(toCss, fromCss, targetCss, viewport, arrowAvoid);
           const c = toneColors(item.tone);
           const d = `M ${curve.start.x.toFixed(1)} ${curve.start.y.toFixed(1)} Q ${curve.control.x.toFixed(1)} ${curve.control.y.toFixed(1)} ${curve.end.x.toFixed(1)} ${curve.end.y.toFixed(1)}`;
 
@@ -519,21 +540,16 @@ export default function OverlayApp({ qa }: OverlayAppProps) {
 
       {/* Ring floating labels */}
       {rings.map(({ key, item }) => {
-        if (!item.label || !item.label.trim()) return null;
-        const css = physicalToCssRect({ x: item.x, y: item.y, w: item.w, h: item.h }, monitor);
+        const box = labelBoxes.get(key);
+        if (!box || !item.label) return null;
         const c = toneColors(item.tone);
-        const aboveY = css.y - 38;
-        const pos = clampToViewport(
-          css.x + css.w / 2 - 80,
-          aboveY >= 12 ? aboveY : css.y + css.h + 12,
-          180,
-          28,
-          viewport,
-          12,
-          12,
-        );
         return (
-          <div key={`${key}-lbl`} className="ov-ring-label" style={{ left: `${pos.x}px`, top: `${pos.y}px` }}>
+          <div
+            key={`${key}-lbl`}
+            className="ov-ring-label"
+            data-measure={`lbl-${key}`}
+            style={{ left: `${box.x}px`, top: `${box.y}px` }}
+          >
             <span className="ov-ring-label-dot" style={{ background: c.ink, color: c.ink }} />
             <span>{item.label}</span>
           </div>
@@ -542,14 +558,7 @@ export default function OverlayApp({ qa }: OverlayAppProps) {
 
       {/* Caption pills */}
       {captions.map(({ key, item }) => {
-        const explicit =
-          typeof item.x === "number" && typeof item.y === "number"
-            ? physicalToCssPoint({ x: item.x, y: item.y }, monitor)
-            : undefined;
-        const targetCss = item.targetRect
-          ? physicalToCssRect(item.targetRect, monitor)
-          : primaryRingCss;
-        const pos = placeCaption(explicit, targetCss, viewport, PILL_EST_W, PILL_EST_H);
+        const pos = captionBoxes.get(key) ?? { x: 0, y: 0 };
         const hasSteps = typeof item.step === "number" && typeof item.total === "number" && item.total > 0;
         const stepCount = hasSteps ? Math.min(item.total as number, 10) : 0;
 
@@ -557,6 +566,7 @@ export default function OverlayApp({ qa }: OverlayAppProps) {
           <div
             key={key}
             className={`ov-caption${item.tone === "ok" ? " ov-caption--ok" : ""}`}
+            data-measure={`cap-${key}`}
             style={{ left: `${pos.x}px`, top: `${pos.y}px` }}
           >
             {hasSteps || item.badge || item.closable ? (

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  arrowStart,
   computeArrowGeometry,
   cssToPhysicalRect,
   isPointInHitRects,
@@ -8,6 +9,7 @@ import {
   placeCaption,
   placeCard,
   rectsOverlap,
+  segmentHitsRect,
 } from "./coords";
 import type { OverlayMonitor } from "./types";
 
@@ -96,5 +98,19 @@ describe("interactive hit regions", () => {
     expect(isPointInHitRects(rects, 96, 250, 0)).toBe(false);
     expect(isPointInHitRects(rects, 96, 250, 6)).toBe(true);
     expect(isPointInHitRects([], 250, 250, 6)).toBe(false);
+  });
+
+  it("routes the arrow around the caption pill", () => {
+    const vp = { width: 1440, height: 900 };
+    const to = { x: 300, y: 300 };
+    // Caption right below and to the right of the target: the default
+    // below-right diagonal would cross it.
+    const caption = { x: 200, y: 330, w: 380, h: 110 };
+    expect(segmentHitsRect({ x: 428, y: 392 }, to, caption)).toBe(true);
+    const start = arrowStart(to, vp, [caption]);
+    expect(segmentHitsRect(start, to, caption)).toBe(false);
+    expect(Math.hypot(start.x - to.x, start.y - to.y)).toBeGreaterThan(60);
+    // Nothing to avoid: the open diagonal.
+    expect(arrowStart(to, vp)).toEqual({ x: 428, y: 392 });
   });
 });

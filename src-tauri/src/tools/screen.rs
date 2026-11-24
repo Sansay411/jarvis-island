@@ -727,6 +727,28 @@ mod tests {
     }
 
     #[test]
+    fn capture_mapping_handles_downscaled_window_crops() {
+        // A 2560x1440 window on a right-hand monitor, sent as 1600x900.
+        let enc = capture::EncodedCapture {
+            data_url: String::new(),
+            image_width: 1600,
+            image_height: 900,
+            screen_rect: Rect { x: 1920, y: -200, width: 2560, height: 1440 },
+            scale: 1.6,
+            capture_ms: 0,
+            encode_ms: 0,
+            bytes: 0,
+        };
+        let m = CaptureMapping::from_encoded(7, &enc);
+        assert_eq!((m.scale_x, m.scale_y), (1.6, 1.6));
+        assert_eq!(m.map_point(0.0, 0.0), (1920, -200));
+        assert_eq!(m.map_point(100.0, 50.0), (2080, -120));
+        assert_eq!(m.map_rect(100.0, 50.0, 40.0, 20.0), Rect { x: 2080, y: -120, width: 64, height: 32 });
+        // The far corner of the image is the far corner of the window.
+        assert_eq!(m.map_point(1600.0, 900.0), (4480, 1240));
+    }
+
+    #[test]
     fn image_coordinates_map_to_screen() {
         CAPTURES.lock().push_front(CaptureMapping {
             id: 999,

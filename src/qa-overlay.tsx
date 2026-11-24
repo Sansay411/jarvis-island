@@ -64,8 +64,20 @@ function QaOverlayHarness() {
 
   useLayoutEffect(() => {
     measure();
+    // Web fonts and late layout move the fake controls: measure again.
+    void document.fonts?.ready.then(measure);
+    document.fonts?.addEventListener("loadingdone", measure);
+    const ro = new ResizeObserver(measure);
+    for (const el of [exportBtnRef, settingsBtnRef, syncToggleRef, shareBtnRef]) {
+      const parent = el.current?.parentElement;
+      if (parent) ro.observe(parent);
+    }
     window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      document.fonts?.removeEventListener("loadingdone", measure);
+      window.removeEventListener("resize", measure);
+    };
   }, []);
 
   useEffect(() => {

@@ -5,6 +5,7 @@
 //! physical bounds of a control in the foreground window) or by coordinates in
 //! the space of the last screenshot / physical screen.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,8 @@ use crate::platform::{self, uia, winmgr};
 
 const DEFAULT_POINT_SECONDS: f64 = 8.0;
 const DEFAULT_GUIDE_TIMEOUT_SECS: u64 = 120;
+/// Upper bound for `timeout_seconds`; the tool timeout leaves room above it.
+const MAX_GUIDE_TIMEOUT_SECS: u64 = 150;
 const DEFAULT_CLICK_MARGIN_CSS: f64 = 12.0;
 
 #[derive(Deserialize, Clone, Default)]
@@ -326,16 +329,28 @@ enum WaitOutcome {
     Timeout,
 }
 
+/// Stops the polling thread when the tool future is dropped (turn
+/// cancelled, tool timeout), so it never outlives its call.
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
 async fn wait_for_click(ctx: &ToolCtx, rect: Rect, margin: i32, timeout: Duration) -> AppResult<WaitOutcome> {
     let app = ctx.app.clone();
     let cancel = ctx.cancel.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let _guard = StopOnDrop(stop.clone());
     platform::blocking(move || {
         let (init_l, init_esc) = read_live_input().map(|(_, _, l, e)| (l, e)).unwrap_or((false, false));
         let mut detector = ClickWaitState::new(init_l, init_esc);
         let deadline = Instant::now() + timeout;
 
         loop {
-            if cancel.is_cancelled() {
+            if cancel.is_cancelled() || stop.load(Ordering::SeqCst) {
                 return Ok(WaitOutcome::TurnCancelled);
             }
             if overlay::is_guide_cancelled() {
@@ -347,22 +362,27 @@ async fn wait_for_click(ctx: &ToolCtx, rect: Rect, margin: i32, timeout: Duratio
             if let Some((px, py, lbutton, esc)) = read_live_input() {
                 match detector.poll(rect, margin, px, py, lbutton, esc) {
                     WaitInputEvent::EscPressed => return Ok(WaitOutcome::EscCancelled),
-                    WaitInputEvent::ClickedInside => return Ok(WaitOutcome::Clicked(px, py)),
-                    WaitInputEvent::ClickedOutside => {
-                        // Brief grace window in case the click hit the overlay's own cancel button.
-                        std::thread::sleep(Duration::from_millis(45));
-                        if overlay::is_guide_cancelled() {
-                            return Ok(WaitOutcome::UiCancelled);
+                    WaitInputEvent::ClickedInside => {
+                        // Let the press finish (menus open on release) and the
+                        // window settle before the agent looks at it again.
+                        let release_by = Instant::now() + Duration::from_millis(2500);
+                        while Instant::now() < release_by
+                            && read_live_input().is_some_and(|(_, _, down, _)| down)
+                            && !cancel.is_cancelled()
+                        {
+                            std::thread::sleep(Duration::from_millis(15));
                         }
-                        if cancel.is_cancelled() {
-                            return Ok(WaitOutcome::TurnCancelled);
-                        }
-                        overlay::pulse(&app);
+                        std::thread::sleep(Duration::from_millis(250));
+                        return Ok(WaitOutcome::Clicked(px, py));
                     }
+                    // Clicks on the overlay's own controls (the caption's
+                    // close button, a card) are not answers to the step.
+                    WaitInputEvent::ClickedOutside if overlay::interactive_hit(px, py) => {}
+                    WaitInputEvent::ClickedOutside => overlay::pulse(&app),
                     WaitInputEvent::None => {}
                 }
             }
-            std::thread::sleep(Duration::from_millis(25));
+            std::thread::sleep(Duration::from_millis(20));
         }
     })
     .await
@@ -528,7 +548,7 @@ async fn guide_step(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
         .map(|m| m.scale)
         .unwrap_or(1.0);
     let margin_px = (a.margin.unwrap_or(DEFAULT_CLICK_MARGIN_CSS).clamp(0.0, 64.0) * mon_scale).round() as i32;
-    let timeout = Duration::from_secs(a.timeout_seconds.unwrap_or(DEFAULT_GUIDE_TIMEOUT_SECS).clamp(5, 180));
+    let timeout = Duration::from_secs(a.timeout_seconds.unwrap_or(DEFAULT_GUIDE_TIMEOUT_SECS).clamp(10, MAX_GUIDE_TIMEOUT_SECS));
 
     overlay::reset_guide_cancel();
     overlay::set_guide_active(true);
@@ -574,14 +594,6 @@ async fn guide_step(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
 
     match wait_for_click(&ctx, r, margin_px, timeout).await? {
         WaitOutcome::Clicked(cx, cy) => {
-            // Let the clicked window open its menu or transition state before the next ui_inspect.
-            tokio::select! {
-                _ = ctx.cancel.cancelled() => {
-                    let _ = overlay::clear(&ctx.app);
-                    return Err(AppError::Cancelled);
-                }
-                _ = tokio::time::sleep(Duration::from_millis(160)) => {}
-            }
             if is_final {
                 let done_items = vec![json!({
                     "kind": "caption",
@@ -627,7 +639,7 @@ async fn guide_step(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
             let _ = overlay::clear(&ctx.app);
             Ok(ToolOutput::ok(
                 "Обучение отменено пользователем",
-                json!({ "status": "cancelled" }),
+                json!({ "status": "cancelled", "hint": "The user stopped the guide: do not call guide_step again in this turn." }),
             ))
         }
         WaitOutcome::TurnCancelled => {
@@ -638,7 +650,7 @@ async fn guide_step(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
             let _ = overlay::clear(&ctx.app);
             Ok(ToolOutput::ok(
                 "Время ожидания клика истекло",
-                json!({ "status": "timeout" }),
+                json!({ "status": "timeout", "hint": "The user did not click: stop the guide and briefly say where to continue." }),
             ))
         }
     }
@@ -735,7 +747,7 @@ pub fn tools() -> Vec<Tool> {
                     "wait": { "type": "string", "enum": ["click", "none"], "default": "click" },
                     "done": { "type": "boolean", "default": false },
                     "margin": { "type": "number", "minimum": 0, "maximum": 64 },
-                    "timeout_seconds": { "type": "integer", "minimum": 5, "maximum": 180 }
+                    "timeout_seconds": { "type": "integer", "minimum": 10, "maximum": 150 }
                 }),
                 &["text"],
             ),
@@ -744,7 +756,8 @@ pub fn tools() -> Vec<Tool> {
                 (Some(s), Some(t)) => format!("Подсказка: шаг {s} из {t}"),
                 _ => "Подсказка на экране".into(),
             },
-            timeout: Duration::from_secs(135),
+            // Longest wait plus target lookup, speech start and «Готово».
+            timeout: Duration::from_secs(MAX_GUIDE_TIMEOUT_SECS + 20),
             parallel_safe: false,
             handler: handler(guide_step),
         },
@@ -810,6 +823,7 @@ mod tests {
             assert!(!(t.title)(&json!({"label": "Сохранить", "step": 2, "total": 4})).is_empty());
         }
         let guide = list.iter().find(|t| t.name == "guide_step").unwrap();
-        assert!(guide.timeout.as_secs() >= 120);
+        assert!(guide.timeout.as_secs() > MAX_GUIDE_TIMEOUT_SECS + 5);
+        assert_eq!(guide.schema["properties"]["timeout_seconds"]["maximum"], MAX_GUIDE_TIMEOUT_SECS);
     }
 }
