@@ -4,6 +4,7 @@
 //! adapter next to [`openai`].
 
 pub mod openai;
+pub mod probe;
 pub mod types;
 
 use crate::error::{AppError, AppResult};
@@ -22,6 +23,40 @@ pub fn origin_of(base_url: &str) -> String {
     }
 }
 
+/// Whether `base_url` points to this machine or a `.local` mDNS host (where
+/// OpenAI-compatible servers commonly run without an API key).
+pub fn is_local_url(base_url: &str) -> bool {
+    url::Url::parse(base_url.trim()).ok().is_some_and(|u| {
+        matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "::1" | "[::1]"))
+            || u.host_str().is_some_and(|h| h.ends_with(".local"))
+    })
+}
+
+/// Resolve the optional API key for `base_url`, binding it to `KEY_ORIGIN` so
+/// a saved key never leaks to a different origin.
+pub fn resolve_key_for_url(preset_id: &str, base_url: &str, store: &Store, require_for_remote: bool) -> AppResult<Option<String>> {
+    let preset = settings::preset(preset_id);
+    if !preset.needs_key {
+        return Ok(None);
+    }
+    let key = secrets::get(secrets::LLM_API_KEY)?.filter(|k| !k.trim().is_empty());
+    let origin = origin_of(base_url);
+    match (key, store.kv_get(KEY_ORIGIN).filter(|o| !o.is_empty())) {
+        (None, _) if preset.id == "custom" && is_local_url(base_url) => Ok(None),
+        (None, _) if !require_for_remote => Ok(None),
+        (None, _) => Err(AppError::invalid("Добавьте API-ключ провайдера в настройках")),
+        (Some(k), Some(owner)) if owner == origin => Ok(Some(k)),
+        (Some(_), Some(_owner)) if !require_for_remote => Ok(None),
+        (Some(_), Some(owner)) => Err(AppError::invalid(format!(
+            "Сохранённый ключ относится к {owner}. Добавьте ключ для {origin} в настройках"
+        ))),
+        (Some(k), None) => {
+            store.kv_set(KEY_ORIGIN, &origin)?;
+            Ok(Some(k))
+        }
+    }
+}
+
 /// Build the configured client, or explain what is missing.
 ///
 /// The API key is sent only to the origin it was saved for and never to
@@ -36,38 +71,21 @@ pub fn client_from_settings(s: &Settings, store: &Store) -> AppResult<OpenAiComp
     if s.provider.model.trim().is_empty() {
         return Err(AppError::invalid("Укажите модель в настройках"));
     }
-    let key = if preset.needs_key {
+    if preset.id == "deepseek" && s.provider.base_url.trim().is_empty() {
         let key = secrets::get(secrets::LLM_API_KEY)?.filter(|k| !k.trim().is_empty());
-        let origin = origin_of(&base_url);
-        match (key, store.kv_get(KEY_ORIGIN).filter(|o| !o.is_empty())) {
+        if key.is_none() {
             // DeepSeek without an own key (installs from before Jarvis
             // Cloud): the same model through the free tier.
-            (None, _) if preset.id == "deepseek" && s.provider.base_url.trim().is_empty() => {
-                return Ok(OpenAiCompatible::new(
-                    crate::cloud::API.into(),
-                    None,
-                    settings::preset("jarvis-cloud").default_model.into(),
-                    false,
-                    s.provider.temperature,
-                ))
-            }
-            (None, _) => return Err(AppError::invalid("Добавьте API-ключ провайдера в настройках")),
-            (Some(k), Some(owner)) if owner == origin => Some(k),
-            (Some(_), Some(owner)) => {
-                return Err(AppError::invalid(format!(
-                    "Сохранённый ключ относится к {owner}. Добавьте ключ для {origin} в настройках"
-                )))
-            }
-            // A key saved before keys were bound to an origin belongs to the
-            // provider it has been used with.
-            (Some(k), None) => {
-                store.kv_set(KEY_ORIGIN, &origin)?;
-                Some(k)
-            }
+            return Ok(OpenAiCompatible::new(
+                crate::cloud::API.into(),
+                None,
+                settings::preset("jarvis-cloud").default_model.into(),
+                false,
+                s.provider.temperature,
+            ));
         }
-    } else {
-        None
-    };
+    }
+    let key = resolve_key_for_url(&s.provider.preset, &base_url, store, true)?;
     Ok(OpenAiCompatible::new(base_url, key, s.provider.model.trim().to_string(), preset.dashscope, s.provider.temperature))
 }
 

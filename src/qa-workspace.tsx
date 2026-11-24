@@ -9,13 +9,64 @@ import "./styles/base.css";
 import "./island/island.css";
 import { WorkspaceView } from "./workspace/WorkspaceView";
 import SettingsApp from "./settings/SettingsApp";
+import type { ModelSectionQaMock } from "./settings/ModelSection";
 import { Eyes } from "./island/Eyes";
 import { BROW_H, bottomRadius, notchPath } from "./island/geometry";
 import { useAgent, type ChatItem, type PlanStep } from "./store/agent";
 import { usePrefs } from "./store/prefs";
 import { ensureWorkspaceFeeds, useWorkspaceTts } from "./lib/workspace-ipc";
 
-type QaScene = "workspace-active" | "workspace-empty" | "settings-voice" | "settings-behaviour";
+type QaScene = "workspace-active" | "workspace-empty" | "settings-voice" | "settings-behaviour" | "settings-model";
+
+const QA_MODEL_MOCK: ModelSectionQaMock = {
+  models: {
+    serverKind: "ollama",
+    models: [
+      {
+        id: "qwen2.5:7b",
+        vision: "no",
+        tools: "yes",
+        maxContext: 32768,
+        loadedContext: 8192,
+        state: "loaded",
+        suitable: false,
+        reason: "Контекст 8k < ~14k",
+      },
+      {
+        id: "qwen2.5vl:7b",
+        vision: "yes",
+        tools: "yes",
+        maxContext: 32768,
+        loadedContext: 32768,
+        state: "loaded",
+        suitable: true,
+        reason: null,
+      },
+      {
+        id: "nomic-embed-text:latest",
+        vision: "no",
+        tools: "no",
+        maxContext: 2048,
+        loadedContext: null,
+        state: null,
+        suitable: false,
+        reason: "Не вызывает инструменты",
+      },
+    ],
+  },
+  probe: {
+    vision: "no",
+    tools: "yes",
+    context: { modelMax: 32768, loaded: 8192, needed: 14120, source: "ps" },
+    verdict: "bad",
+    summary: "Контекста 8k не хватает для инструкций и инструментов (нужно ~14k).",
+    notes: [
+      "Для вопросов про экран выберите модель с картинками (например Qwen-VL) в поле «Модель для экрана».",
+      "В настройках Ollama поставьте Context length 32k или запустите с OLLAMA_CONTEXT_LENGTH=32768.",
+    ],
+    serverKind: "ollama",
+  },
+};
 
 const SAMPLE_PLAN: PlanStep[] = [
   { id: "s1", title: "Снимок раскладки окон и диагностика ресурсов ПК", status: "done" },
@@ -192,7 +243,13 @@ function IslandWorkspaceFrame() {
 function getInitialScene(): QaScene {
   if (typeof window === "undefined") return "workspace-active";
   const p = new URLSearchParams(window.location.search).get("scene");
-  if (p === "workspace-empty" || p === "settings-voice" || p === "settings-behaviour" || p === "workspace-active") {
+  if (
+    p === "workspace-empty" ||
+    p === "settings-voice" ||
+    p === "settings-behaviour" ||
+    p === "settings-model" ||
+    p === "workspace-active"
+  ) {
     return p;
   }
   return "workspace-active";
@@ -228,6 +285,12 @@ function QaWorkspaceApp() {
         <IslandWorkspaceFrame />
       ) : scene === "settings-voice" ? (
         <SettingsApp initialSection="voice" />
+      ) : scene === "settings-model" ? (
+        <SettingsApp
+          initialSection="model"
+          qaInitialProvider={{ preset: "ollama", baseUrl: "", model: "qwen2.5:7b", visionModel: "" }}
+          qaModelMock={QA_MODEL_MOCK}
+        />
       ) : (
         <SettingsApp initialSection="behaviour" />
       )}
@@ -259,6 +322,7 @@ function QaWorkspaceApp() {
             ["workspace-empty", "2 · Пустой чат + Сценарии"],
             ["settings-voice", "3 · Настройки: Голос HD"],
             ["settings-behaviour", "4 · Настройки: Автопилот"],
+            ["settings-model", "5 · Настройки: Модель"],
           ] as [QaScene, string][]
         ).map(([id, label]) => {
           const on = scene === id;

@@ -33,4 +33,6 @@ pub enum AgentEvent {
     Waiting { turn_id: String, seconds: u64 },
     /// A message that did not come from a model turn (background job results).
     Report { text: String, tone: &'static str },
+    /// Quiet status notice shown in the chat without entering LLM history.
+    Notice { text: String, tone: &'static str },
 }

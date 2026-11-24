@@ -917,6 +917,9 @@
 .notice-error {
   color: #ffb3a9;
 }
+.notice-warn {
+  color: var(--warn);
+}
 
 /* ---------- tool rows ---------- */
 

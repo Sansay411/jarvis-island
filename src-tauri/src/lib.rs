@@ -415,6 +415,8 @@ pub fn run() {
             ipc_agent::secret_set,
             ipc_agent::secret_clear,
             ipc_agent::provider_test,
+            ipc_agent::model_probe,
+            ipc_agent::models_list,
             ipc_agent::memories_list,
             ipc_agent::memory_delete,
             ipc_agent::history_clear,

@@ -40,6 +40,7 @@ export type AgentEvent =
   | { type: "turnFinished"; turnId: string; status: "completed" | "cancelled" | "failed" | "ignored"; error: string | null }
   | { type: "turn_done"; turnId: string; status?: "completed" | "cancelled" | "failed" | "ignored"; error?: string | null }
   | { type: "report"; text: string; tone: "ok" | "error" }
+  | { type: "notice"; text: string; tone: "warn" | "info" | "error" }
   | { type: "waiting"; turnId: string; seconds: number };
 
 export interface AgentStatus {

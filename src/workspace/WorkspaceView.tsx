@@ -452,7 +452,7 @@ export const WorkspaceView = memo(function WorkspaceView({ visible = true }: { v
               case "notice":
                 return (
                   <div key={it.id} className={`notice notice-${it.tone}`}>
-                    {it.tone === "error" && <Icon name="alert" size={14} />}
+                    {(it.tone === "error" || it.tone === "warn") && <Icon name="alert" size={14} />}
                     {it.text}
                   </div>
                 );

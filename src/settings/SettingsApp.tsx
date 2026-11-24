@@ -24,6 +24,7 @@ import "./settings.css";
 import { TitleBar } from "./TitleBar";
 import { Group, Row, Segmented, Switch } from "./controls";
 import { McpSection } from "./McpSection";
+import { ModelSection, type ModelSectionQaMock } from "./ModelSection";
 import { CalendarSection, MentorSection, TelegramSection } from "./GrowthSections";
 import { ACTIVITIES, EMOTES, emote, useEmote, type Activity } from "../store/emote";
 import { LiveAudioBars, routineIconName, WsIcon } from "../workspace/WorkspaceIcons";
@@ -215,6 +216,30 @@ const FALLBACK_SETTINGS_VIEW: SettingsView = {
       label: "DeepSeek",
       baseUrl: "https://api.deepseek.com/v1",
       defaultModel: "deepseek-chat",
+      needsKey: true,
+      dashscope: false,
+    },
+    {
+      id: "ollama",
+      label: "Ollama (локально)",
+      baseUrl: "http://localhost:11434/v1",
+      defaultModel: "",
+      needsKey: false,
+      dashscope: false,
+    },
+    {
+      id: "lmstudio",
+      label: "LM Studio (локально)",
+      baseUrl: "http://localhost:1234/v1",
+      defaultModel: "",
+      needsKey: false,
+      dashscope: false,
+    },
+    {
+      id: "custom",
+      label: "Другой OpenAI-совместимый",
+      baseUrl: "",
+      defaultModel: "",
       needsKey: true,
       dashscope: false,
     },
@@ -867,8 +892,12 @@ function RoutinesSettingsManager({ notify }: { notify: (tone: Tone, text: string
 
 export default function SettingsApp({
   initialSection = "general",
+  qaInitialProvider,
+  qaModelMock,
 }: {
   initialSection?: Section;
+  qaInitialProvider?: Partial<Settings["provider"]>;
+  qaModelMock?: ModelSectionQaMock | null;
 } = {}) {
   const [view, setView] = useState<SettingsView | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
@@ -903,6 +932,9 @@ export default function SettingsApp({
   const load = async () => {
     if (!hasTauri()) {
       const norm = normalizeSettingsView(FALLBACK_SETTINGS_VIEW);
+      if (qaInitialProvider) {
+        norm.settings.provider = { ...norm.settings.provider, ...qaInitialProvider };
+      }
       setView(norm);
       setDraft(structuredClone(norm.settings));
       return;
@@ -1488,79 +1520,25 @@ export default function SettingsApp({
           )}
 
           {section === "model" && (
-            <Group>
-              <Row label="Провайдер">
-                <select
-                  value={draft.provider.preset}
-                  onChange={(e) => {
-                    const p = view.presets.find((x) => x.id === e.target.value)!;
-                    set((s) => ({
-                      ...s,
-                      provider: { ...s.provider, preset: p.id, baseUrl: "", model: p.defaultModel || s.provider.model },
-                    }));
-                  }}
-                >
-                  {view.presets.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </Row>
-              {preset.needsKey && (
+            <ModelSection
+              provider={draft.provider}
+              presets={view.presets}
+              preset={preset}
+              hasLlmKey={view.hasLlmKey}
+              busy={busy}
+              onPatchProvider={(patch) => set((s) => ({ ...s, provider: { ...s.provider, ...patch } }))}
+              onTest={() => void test()}
+              qaMock={qaModelMock}
+              renderKeyField={(baseUrl) => (
                 <KeyField
                   kind="llm"
                   has={view.hasLlmKey}
-                  baseUrl={draft.provider.baseUrl.trim() || preset.baseUrl}
+                  baseUrl={baseUrl}
                   onChanged={() => void load()}
                   notify={notify}
                 />
               )}
-              <details className="more">
-                <summary>Адрес API и модель для изображений</summary>
-              <Row label="Адрес API" hint={preset.baseUrl ? `Пусто — ${preset.baseUrl}` : "Укажите адрес OpenAI-совместимого API."}>
-                <input
-                  className="mono"
-                  value={draft.provider.baseUrl}
-                  placeholder={preset.baseUrl}
-                  spellCheck={false}
-                  onChange={(e) => set((s) => ({ ...s, provider: { ...s.provider, baseUrl: e.target.value } }))}
-                />
-              </Row>
-              <Row
-                label="Модель"
-                hint={
-                  preset.id === "jarvis-cloud"
-                    ? "DeepSeek V4.1 Flash через Jarvis Cloud: без ключа, с дневным лимитом на устройство."
-                    : preset.id === "deepseek"
-                    ? "V4.1 Flash: быстрые ответы, понимание экрана и поиск в интернете."
-                    : preset.dashscope
-                      ? "qwen3.8-flash: быстрее, qwen3.8-max: сильнее."
-                      : undefined
-                }
-              >
-                <input
-                  className="mono"
-                  value={draft.provider.model}
-                  spellCheck={false}
-                  onChange={(e) => set((s) => ({ ...s, provider: { ...s.provider, model: e.target.value } }))}
-                />
-              </Row>
-              <Row label="Модель для изображений" hint="Пусто — та же модель.">
-                <input
-                  className="mono"
-                  value={draft.provider.visionModel}
-                  spellCheck={false}
-                  onChange={(e) => set((s) => ({ ...s, provider: { ...s.provider, visionModel: e.target.value } }))}
-                />
-              </Row>
-              </details>
-              <Row label="Проверить подключение" hint="Короткий запрос к модели с этим ключом.">
-                <button className="btn" disabled={busy} onClick={() => void test()}>
-                  {busy ? "Проверяю…" : "Проверить"}
-                </button>
-              </Row>
-            </Group>
+            />
           )}
 
           {section === "behaviour" && (

@@ -196,6 +196,42 @@ pub async fn provider_test(state: State<'_, AppState>) -> AppResult<ProviderTest
     })
 }
 
+fn effective_probe_url(preset: &str, base_url: &str) -> String {
+    let trimmed = base_url.trim();
+    if trimmed.is_empty() {
+        crate::store::settings::preset(preset).base_url.to_string()
+    } else {
+        trimmed.trim_end_matches('/').to_string()
+    }
+}
+
+/// Probe a local or custom model for vision, tool-calling, and context window.
+#[tauri::command]
+pub async fn model_probe(
+    state: State<'_, AppState>,
+    agent: State<'_, Arc<Agent>>,
+    preset: String,
+    base_url: String,
+    model: String,
+    active: Option<bool>,
+    refresh: Option<bool>,
+) -> AppResult<ai::probe::ModelProbe> {
+    let url = effective_probe_url(&preset, &base_url);
+    ai::probe::probe_model(&state, agent.registry(), &preset, &url, &model, active.unwrap_or(false), refresh.unwrap_or(false)).await
+}
+
+/// List models exposed by a local or custom OpenAI-compatible server.
+#[tauri::command]
+pub async fn models_list(
+    state: State<'_, AppState>,
+    agent: State<'_, Arc<Agent>>,
+    preset: String,
+    base_url: String,
+) -> AppResult<ai::probe::ModelsListResult> {
+    let url = effective_probe_url(&preset, &base_url);
+    ai::probe::list_models(&state, agent.registry(), &preset, &url).await
+}
+
 // ---------- memory & history ----------
 
 #[tauri::command]

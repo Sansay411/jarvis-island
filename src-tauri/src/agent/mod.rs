@@ -7,7 +7,7 @@
 //! results — never assumed before the model says the request is done).
 
 pub mod events;
-mod prompt;
+pub(crate) mod prompt;
 pub(crate) mod fast;
 
 use std::collections::{HashMap, HashSet};
@@ -116,6 +116,8 @@ struct Inner {
     /// model answers it: words the model judged not meant for JARVIS leave
     /// no trace in the conversation.
     deferred_user: Option<(String, ChatMessage)>,
+    /// Local/custom `(base_url, model)` pairs already warned once in the island.
+    warned_models: HashSet<(String, String)>,
 }
 
 pub struct Agent {
@@ -264,8 +266,32 @@ impl Agent {
                 pending_messages: Vec::new(),
                 waiters: HashMap::new(),
                 deferred_user: None,
+                warned_models: HashSet::new(),
             }),
         })
+    }
+
+    pub fn registry(&self) -> &Arc<Registry> {
+        &self.registry
+    }
+
+    fn warn_once(&self, base_url: &str, model: &str, text: String) {
+        let key = (base_url.trim().trim_end_matches('/').to_lowercase(), model.trim().to_string());
+        if self.inner.lock().warned_models.insert(key) {
+            self.emit(AgentEvent::Notice { text, tone: "warn" });
+        }
+    }
+
+    async fn probe_local_model(&self, preset: &str, base_url: &str, model: &str) -> Option<ai::probe::ModelProbe> {
+        if !crate::store::settings::is_local_or_custom(preset) {
+            return None;
+        }
+        if let Some(hit) = ai::probe::cached_probe(base_url, model) {
+            return Some(hit);
+        }
+        ai::probe::probe_model(&self.state(), &self.registry, preset, base_url, model, false, false)
+            .await
+            .ok()
     }
 
     fn emit(&self, ev: AgentEvent) {
@@ -742,6 +768,34 @@ impl Agent {
         // speaker (`speak_aloud` plays on its own output) made two voices talk
         // at once (log 2026-11-18 16:03:55).
         if turn.voice { specs.retain(|s| s.name != "speak_aloud"); }
+        let local_probe = self
+            .probe_local_model(&turn.settings.provider.preset, &client.base_url, &client.model)
+            .await;
+        if let Some(p) = &local_probe {
+            if let Some(ctx) = p.context.loaded.or(p.context.model_max).filter(|&c| c < p.context.needed) {
+                let have_k = (ctx as f64 / 1000.0).round() as u64;
+                let need_k = (p.context.needed as f64 / 1000.0).round() as u64;
+                let fix = p
+                    .notes
+                    .iter()
+                    .find(|n| n.contains("Context") || n.contains("контекст"))
+                    .cloned()
+                    .unwrap_or_default();
+                self.warn_once(
+                    &client.base_url,
+                    &client.model,
+                    format!("Контекст модели «{}» (~{have_k}k) меньше нужных ~{need_k}k. {fix}", client.model),
+                );
+            }
+            if p.tools == ai::probe::Capability::No {
+                specs.clear();
+                self.warn_once(
+                    &client.base_url,
+                    &client.model,
+                    format!("Модель «{}» не умеет вызывать инструменты — Джарвис сможет только болтать.", client.model),
+                );
+            }
+        }
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
         // Gathered once: the same text on every step keeps the cache warm.
         let turn_context = prompt::turn_context(&turn.settings, &self.state().history, turn.heard);
@@ -817,16 +871,37 @@ impl Agent {
                 prompt::system_prompt(&turn.settings, &memories, &names, turn.voice)
             };
             let messages = self.context(system, &turn_context);
-            let use_vision = !vision_model.is_empty() && messages.last().is_some_and(ChatMessage::has_images);
+            let has_images = messages.last().is_some_and(ChatMessage::has_images);
+            let use_vision = !vision_model.is_empty() && has_images;
+            if has_images && !use_vision && local_probe.as_ref().is_some_and(|p| p.vision == ai::probe::Capability::No) {
+                let hint = format!(
+                    "Модель «{}» не видит изображения, поэтому я не могу разобрать экран или картинку. Выберите модель с картинками (например Qwen-VL) или укажите её в Настройках → «Модель» → «Модель для экрана».",
+                    client.model
+                );
+                if let Some(tx) = &turn.deltas {
+                    let _ = tx.send(hint.clone());
+                }
+                self.emit(AgentEvent::TextDelta { turn_id: turn.id.clone(), text: hint.clone() });
+                self.push_history(conversation_id, ChatMessage::text(Role::Assistant, hint), None, None, persist);
+                return Ok(false);
+            }
             let model = if use_vision { client.with_model(&vision_model) } else { client.clone() };
+            let vision_no_tools = if use_vision {
+                self.probe_local_model(&turn.settings.provider.preset, &client.base_url, &vision_model)
+                    .await
+                    .is_some_and(|p| p.tools == ai::probe::Capability::No)
+            } else {
+                false
+            };
+            let active_specs: &[crate::ai::types::ToolSpec] = if vision_no_tools { &[] } else { &specs };
 
             let turn_id = turn.id.clone();
             let app = self.app.clone();
             let deltas = turn.deltas.clone();
             // Only the first answer of an ambient turn may be silence.
             let mut gate = (turn.heard.may_be_silent() && *steps == 1).then(SilenceGate::default);
-            let completion = model
-                .complete(&messages, &specs, &turn.cancel, None, move |d| match d {
+            let completion = match model
+                .complete(&messages, active_specs, &turn.cancel, None, move |d| match d {
                     StreamDelta::Text(t) => {
                         let t = match gate.as_mut() {
                             Some(g) => g.push(&t),
@@ -845,7 +920,23 @@ impl Agent {
                     }
                     StreamDelta::ToolCallStarted { .. } => {}
                 })
-                .await?;
+                .await
+            {
+                Ok(c) => c,
+                Err(AppError::Provider(msg)) if has_images && msg.to_lowercase().contains("vision") || has_images && msg.to_lowercase().contains("image") => {
+                    return Err(AppError::Provider(format!(
+                        "Модель «{}» не принимает изображения. Выберите модель с картинками или заполните поле «Модель для экрана» в Настройках → «Модель».",
+                        model.model
+                    )));
+                }
+                Err(AppError::Provider(msg)) if !active_specs.is_empty() && msg.to_lowercase().contains("does not support tools") => {
+                    return Err(AppError::Provider(format!(
+                        "Модель «{}» не поддерживает вызов инструментов — выберите модель с поддержкой tools в Настройках → «Модель».",
+                        model.model
+                    )));
+                }
+                Err(e) => return Err(e),
+            };
             let mut msg = completion.message;
             let calls = msg.tool_calls.clone();
             if turn.heard.may_be_silent() && *steps == 1 && calls.is_empty() && is_silent(&msg.joined_text()) {
