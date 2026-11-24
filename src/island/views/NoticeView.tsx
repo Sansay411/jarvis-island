@@ -2,7 +2,7 @@
 // the user marks it done or puts it off.
 
 import { Icon } from "../../ui/Icon";
-import { localTime, reminderDone, reminderSnooze, useAlerts } from "../../store/reminders";
+import { localTime, reminderCancel, reminderDone, reminderSnooze, useAlerts } from "../../store/reminders";
 
 export function NoticeView() {
   const alerts = useAlerts();
@@ -10,15 +10,31 @@ export function NoticeView() {
   if (!r) return null;
   const title = r.kind === "timer" ? (r.text ? `Таймер «${r.text}»` : "Таймер") : "Напоминание";
   const body = r.kind === "timer" ? `Время вышло · ${localTime(r.dueAt)}` : r.text;
+  const repeating = Boolean(r.repeat || r.repeatLabel);
   return (
     <div className="view view-notice">
       <div className="brow">
         <span className="brow-name notice-title">{title}</span>
+        {r.repeatLabel && (
+          <span className="notice-repeat" title={r.repeatLabel}>
+            <Icon name="restart" size={11} />
+            <span>{r.repeatLabel}</span>
+          </span>
+        )}
         {alerts.length > 1 && <span className="notice-more">ещё {alerts.length - 1}</span>}
       </div>
       <div className="notice-body">
         <p className="notice-text">{body}</p>
         <div className="notice-actions">
+          {repeating && (
+            <button
+              className="btn btn-quiet notice-stop"
+              title="Остановить всю серию напоминаний"
+              onClick={() => void reminderCancel(r.id)}
+            >
+              Остановить
+            </button>
+          )}
           <button className="btn btn-quiet" onClick={() => void reminderSnooze(r.id, 5)}>Через 5 мин</button>
           <button className="btn btn-quiet" onClick={() => void reminderSnooze(r.id, 15)}>Через 15 мин</button>
           <button className="btn btn-solid" onClick={() => void reminderDone(r.id)}>

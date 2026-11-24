@@ -144,6 +144,35 @@ fn today_text(app: &AppHandle) -> (String, Option<Value>) {
             buttons.push(vec![json!({ "text": format!("✓ {}", t.title.chars().take(30).collect::<String>()), "callback_data": format!("task:{}", t.id) })]);
         }
     }
+    if let Some(rems) = app.try_state::<Arc<crate::reminders::Reminders>>() {
+        let items: Vec<_> = rems
+            .list()
+            .into_iter()
+            .filter(|r| {
+                !r.done
+                    && r.kind != "timer"
+                    && (r.repeat.is_some()
+                        || chrono::DateTime::parse_from_rfc3339(&r.due_at)
+                            .is_ok_and(|d| d.with_timezone(&Local).date_naive() == today))
+            })
+            .take(8)
+            .collect();
+        if !items.is_empty() {
+            lines.push(String::new());
+            lines.push("<b>Напоминания</b>".into());
+            for r in items {
+                let due_local = chrono::DateTime::parse_from_rfc3339(&r.due_at).ok().map(|d| d.with_timezone(&Local));
+                let when = match due_local {
+                    Some(d) if d.date_naive() == today => d.format("%H:%M").to_string(),
+                    Some(d) => d.format("%d.%m %H:%M").to_string(),
+                    None => String::new(),
+                };
+                let rep = r.repeat_label.as_deref().map(|l| format!(" ({})", esc(l))).unwrap_or_default();
+                let prefix = if r.kind == "action" { "↻ " } else { "• " };
+                lines.push(format!("{prefix}{when} · {}{rep}", esc(&r.text)));
+            }
+        }
+    }
     (lines.join("\n"), (!buttons.is_empty()).then(|| json!({ "inline_keyboard": buttons })))
 }
 

@@ -13,8 +13,13 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 
 use crate::error::{AppError, AppResult};
+use crate::repeat::{next_after, RepeatRule};
 use crate::state::AppState;
 use crate::store::Reminder;
+
+/// Repeating items missed by more than this (PC off/asleep) skip silently
+/// to the next future occurrence so there is never a burst of old alerts.
+const MISSED_GRACE_MINS: i64 = 10;
 
 pub const EVT_CHANGED: &str = "reminders:changed";
 pub const EVT_FIRED: &str = "reminder:fired";
@@ -25,6 +30,7 @@ struct Fired {
     id: i64,
     kind: String,
     text: String,
+    repeat_label: Option<String>,
 }
 
 pub struct Reminders {
@@ -172,6 +178,16 @@ impl Reminders {
     }
 
     pub fn create(&self, kind: &str, text: &str, due: DateTime<Utc>) -> AppResult<Reminder> {
+        self.create_with_repeat(kind, text, due, None)
+    }
+
+    pub fn create_with_repeat(
+        &self,
+        kind: &str,
+        text: &str,
+        due: DateTime<Utc>,
+        repeat: Option<&RepeatRule>,
+    ) -> AppResult<Reminder> {
         if due <= Utc::now() - chrono::Duration::seconds(5) {
             return Err(AppError::invalid("Это время уже прошло"));
         }
@@ -179,15 +195,79 @@ impl Reminders {
             "timer" | "action" => kind,
             _ => "reminder",
         };
-        let id = self.store().add_reminder(kind, text.trim(), &due.to_rfc3339())?;
+        let id = self.store().add_reminder_with_repeat(kind, text.trim(), &due.to_rfc3339(), repeat)?;
         self.changed();
         self.list().into_iter().find(|r| r.id == id).ok_or_else(|| AppError::internal("Напоминание не сохранилось"))
     }
 
+    /// «Готово» on a fired alert: for a repeating reminder, advances to the
+    /// next occurrence instead of ending the series; for one-shot or pending
+    /// items, finishes them.
     pub fn done(&self, id: i64) -> AppResult<()> {
+        if let Some(r) = self.list().into_iter().find(|r| r.id == id) {
+            // Already moved on to its next time when it fired: «Готово» only
+            // closes the alert, the series stays.
+            if r.repeat.is_some() && r.fired_at.is_none() {
+                self.changed();
+                return Ok(());
+            }
+            if let (Some(rule), Some(_)) = (&r.repeat, &r.fired_at) {
+                let due = DateTime::parse_from_rfc3339(&r.due_at)
+                    .map(|d| d.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
+                let new_runs = r.runs.saturating_add(1);
+                let base = due.max(Utc::now()).with_timezone(&Local);
+                match next_after(rule, base, new_runs) {
+                    Some(next_local) => {
+                        self.store().advance_reminder(id, &next_local.with_timezone(&Utc).to_rfc3339(), new_runs)?;
+                    }
+                    None => {
+                        self.store().finish_reminder(id)?;
+                    }
+                }
+                self.changed();
+                return Ok(());
+            }
+        }
         self.store().finish_reminder(id)?;
         self.changed();
         Ok(())
+    }
+
+    /// Stop a reminder or the entire repeating series.
+    pub fn cancel(&self, id: i64) -> AppResult<()> {
+        self.store().finish_reminder(id)?;
+        self.changed();
+        Ok(())
+    }
+
+    /// Skip only the next occurrence of a repeating reminder; returns the new
+    /// next time, or `None` if that was the last occurrence in the series.
+    pub fn skip(&self, id: i64) -> AppResult<Option<DateTime<Utc>>> {
+        let r = self
+            .list()
+            .into_iter()
+            .find(|r| r.id == id)
+            .ok_or_else(|| AppError::not_found("Напоминание не найдено"))?;
+        let Some(rule) = r.repeat.as_ref() else {
+            return Err(AppError::invalid("Это разовое напоминание — его можно только отменить"));
+        };
+        let due = DateTime::parse_from_rfc3339(&r.due_at)
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+        let new_runs = r.runs.saturating_add(1);
+        let base = due.max(Utc::now()).with_timezone(&Local);
+        let next = next_after(rule, base, new_runs).map(|d| d.with_timezone(&Utc));
+        match next {
+            Some(next_utc) => {
+                self.store().advance_reminder(id, &next_utc.to_rfc3339(), new_runs)?;
+            }
+            None => {
+                self.store().finish_reminder(id)?;
+            }
+        }
+        self.changed();
+        Ok(next)
     }
 
     pub fn snooze(&self, id: i64, minutes: u32) -> AppResult<()> {
@@ -216,7 +296,43 @@ impl Reminders {
         self.list().into_iter().filter(|r| r.kind == "timer" && r.fired_at.is_none()).min_by(|a, b| a.due_at.cmp(&b.due_at))
     }
 
-    fn fire(&self, r: &Reminder) {
+    fn fire(&self, r: &Reminder, now: DateTime<Utc>) {
+        let due = DateTime::parse_from_rfc3339(&r.due_at)
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or(now);
+
+        if let Some(rule) = r.repeat.as_ref() {
+            if is_missed_past_grace(due, now) {
+                // Missed while PC was off/asleep: skip silently to next future occurrence.
+                let next = next_after(rule, now.with_timezone(&Local), r.runs);
+                let _ = match next {
+                    Some(n) => self.store().advance_reminder_if_due(r.id, &r.due_at, &n.with_timezone(&Utc).to_rfc3339(), r.runs),
+                    None => self.store().finish_reminder_if_due(r.id, &r.due_at),
+                };
+                tracing::info!(id = r.id, kind = %r.kind, "repeating reminder missed grace window; skipped to next");
+                return;
+            }
+            // A repeating item moves on to its next time as it fires, so the
+            // series keeps going even if the alert is never acknowledged.
+            let new_runs = r.runs.saturating_add(1);
+            let base = due.max(now).with_timezone(&Local);
+            let claimed = match next_after(rule, base, new_runs) {
+                Some(n) => self.store().advance_reminder_if_due(r.id, &r.due_at, &n.with_timezone(&Utc).to_rfc3339(), new_runs),
+                None => self.store().finish_reminder_if_due(r.id, &r.due_at),
+            };
+            if !matches!(claimed, Ok(true)) {
+                return;
+            }
+            self.changed();
+            tracing::info!(id = r.id, kind = %r.kind, "repeating reminder fired");
+            if r.kind == "action" {
+                self.run_action(r.clone());
+            } else {
+                self.alert(r);
+            }
+            return;
+        }
+
         match self.store().mark_fired(r.id, &r.due_at) {
             Ok(true) => {}
             _ => return,
@@ -226,7 +342,15 @@ impl Reminders {
             self.run_action(r.clone());
             return;
         }
-        let _ = self.app.emit(EVT_FIRED, Fired { id: r.id, kind: r.kind.clone(), text: r.text.clone() });
+        self.alert(r);
+    }
+
+    /// The island alert and the spoken line for a reminder or timer.
+    fn alert(&self, r: &Reminder) {
+        let _ = self.app.emit(
+            EVT_FIRED,
+            Fired { id: r.id, kind: r.kind.clone(), text: r.text.clone(), repeat_label: r.repeat_label.clone() },
+        );
         let line = match (r.kind.as_str(), r.text.is_empty()) {
             ("timer", true) => "Время вышло.".to_string(),
             ("timer", false) => format!("Таймер «{}» закончился.", r.text),
@@ -235,42 +359,56 @@ impl Reminders {
         self.app.state::<Arc<crate::voice::VoiceManager>>().say(&line);
     }
 
-    /// A deferred request («через полчаса закрой ТикТок»): run it as an agent
-    /// turn now — same tools, risk checks and confirmations as if just asked —
-    /// and say the outcome. Waits (up to two minutes) for a running turn.
+    /// A deferred or scheduled request («через полчаса закрой ТикТок»,
+    /// «каждый день в 8 собери новости»): run it as an agent turn now — same
+    /// tools, risk checks and confirmations as if just asked — and say the
+    /// outcome. Waits (up to two minutes) for a running turn.
     fn run_action(&self, r: Reminder) {
         let app = self.app.clone();
         let id = r.id;
+        let repeating = r.repeat.is_some();
         tauri::async_runtime::spawn(async move {
             let agent = app.state::<Arc<crate::agent::Agent>>().inner().clone();
-            // Missed while the PC slept or JARVIS was closed: «через полчаса
-            // закрой ТикТок» must not close a tab the next morning.
-            let late = DateTime::parse_from_rfc3339(&r.due_at).is_ok_and(|d| Utc::now() - d.with_timezone(&Utc) > chrono::Duration::minutes(10));
-            if late {
-                tracing::info!(id, "deferred action skipped: missed its time");
-                agent.post_report(format!("Пропустил отложенное поручение «{}»: в назначенное время компьютер или я были выключены.", r.text), false);
-                let _ = app.state::<Arc<Reminders>>().done(id);
-                return;
+            if !repeating {
+                // Missed while the PC slept or JARVIS was closed: «через полчаса
+                // закрой ТикТок» must not close a tab the next morning.
+                let late = DateTime::parse_from_rfc3339(&r.due_at).is_ok_and(|d| is_missed_past_grace(d.with_timezone(&Utc), Utc::now()));
+                if late {
+                    tracing::info!(id, "deferred action skipped: missed its time");
+                    agent.post_report(format!("Пропустил отложенное поручение «{}»: в назначенное время компьютер или я были выключены.", r.text), false);
+                    let _ = app.state::<Arc<Reminders>>().done(id);
+                    return;
+                }
             }
             let started = std::time::Instant::now();
             while agent.is_busy() && started.elapsed() < Duration::from_secs(120) {
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
-            let set = DateTime::parse_from_rfc3339(&r.created_at).map(|d| d.with_timezone(&Local).format("%H:%M").to_string()).unwrap_or_default();
-            let task = format!(
-                "[Отложенное поручение: в {set} пользователь попросил сделать это сейчас. Выполни без вопросов и ответь одной короткой фразой о результате.] {}",
-                r.text
-            );
+            let task = if repeating {
+                let sched = r.repeat_label.as_deref().unwrap_or("по расписанию");
+                format!(
+                    "[Регулярное поручение ({sched}): пришло время выполнить. Выполни без вопросов и ответь одной короткой фразой о результате.] {}",
+                    r.text
+                )
+            } else {
+                let set = DateTime::parse_from_rfc3339(&r.created_at).map(|d| d.with_timezone(&Local).format("%H:%M").to_string()).unwrap_or_default();
+                format!(
+                    "[Отложенное поручение: в {set} пользователь попросил сделать это сейчас. Выполни без вопросов и ответь одной короткой фразой о результате.] {}",
+                    r.text
+                )
+            };
             let line = match agent.delegate(task).await {
                 Ok(answer) => crate::voice::phrases::speakable(&answer),
                 Err(e) => format!("Не вышло выполнить «{}»: {}", r.text, crate::voice::phrases::speakable(&e.to_string())),
             };
-            tracing::info!(id, "deferred action done");
+            tracing::info!(id, repeating, "scheduled action done");
             if !line.trim().is_empty() {
                 app.state::<Arc<crate::voice::VoiceManager>>().say(&line);
             }
-            let me = app.state::<Arc<Reminders>>();
-            let _ = me.done(id);
+            if !repeating {
+                let me = app.state::<Arc<Reminders>>();
+                let _ = me.done(id);
+            }
         });
     }
 
@@ -287,7 +425,7 @@ impl Reminders {
                 for r in me.list().iter().filter(|r| r.fired_at.is_none()) {
                     let Ok(due) = DateTime::parse_from_rfc3339(&r.due_at).map(|d| d.with_timezone(&Utc)) else { continue };
                     if due <= now {
-                        me.fire(r);
+                        me.fire(r, now);
                         fired_any = true;
                     } else if next.is_none_or(|n| due < n) {
                         next = Some(due);
@@ -309,6 +447,11 @@ impl Reminders {
     }
 }
 
+/// True when `due` is older than the 10-minute missed-occurrence grace window.
+pub fn is_missed_past_grace(due: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+    now - due > chrono::Duration::minutes(MISSED_GRACE_MINS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,5 +469,12 @@ mod tests {
         assert_eq!(parse_duration("завтра в десять"), None);
         assert_eq!(spoken_duration(4800), "1 час 20 минут");
         assert_eq!(spoken_duration(45), "45 секунд");
+    }
+
+    #[test]
+    fn missed_grace_window_is_ten_minutes() {
+        let base = Utc.with_ymd_and_hms(2026, 11, 24, 9, 0, 0).unwrap();
+        assert!(!is_missed_past_grace(base, base + chrono::Duration::minutes(10)));
+        assert!(is_missed_past_grace(base, base + chrono::Duration::minutes(10) + chrono::Duration::seconds(1)));
     }
 }

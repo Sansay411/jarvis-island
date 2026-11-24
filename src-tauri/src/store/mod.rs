@@ -69,13 +69,15 @@ CREATE TABLE IF NOT EXISTS memories (
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS reminders (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind       TEXT NOT NULL,
-    text       TEXT NOT NULL,
-    due_at     TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    fired_at   TEXT,
-    done       INTEGER NOT NULL DEFAULT 0
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    due_at      TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    fired_at    TEXT,
+    done        INTEGER NOT NULL DEFAULT 0,
+    repeat_json TEXT,
+    runs        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS reminders_due ON reminders(done, due_at);
 "#;
@@ -105,7 +107,7 @@ pub struct Memory {
 #[serde(rename_all = "camelCase")]
 pub struct Reminder {
     pub id: i64,
-    /// reminder | timer
+    /// reminder | timer | action
     pub kind: String,
     pub text: String,
     /// RFC 3339, UTC.
@@ -113,6 +115,9 @@ pub struct Reminder {
     pub created_at: String,
     pub fired_at: Option<String>,
     pub done: bool,
+    pub repeat: Option<crate::repeat::RepeatRule>,
+    pub repeat_label: Option<String>,
+    pub runs: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -131,6 +136,21 @@ fn now() -> String {
     Utc::now().to_rfc3339()
 }
 
+fn migrate_reminders(conn: &Connection) -> AppResult<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(reminders)")?;
+    let cols: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .filter_map(Result::ok)
+        .collect();
+    if !cols.iter().any(|c| c == "repeat_json") {
+        conn.execute("ALTER TABLE reminders ADD COLUMN repeat_json TEXT", [])?;
+    }
+    if !cols.iter().any(|c| c == "runs") {
+        conn.execute("ALTER TABLE reminders ADD COLUMN runs INTEGER NOT NULL DEFAULT 0", [])?;
+    }
+    Ok(())
+}
+
 impl Store {
     pub fn open(path: &Path) -> AppResult<Self> {
         if let Some(dir) = path.parent() {
@@ -138,6 +158,7 @@ impl Store {
         }
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        migrate_reminders(&conn)?;
         conn.execute_batch(clips::SCHEMA)?;
         conn.execute_batch(crate::hub::SCHEMA)?;
         conn.execute_batch(crate::planner::SCHEMA)?;
@@ -149,6 +170,7 @@ impl Store {
     pub fn in_memory() -> AppResult<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
+        migrate_reminders(&conn)?;
         conn.execute_batch(clips::SCHEMA)?;
         conn.execute_batch(crate::hub::SCHEMA)?;
         conn.execute_batch(crate::planner::SCHEMA)?;
@@ -344,17 +366,48 @@ impl Store {
     // ---------- reminders and timers ----------
 
     pub fn add_reminder(&self, kind: &str, text: &str, due_at: &str) -> AppResult<i64> {
+        self.add_reminder_with_repeat(kind, text, due_at, None)
+    }
+
+    pub fn add_reminder_with_repeat(
+        &self,
+        kind: &str,
+        text: &str,
+        due_at: &str,
+        repeat: Option<&crate::repeat::RepeatRule>,
+    ) -> AppResult<i64> {
+        let repeat_json = repeat.map(serde_json::to_string).transpose()?;
         let conn = self.conn.lock();
-        conn.execute("INSERT INTO reminders(kind, text, due_at, created_at) VALUES(?1, ?2, ?3, ?4)", params![kind, text, due_at, now()])?;
+        conn.execute(
+            "INSERT INTO reminders(kind, text, due_at, created_at, repeat_json, runs) VALUES(?1, ?2, ?3, ?4, ?5, 0)",
+            params![kind, text, due_at, now(), repeat_json],
+        )?;
         Ok(conn.last_insert_rowid())
     }
 
     /// Not finished yet (pending or fired and waiting for «Готово»).
     pub fn open_reminders(&self) -> AppResult<Vec<Reminder>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT id, kind, text, due_at, created_at, fired_at, done FROM reminders WHERE done = 0 ORDER BY due_at")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, text, due_at, created_at, fired_at, done, repeat_json, runs FROM reminders WHERE done = 0 ORDER BY due_at",
+        )?;
         let rows = stmt.query_map([], |r| {
-            Ok(Reminder { id: r.get(0)?, kind: r.get(1)?, text: r.get(2)?, due_at: r.get(3)?, created_at: r.get(4)?, fired_at: r.get(5)?, done: r.get::<_, i64>(6)? != 0 })
+            let repeat_raw: Option<String> = r.get(7)?;
+            let repeat = repeat_raw.and_then(|s| serde_json::from_str::<crate::repeat::RepeatRule>(&s).ok());
+            let repeat_label = repeat.as_ref().map(crate::repeat::describe_rule);
+            let runs = r.get::<_, i64>(8).unwrap_or(0).max(0) as u32;
+            Ok(Reminder {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                text: r.get(2)?,
+                due_at: r.get(3)?,
+                created_at: r.get(4)?,
+                fired_at: r.get(5)?,
+                done: r.get::<_, i64>(6)? != 0,
+                repeat,
+                repeat_label,
+                runs,
+            })
         })?;
         Ok(rows.filter_map(Result::ok).collect())
     }
@@ -373,9 +426,45 @@ impl Store {
         Ok(self.conn.lock().execute("UPDATE reminders SET done = 1 WHERE id = ?1 AND done = 0", params![id])? == 1)
     }
 
+    /// Finish only if still pending at `expected_due_at` (atomic claim for repeating actions whose series ended).
+    pub fn finish_reminder_if_due(&self, id: i64, expected_due_at: &str) -> AppResult<bool> {
+        Ok(self
+            .conn
+            .lock()
+            .execute(
+                "UPDATE reminders SET done = 1 WHERE id = ?1 AND fired_at IS NULL AND done = 0 AND due_at = ?2",
+                params![id, expected_due_at],
+            )?
+            == 1)
+    }
+
     /// Move to a new time and arm it again.
     pub fn reschedule_reminder(&self, id: i64, due_at: &str) -> AppResult<bool> {
         Ok(self.conn.lock().execute("UPDATE reminders SET due_at = ?2, fired_at = NULL, done = 0 WHERE id = ?1", params![id, due_at])? == 1)
+    }
+
+    /// Advance a repeating reminder to its next occurrence and record `runs`.
+    pub fn advance_reminder(&self, id: i64, next_due_at: &str, runs: u32) -> AppResult<bool> {
+        Ok(self
+            .conn
+            .lock()
+            .execute(
+                "UPDATE reminders SET due_at = ?2, fired_at = NULL, runs = ?3, done = 0 WHERE id = ?1 AND done = 0",
+                params![id, next_due_at, runs as i64],
+            )?
+            == 1)
+    }
+
+    /// Atomically advance a pending repeating reminder if `due_at` still matches.
+    pub fn advance_reminder_if_due(&self, id: i64, expected_due_at: &str, next_due_at: &str, runs: u32) -> AppResult<bool> {
+        Ok(self
+            .conn
+            .lock()
+            .execute(
+                "UPDATE reminders SET due_at = ?3, fired_at = NULL, runs = ?4, done = 0 WHERE id = ?1 AND fired_at IS NULL AND done = 0 AND due_at = ?2",
+                params![id, expected_due_at, next_due_at, runs as i64],
+            )?
+            == 1)
     }
 }
 
@@ -441,5 +530,54 @@ mod tests {
         assert_eq!(m[0].message.joined_text(), "привет");
         assert_eq!(m[1].tool_ok, Some(true));
         assert_eq!(s.latest_conversation().as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn reminders_migration_preserves_legacy_rows_and_stores_repeat() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                text TEXT NOT NULL,
+                due_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                fired_at TEXT,
+                done INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO reminders(kind, text, due_at, created_at)
+            VALUES('reminder', 'старое', '2026-11-24T10:00:00Z', '2026-11-24T09:00:00Z');",
+        )
+        .unwrap();
+        migrate_reminders(&conn).unwrap();
+        // Idempotent second call.
+        migrate_reminders(&conn).unwrap();
+        let s = Store { conn: Mutex::new(conn) };
+        let old = s.open_reminders().unwrap();
+        assert_eq!(old.len(), 1);
+        assert_eq!(old[0].text, "старое");
+        assert_eq!(old[0].repeat, None);
+        assert_eq!(old[0].runs, 0);
+
+        let rule = crate::repeat::RepeatRule {
+            kind: crate::repeat::RepeatKind::Weekdays,
+            at: Some("09:00".into()),
+            days: None,
+            day: None,
+            every_minutes: None,
+            from: None,
+            to: None,
+            until: None,
+            count: Some(5),
+        };
+        let id = s.add_reminder_with_repeat("reminder", "пить воду", "2026-11-25T04:00:00Z", Some(&rule)).unwrap();
+        let list = s.open_reminders().unwrap();
+        let added = list.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(added.repeat.as_ref(), Some(&rule));
+        assert_eq!(added.repeat_label.as_deref(), Some("по будням в 09:00, 5 раз"));
+        assert!(s.advance_reminder_if_due(id, "2026-11-25T04:00:00Z", "2026-11-26T04:00:00Z", 1).unwrap());
+        let updated = s.open_reminders().unwrap().into_iter().find(|r| r.id == id).unwrap();
+        assert_eq!(updated.due_at, "2026-11-26T04:00:00Z");
+        assert_eq!(updated.runs, 1);
     }
 }

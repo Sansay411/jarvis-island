@@ -36,10 +36,22 @@ pub fn reminders_list(reminders: State<'_, Arc<crate::reminders::Reminders>>) ->
     reminders.list()
 }
 
-/// «Готово» on an alert, or cancel a pending one.
+/// «Готово» on an alert (advances a fired repeating reminder to its next time).
 #[tauri::command]
 pub fn reminder_done(reminders: State<'_, Arc<crate::reminders::Reminders>>, id: i64) -> AppResult<()> {
     reminders.done(id)
+}
+
+/// Cancel a reminder or stop the entire repeating series.
+#[tauri::command]
+pub fn reminder_cancel(reminders: State<'_, Arc<crate::reminders::Reminders>>, id: i64) -> AppResult<()> {
+    reminders.cancel(id)
+}
+
+/// Skip only the next occurrence of a repeating reminder.
+#[tauri::command]
+pub fn reminder_skip(reminders: State<'_, Arc<crate::reminders::Reminders>>, id: i64) -> AppResult<Option<String>> {
+    Ok(reminders.skip(id)?.map(|d| d.to_rfc3339()))
 }
 
 /// «+1 мин» / «−1 мин» on a running timer.
