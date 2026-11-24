@@ -28,6 +28,7 @@ pub mod jobs;
 mod ipc_mcp;
 mod ipc_mentor;
 mod ipc_planner;
+mod ipc_skills;
 pub mod ipc_tts;
 pub mod mcp;
 pub mod mentor;
@@ -35,6 +36,7 @@ mod ipc_agent;
 pub mod planner;
 pub mod platform;
 pub mod reminders;
+pub mod skills;
 pub mod stopwatch;
 pub mod telegram;
 mod shortcuts;
@@ -259,6 +261,7 @@ pub fn run() {
             let mcp = mcp::Hub::new(app.handle().clone());
             mcp.spawn_background();
             app.manage(mcp.clone());
+            app.manage(Arc::new(skills::SkillStore::new(data_dir.join("skills"), Some(app.handle().clone()))));
             let registry = Arc::new(tools::Registry::new(mcp));
             app.manage(agent::Agent::new(app.handle().clone(), registry));
             let hub = hub::Hub::new(app.handle().clone())?;
@@ -427,6 +430,13 @@ pub fn run() {
             ipc_mcp::mcp_refresh,
             ipc_mcp::mcp_set_enabled,
             ipc_mcp::mcp_set_tool,
+            ipc_skills::skills_list,
+            ipc_skills::skills_read,
+            ipc_skills::skills_save,
+            ipc_skills::skills_set_enabled,
+            ipc_skills::skills_delete,
+            ipc_skills::skills_install_preview,
+            ipc_skills::skills_install,
             ipc_hub::hub_tasks_list,
             ipc_hub::hub_task_add,
             ipc_hub::hub_task_toggle,

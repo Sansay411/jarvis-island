@@ -24,6 +24,7 @@ import "./settings.css";
 import { TitleBar } from "./TitleBar";
 import { Group, Row, Segmented, Switch } from "./controls";
 import { McpSection } from "./McpSection";
+import { SkillsSection } from "./SkillsSection";
 import { CalendarSection, MentorSection, TelegramSection } from "./GrowthSections";
 import { ACTIVITIES, EMOTES, emote, useEmote, type Activity } from "../store/emote";
 import { LiveAudioBars, routineIconName, WsIcon } from "../workspace/WorkspaceIcons";
@@ -65,7 +66,7 @@ export interface Settings {
   shortcuts: { workspace: string; voice: string; clipboard: string };
   privacy: { storeHistory: boolean; allowScreen: boolean; allowClipboardRead: boolean };
   clipboard: { enabled: boolean; maxItems: number; keepDays: number; skipSecrets: boolean; ignoredApps: string[] };
-  agent: { maxSteps: number; confirmModerate: boolean; fullControl: boolean; projectRoots: string[] };
+  agent: { maxSteps: number; confirmModerate: boolean; fullControl: boolean; projectRoots: string[]; learnSkills: boolean };
   launchAtStartup: boolean;
   reduceMotion: boolean;
   updates: { autoCheck: boolean };
@@ -142,7 +143,7 @@ interface TaskRecord {
   startedAt: string;
 }
 
-export type Section = "general" | "model" | "voice" | "persona" | "behaviour" | "mentor" | "calendar" | "telegram" | "privacy" | "memory" | "mcp";
+export type Section = "general" | "model" | "voice" | "persona" | "behaviour" | "mentor" | "calendar" | "telegram" | "privacy" | "memory" | "skills" | "mcp";
 type Tone = "ok" | "error" | "info";
 
 const FALLBACK_SETTINGS_VIEW: SettingsView = {
@@ -181,6 +182,7 @@ const FALLBACK_SETTINGS_VIEW: SettingsView = {
       confirmModerate: false,
       fullControl: true,
       projectRoots: ["C:\\Users\\-pin\\Documents\\Jarvis"],
+      learnSkills: true,
     },
     launchAtStartup: true,
     reduceMotion: false,
@@ -234,6 +236,10 @@ function normalizeSettingsView(v: SettingsView): SettingsView {
     settings: {
       ...v.settings,
       updates: v.settings.updates ?? { autoCheck: true },
+      agent: {
+        ...v.settings.agent,
+        learnSkills: v.settings.agent?.learnSkills ?? true,
+      },
       voice: {
         ...v.settings.voice,
         // The realtime engine left the settings (2026-11-23): one voice pipeline.
@@ -259,6 +265,7 @@ const SECTIONS: { id: Section; label: string; icon: IconName; hint: string }[] =
   { id: "telegram", label: "Telegram", icon: "send", hint: "Свой бот: план утром, итог вечером, Джарвис с телефона." },
   { id: "privacy", label: "Приватность", icon: "eye", hint: "Что можно видеть и что хранить на этом компьютере." },
   { id: "memory", label: "Память", icon: "clipboard", hint: "Что Джарвис помнит о вас. Любую запись можно стереть." },
+  { id: "skills", label: "Навыки", icon: "book", hint: "Пошаговые инструкции, которым Джарвис научился или которые вы сохранили." },
   { id: "mcp", label: "Подключения", icon: "globe", hint: "Инструменты других программ по протоколу MCP." },
 ];
 
@@ -1625,6 +1632,7 @@ export default function SettingsApp({
             </>
           )}
 
+          {section === "skills" && <SkillsSection draft={draft} set={set} notify={notify} vy={vy} />}
           {section === "mcp" && <McpSection notify={notify} vy={vy} />}
           {section === "mentor" && <MentorSection draft={draft} set={set} notify={notify} />}
           {section === "calendar" && <CalendarSection draft={draft} set={set} notify={notify} />}
