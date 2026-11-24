@@ -19,6 +19,16 @@ if (label === "areapick") {
       </Suspense>
     </StrictMode>,
   );
+} else if (label === "overlay") {
+  const Overlay = lazy(() => import("./overlay/OverlayApp"));
+  document.body.classList.add("overlay-window");
+  root.render(
+    <StrictMode>
+      <Suspense fallback={null}>
+        <Overlay />
+      </Suspense>
+    </StrictMode>,
+  );
 } else if (label === "reset") {
   const Reset = lazy(() => import("./mentor/ResetApp"));
   document.body.classList.add("reset-window");

@@ -25,9 +25,10 @@ body {
   cursor: default;
 }
 
-/* The island canvas and area picker are transparent overlay windows. */
+/* The island canvas, area picker and screen overlay are transparent windows. */
 body.island-window,
-body.areapick-window {
+body.areapick-window,
+body.overlay-window {
   background: transparent;
 }
 

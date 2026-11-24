@@ -15,8 +15,62 @@ use crate::error::{AppError, AppResult};
 use crate::platform::display::{self, Rect};
 use crate::platform::{self, capture, input, uia, winmgr};
 
-/// Recent capture transforms: capture id → (screen rect, screen px per image px).
-static CAPTURES: Mutex<VecDeque<(u64, Rect, f64)>> = Mutex::new(VecDeque::new());
+/// Transform metadata stored for each screenshot sent to the model so later
+/// visual tools (`input_click`, `screen_point`, `guide_step`) can map image
+/// pixels back to exact physical screen pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CaptureMapping {
+    pub id: u64,
+    pub screen_rect: Rect,
+    pub image_width: u32,
+    pub image_height: u32,
+    /// Physical screen pixels per screenshot image pixel.
+    pub scale_x: f64,
+    pub scale_y: f64,
+}
+
+impl CaptureMapping {
+    pub fn from_encoded(id: u64, enc: &capture::EncodedCapture) -> Self {
+        let scale_x = if enc.image_width > 0 {
+            enc.screen_rect.width as f64 / enc.image_width as f64
+        } else {
+            enc.scale
+        };
+        let scale_y = if enc.image_height > 0 {
+            enc.screen_rect.height as f64 / enc.image_height as f64
+        } else {
+            enc.scale
+        };
+        CaptureMapping {
+            id,
+            screen_rect: enc.screen_rect,
+            image_width: enc.image_width,
+            image_height: enc.image_height,
+            scale_x,
+            scale_y,
+        }
+    }
+
+    pub fn map_point(self, x: f64, y: f64) -> (i32, i32) {
+        (
+            self.screen_rect.x + (x * self.scale_x).round() as i32,
+            self.screen_rect.y + (y * self.scale_y).round() as i32,
+        )
+    }
+
+    pub fn map_rect(self, x: f64, y: f64, w: f64, h: f64) -> Rect {
+        let (sx, sy) = self.map_point(x, y);
+        Rect {
+            x: sx,
+            y: sy,
+            width: (w * self.scale_x).round().max(1.0) as i32,
+            height: (h * self.scale_y).round().max(1.0) as i32,
+        }
+    }
+}
+
+/// Recent capture transforms: newest first.
+static CAPTURES: Mutex<VecDeque<CaptureMapping>> = Mutex::new(VecDeque::new());
 static NEXT_CAPTURE: AtomicU64 = AtomicU64::new(1);
 
 /// Words that make a click/keystroke externally visible or destructive.
@@ -122,7 +176,7 @@ async fn screen_capture(ctx: ToolCtx, args: Value) -> AppResult<ToolOutput> {
     let id = NEXT_CAPTURE.fetch_add(1, Ordering::Relaxed);
     {
         let mut caps = CAPTURES.lock();
-        caps.push_front((id, enc.screen_rect, enc.scale));
+        caps.push_front(CaptureMapping::from_encoded(id, &enc));
         caps.truncate(8);
     }
     let mut out = ToolOutput::ok(
@@ -150,16 +204,45 @@ pub fn click_point(a: &Value) -> Option<(i32, i32)> {
     to_screen(x, y, space, a.get("capture_id").and_then(Value::as_u64)).ok()
 }
 
-fn to_screen(x: f64, y: f64, space: &str, capture_id: Option<u64>) -> AppResult<(i32, i32)> {
+/// Look up a stored capture transform by id (or the most recent capture when `None`).
+pub fn capture_mapping(capture_id: Option<u64>) -> AppResult<CaptureMapping> {
+    let caps = CAPTURES.lock();
+    match capture_id {
+        Some(id) => caps
+            .iter()
+            .find(|c| c.id == id)
+            .copied()
+            .ok_or_else(|| AppError::invalid("Снимок с таким captureId устарел")),
+        None => caps
+            .front()
+            .copied()
+            .ok_or_else(|| AppError::invalid("Нет снимка экрана для пересчёта координат")),
+    }
+}
+
+/// Convert a point from `space` (`"image"` or `"screen"`) into physical screen pixels.
+pub fn to_screen_point(x: f64, y: f64, space: &str, capture_id: Option<u64>) -> AppResult<(i32, i32)> {
     if space == "screen" {
         return Ok((x.round() as i32, y.round() as i32));
     }
-    let caps = CAPTURES.lock();
-    let (_, rect, scale) = match capture_id {
-        Some(id) => caps.iter().find(|c| c.0 == id).copied().ok_or_else(|| AppError::invalid("Снимок с таким captureId устарел"))?,
-        None => *caps.front().ok_or_else(|| AppError::invalid("Нет снимка экрана для пересчёта координат"))?,
-    };
-    Ok((rect.x + (x * scale).round() as i32, rect.y + (y * scale).round() as i32))
+    Ok(capture_mapping(capture_id)?.map_point(x, y))
+}
+
+/// Convert a rectangle from `space` (`"image"` or `"screen"`) into physical screen pixels.
+pub fn to_screen_rect(x: f64, y: f64, w: f64, h: f64, space: &str, capture_id: Option<u64>) -> AppResult<Rect> {
+    if space == "screen" {
+        return Ok(Rect {
+            x: x.round() as i32,
+            y: y.round() as i32,
+            width: w.round().max(1.0) as i32,
+            height: h.round().max(1.0) as i32,
+        });
+    }
+    Ok(capture_mapping(capture_id)?.map_rect(x, y, w, h))
+}
+
+fn to_screen(x: f64, y: f64, space: &str, capture_id: Option<u64>) -> AppResult<(i32, i32)> {
+    to_screen_point(x, y, space, capture_id)
 }
 
 #[derive(Deserialize)]
@@ -644,9 +727,42 @@ mod tests {
     }
 
     #[test]
+    fn capture_mapping_handles_downscaled_window_crops() {
+        // A 2560x1440 window on a right-hand monitor, sent as 1600x900.
+        let enc = capture::EncodedCapture {
+            data_url: String::new(),
+            image_width: 1600,
+            image_height: 900,
+            screen_rect: Rect { x: 1920, y: -200, width: 2560, height: 1440 },
+            scale: 1.6,
+            capture_ms: 0,
+            encode_ms: 0,
+            bytes: 0,
+        };
+        let m = CaptureMapping::from_encoded(7, &enc);
+        assert_eq!((m.scale_x, m.scale_y), (1.6, 1.6));
+        assert_eq!(m.map_point(0.0, 0.0), (1920, -200));
+        assert_eq!(m.map_point(100.0, 50.0), (2080, -120));
+        assert_eq!(m.map_rect(100.0, 50.0, 40.0, 20.0), Rect { x: 2080, y: -120, width: 64, height: 32 });
+        // The far corner of the image is the far corner of the window.
+        assert_eq!(m.map_point(1600.0, 900.0), (4480, 1240));
+    }
+
+    #[test]
     fn image_coordinates_map_to_screen() {
-        CAPTURES.lock().push_front((999, Rect { x: 100, y: 50, width: 3200, height: 1800 }, 2.0));
+        CAPTURES.lock().push_front(CaptureMapping {
+            id: 999,
+            screen_rect: Rect { x: 100, y: 50, width: 3200, height: 1800 },
+            image_width: 1600,
+            image_height: 900,
+            scale_x: 2.0,
+            scale_y: 2.0,
+        });
         assert_eq!(to_screen(10.0, 20.0, "image", Some(999)).unwrap(), (120, 90));
         assert_eq!(to_screen(10.0, 20.0, "screen", None).unwrap(), (10, 20));
+        assert_eq!(
+            to_screen_rect(10.0, 20.0, 50.0, 25.0, "image", Some(999)).unwrap(),
+            Rect { x: 120, y: 90, width: 100, height: 50 }
+        );
     }
 }

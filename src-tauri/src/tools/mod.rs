@@ -17,6 +17,7 @@ pub mod executive;
 mod file_actions;
 mod files;
 mod memory;
+mod overlay;
 mod planner;
 mod reminders;
 pub mod screen;
@@ -170,6 +171,7 @@ fn builtin_tools() -> Vec<Tool> {
         .chain(reminders::tools())
         .chain(clipboard_history::tools())
         .chain(executive::tools())
+        .chain(overlay::tools())
         .chain(planner::tools())
         .chain(connect::tools())
         .chain(skills::tools())

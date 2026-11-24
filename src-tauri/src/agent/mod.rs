@@ -550,6 +550,9 @@ impl Agent {
         for (_, tx) in i.confirms.drain() {
             let _ = tx.send(false);
         }
+        drop(i);
+        crate::overlay::cancel_guide();
+        let _ = crate::overlay::clear(&self.app);
     }
 
     pub fn confirm(&self, call_id: &str, approved: bool) -> AppResult<()> {
@@ -760,6 +763,9 @@ impl Agent {
             self.inner.lock().deferred_user = None;
         }
         let outcome = outcome.map(|_| ());
+        if matches!(outcome, Err(AppError::Cancelled)) || crate::overlay::is_guide_active() {
+            let _ = crate::overlay::clear(&self.app);
+        }
 
         let (status, error) = match &outcome {
             Ok(()) if ignored => ("ignored", None),

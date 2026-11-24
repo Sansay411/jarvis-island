@@ -33,3 +33,21 @@ pub struct ActOutcome {
     /// State read back after the action, where the pattern exposes one.
     pub after: Option<String>,
 }
+
+/// Criteria for finding a live UI Automation element in a window.
+#[derive(Debug, Clone, Default)]
+pub struct ElementQuery {
+    pub name: Option<String>,
+    pub control_type: Option<String>,
+    pub automation_id: Option<String>,
+}
+
+/// Resolved UI Automation control with its current physical screen rectangle.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElementMatch {
+    pub role: &'static str,
+    pub name: String,
+    pub automation_id: String,
+    pub rect: Rect,
+}

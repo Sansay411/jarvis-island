@@ -22,3 +22,9 @@ pub fn act(
 ) -> AppResult<ActOutcome> {
     Err(AppError::unsupported("Пока не поддерживается на macOS"))
 }
+pub fn element_rect(_snapshot_id: u64, _id: usize) -> AppResult<ElementMatch> {
+    Err(AppError::unsupported("Пока не поддерживается на macOS"))
+}
+pub fn find_element(_hwnd: HWND, _query: &ElementQuery) -> AppResult<ElementMatch> {
+    Err(AppError::unsupported("Пока не поддерживается на macOS"))
+}

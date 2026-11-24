@@ -35,6 +35,7 @@ pub mod ipc_tts;
 pub mod mcp;
 pub mod mentor;
 mod ipc_agent;
+pub mod overlay;
 pub mod planner;
 pub mod platform;
 pub mod reminders;
@@ -449,11 +450,9 @@ pub fn run() {
             ipc_agent::history_clear,
             ipc_agent::tasks_recent,
             ipc_agent::settings_open,
-<<<<<<< HEAD
             ipc_agent::welcome_open,
             ipc_agent::welcome_dismiss,
             ipc_agent::welcome_complete,
-=======
             ipc_area::area_open_picker,
             ipc_area::area_picker_state,
             ipc_area::area_confirm_rect,
@@ -461,7 +460,6 @@ pub fn run() {
             ipc_area::area_cancel,
             ipc_area::area_pending,
             ipc_area::area_clear,
->>>>>>> feat/r-area
             ipc_mcp::mcp_list,
             ipc_mcp::mcp_save,
             ipc_mcp::mcp_import,
@@ -533,6 +531,10 @@ pub fn run() {
             ipc_mentor::telegram_set_token,
             ipc_mentor::telegram_pair,
             ipc_mentor::telegram_unbind,
+            overlay::overlay_ready,
+            overlay::overlay_set_interactive_rects,
+            overlay::overlay_dismiss_item,
+            overlay::overlay_cancel_guide,
         ])
         .run(tauri::generate_context!())
         .expect("error while running JARVIS");
