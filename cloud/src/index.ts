@@ -4,7 +4,7 @@
 // recognition with per-device and service-wide daily limits.
 
 import {
-  chatCost, day, issueToken, overLimit, secondsToMidnight, sttText, sttUnits, ttsUnits, usageFromSse, verifyToken,
+  chatCost, day, issueToken, overLimit, secondsToMidnight, STT_BYTES_PER_SECOND, sttText, sttUnits, ttsUnits, usageFromSse, verifyToken,
   type Counters, type Kind, type Limits, type Prices, type TokenUsage,
 } from "./core";
 
@@ -19,7 +19,7 @@ const MAX_CHAT_BODY = 12 * 1024 * 1024;
 const MAX_TOOL_BODY = 64 * 1024;
 const MAX_TTS_CHARS = 1200;
 /** 30 s of 16 kHz mono LINEAR16. */
-const MAX_STT_BYTES = 30 * 32_000;
+const MAX_STT_BYTES = 30 * STT_BYTES_PER_SECOND;
 
 const num = (v: string, fallback: number) => (Number.isFinite(Number(v)) && v !== "" ? Number(v) : fallback);
 
@@ -77,7 +77,11 @@ function reserve(db: D1Database, today: string, items: [...Charge, cap: number][
     WHERE NOT EXISTS (
       SELECT 1 FROM requested r
       LEFT JOIN usage u ON u.day = r.day AND u.subject = r.subject AND u.kind = r.kind
-      WHERE COALESCE(u.amount, 0) >= r.cap OR COALESCE(u.amount, 0) + r.amount > r.cap
+      WHERE COALESCE(u.amount, 0) >= r.cap OR
+        CASE WHEN r.kind = 'stt'
+          THEN ROUND((COALESCE(u.amount, 0) + r.amount) * ${STT_BYTES_PER_SECOND}) / ${STT_BYTES_PER_SECOND}
+          ELSE COALESCE(u.amount, 0) + r.amount
+        END > r.cap
     )
     ON CONFLICT (day, subject, kind) DO UPDATE SET amount = usage.amount + excluded.amount
   `).bind(...items.flatMap((item) => [today, ...item]));
@@ -300,7 +304,7 @@ async function stt(req: Request, env: Env, id: string, now: Date): Promise<Respo
   const audio = new Uint8Array(await req.arrayBuffer());
   if (audio.length < 3200) return fail(400, "Слишком короткая запись.");
   if (audio.length > MAX_STT_BYTES) return fail(413, "Запись длиннее 30 секунд.");
-  const seconds = audio.length / 32_000;
+  const seconds = audio.length / STT_BYTES_PER_SECOND;
   const charges: RequestCharges = [[id, "stt", seconds], ["global", "tenge", sttUnits(seconds) * Math.max(0, prices(env).stt15)]];
   const blocked = await reserveRequest(env, now, charges);
   if (blocked) return blocked;

@@ -110,6 +110,19 @@ describe("cloud quota", () => {
     expect(used("global", "tenge")).toBe(3);
   });
 
+  it("allows STT recordings that exactly fill the remaining fractional seconds", async () => {
+    const upstream = vi.fn(async (url: string) => url.includes("recognizeFileAsync")
+      ? Response.json({ id: "test-operation" })
+      : new Response("{}"));
+    vi.stubGlobal("fetch", upstream);
+    const caps = { LIMIT_STT_SECONDS: "0.3" };
+    expect((await call("stt", first, new Uint8Array(3200), caps)).status).toBe(200);
+    expect((await call("stt", first, new Uint8Array(6400), caps)).status).toBe(200);
+    await expectLimit(await call("stt", first, new Uint8Array(3200), caps), /распознавания/);
+    expect(upstream).toHaveBeenCalledTimes(4);
+    expect(used(first, "stt")).toBeCloseTo(0.3);
+  });
+
   it("cancels an overlong tool body without charging quota or waiting for EOF", async () => {
     const upstream = vi.fn(async () => new Response("{}"));
     const cancel = vi.fn();

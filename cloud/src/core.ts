@@ -73,6 +73,7 @@ export function chatCost(u: TokenUsage, p: Prices): number {
 
 export const ttsUnits = (text: string) => Math.max(1, Math.ceil([...text].length / 250));
 export const sttUnits = (seconds: number) => Math.max(1, Math.ceil(seconds / 15));
+export const STT_BYTES_PER_SECOND = 32_000;
 
 /** The last `usage` object in an SSE stream of chat chunks. */
 export function usageFromSse(sse: string): TokenUsage | null {
@@ -96,7 +97,10 @@ export type Counters = Partial<Record<Kind, number>>;
 export function overLimit(kind: "chat" | "tts" | "stt", device: Counters, global: Counters, l: Limits, units = 0, cost = 0): string | null {
   const own = { chat: l.chat, tts: l.tts, stt: l.sttSeconds }[kind];
   const used = device[kind] ?? 0;
-  if (used >= own || used + units > own) {
+  const total = kind === "stt"
+    ? Math.round((used + units) * STT_BYTES_PER_SECOND) / STT_BYTES_PER_SECOND
+    : used + units;
+  if (used >= own || total > own) {
     const what = { chat: "запросов к модели", tts: "озвучек", stt: "распознавания речи" }[kind];
     return `Дневной лимит Jarvis Cloud для этого устройства (${what}) исчерпан. Он обновится в 00:00 UTC, или добавьте свой ключ в настройках.`;
   }
