@@ -16,6 +16,7 @@ const MAX_OUTPUT = 8192;
 // DeepSeek Flash's advertised 1M-token context, rounded up for reservation.
 const MAX_PROMPT_TOKENS = 1_048_576;
 const MAX_CHAT_BODY = 12 * 1024 * 1024;
+const MAX_TOOL_BODY = 64 * 1024;
 const MAX_TTS_CHARS = 1200;
 /** 30 s of 16 kHz mono LINEAR16. */
 const MAX_STT_BYTES = 30 * 32_000;
@@ -219,10 +220,32 @@ async function chat(req: Request, env: Env, ctx: ExecutionContext, id: string, n
   });
 }
 
+async function toolBody(req: Request): Promise<string | null> {
+  if (Number(req.headers.get("content-length")) > MAX_TOOL_BODY) return null;
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const bytes = new Uint8Array(MAX_TOOL_BODY);
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return new TextDecoder().decode(bytes.subarray(0, size));
+      if (size + value.byteLength > MAX_TOOL_BODY) {
+        void reader.cancel().catch(() => {});
+        return null;
+      }
+      bytes.set(value, size);
+      size += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 async function tool(req: Request, env: Env, id: string, name: string, now: Date): Promise<Response> {
   if (name !== "search" && name !== "fetch") return fail(404, "Нет такого инструмента.");
-  const body = await req.text();
-  if (body.length > 64 * 1024) return fail(413, "Запрос слишком большой.");
+  const body = await toolBody(req);
+  if (body === null) return fail(413, "Запрос слишком большой.");
   const blocked = await reserveRequest(env, now, [[id, "chat", 1], ["global", "usd", Math.max(0, prices(env).tool)]]);
   if (blocked) return blocked;
   const upstream = await fetch(`${DEEPSEEK}/v1/tools/${name}`, {

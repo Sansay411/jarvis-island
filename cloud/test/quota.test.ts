@@ -53,11 +53,13 @@ describe("cloud quota", () => {
   });
 
   async function call(path: string, id: string, body: BodyInit, caps: Record<string, string> = {}) {
-    const req = new Request(`https://jarvis.example/v1/${path}`, {
+    const init: RequestInit & { duplex: "half" } = {
       method: "POST",
       headers: { authorization: `Bearer ${await issueToken(secret, id)}`, "cf-connecting-ip": "192.0.2.1" },
       body,
-    });
+      duplex: "half",
+    };
+    const req = new Request(`https://jarvis.example/v1/${path}`, init);
     return worker.fetch(req, { DB: db, TOKEN_SECRET: secret, ...caps } as unknown as Parameters<typeof worker.fetch>[1], {
       waitUntil: (p: Promise<unknown>) => background.push(p),
     } as Parameters<typeof worker.fetch>[2]);
@@ -106,6 +108,24 @@ describe("cloud quota", () => {
     expect(used("global", "tenge")).toBe(2);
     expect((await call("tts", blockedDevice, small, caps)).status).toBe(200);
     expect(used("global", "tenge")).toBe(3);
+  });
+
+  it("cancels an overlong tool body without charging quota or waiting for EOF", async () => {
+    const upstream = vi.fn(async () => new Response("{}"));
+    const cancel = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(64 * 1024));
+        controller.enqueue(new Uint8Array(1));
+      },
+      cancel,
+    });
+    expect((await call("tools/search", first, stream)).status).toBe(413);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(upstream).not.toHaveBeenCalled();
+    expect(used(first, "chat")).toBe(0);
+    expect((await call("tools/search", first, "a".repeat(64 * 1024))).status).toBe(200);
   });
 
   it("counts in-flight chat spend, then settles a stream at its reported cost", async () => {
