@@ -11,7 +11,7 @@ pub(crate) mod prompt;
 pub(crate) mod fast;
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -99,14 +99,39 @@ struct ActiveTurn {
     cancel: CancellationToken,
 }
 
+#[derive(Debug, PartialEq, Eq, Hash)]
+enum ApprovalScope {
+    Tool(String),
+    FileRead(PathBuf),
+}
+
+impl ApprovalScope {
+    fn prepare(tool: &str, args: &mut Value) -> AppResult<Self> {
+        if tool != "file_read" {
+            return Ok(Self::Tool(tool.to_string()));
+        }
+        let requested = args.get("path").and_then(Value::as_str).filter(|p| !p.is_empty())
+            .ok_or_else(|| AppError::invalid("Укажите путь для чтения"))?;
+        let path = std::fs::canonicalize(requested)?;
+        let extension = Path::new(requested).extension().and_then(|ext| ext.to_str()).unwrap_or_default().to_owned();
+        args["path"] = serde_json::to_value(&path)?;
+        args["_requested_extension"] = Value::String(extension);
+        Ok(Self::FileRead(path))
+    }
+
+    fn is_approved(scope: &AppResult<Self>, approvals: &HashSet<Self>) -> bool {
+        scope.as_ref().is_ok_and(|scope| approvals.contains(scope))
+    }
+}
+
 struct Inner {
     conversation_id: String,
     history: Vec<ChatMessage>,
     loaded: bool,
     active: Option<ActiveTurn>,
     confirms: HashMap<String, oneshot::Sender<bool>>,
-    /// Moderate-risk tools the user already approved in this conversation.
-    approved_tools: HashSet<String>,
+    /// Moderate-risk actions the user already approved in this conversation.
+    approvals: HashSet<ApprovalScope>,
     /// Background reports that arrived mid-turn; appended after it ends so
     /// they never split a tool call from its results.
     pending_reports: Vec<(String, bool)>,
@@ -302,7 +327,7 @@ impl Agent {
                 loaded: false,
                 active: None,
                 confirms: HashMap::new(),
-                approved_tools: HashSet::new(),
+                approvals: HashSet::new(),
                 pending_reports: Vec::new(),
                 pending_messages: Vec::new(),
                 waiters: HashMap::new(),
@@ -425,7 +450,7 @@ impl Agent {
         i.conversation_id = uuid::Uuid::new_v4().to_string();
         i.history.clear();
         i.loaded = true;
-        i.approved_tools.clear();
+        i.approvals.clear();
         let id = i.conversation_id.clone();
         drop(i);
         // Recorded now, so a restart continues the new conversation.
@@ -448,7 +473,7 @@ impl Agent {
         i.conversation_id = id;
         i.history.clear();
         i.loaded = false;
-        i.approved_tools.clear();
+        i.approvals.clear();
         Ok(())
     }
 
@@ -543,15 +568,16 @@ impl Agent {
             heard: Heard::Addressed,
         };
         let call = ToolCall { id: uuid::Uuid::new_v4().to_string(), name: name.to_string(), arguments: arguments.to_string() };
-        let args: Value = match serde_json::from_str(arguments) {
+        let mut args: Value = match serde_json::from_str(arguments) {
             Ok(v) => v,
             Err(e) => return json!({ "ok": false, "error": format!("invalid JSON arguments: {e}") }).to_string(),
         };
+        let scope = ApprovalScope::prepare(name, &mut args);
         let risk = match self.registry.describe(name, &args) {
-            Some(t) => self.effective_risk(&turn, &t.name, t.risk, &args),
+            Some(t) => self.effective_risk(&turn, &scope, &t.name, t.risk, &args),
             None => return json!({ "ok": false, "error": format!("unknown tool {name}") }).to_string(),
         };
-        match self.execute_one(&turn, &call, args, risk).await {
+        match self.execute_one(&turn, &call, args, scope, risk).await {
             Ok(out) => truncate_chars(&json!({ "ok": out.ok, "summary": out.summary, "data": out.data }).to_string(), 6000),
             Err(e) => json!({ "ok": false, "error": e.to_string() }).to_string(),
         }
@@ -1133,19 +1159,19 @@ impl Agent {
     }
 
     /// Policy adjustments on top of a tool's own risk assessment.
-    fn effective_risk(&self, turn: &Turn, name: &str, base: Risk, args: &Value) -> Risk {
+    fn effective_risk(&self, turn: &Turn, scope: &AppResult<ApprovalScope>, name: &str, base: Risk, args: &Value) -> Risk {
         match name {
             "file_read" => {
                 // Compare resolved paths, so `attached\..\other` and junctions
                 // pointing out of an attached folder are not treated as inside it.
-                let Ok(p) = std::fs::canonicalize(args.get("path").and_then(Value::as_str).unwrap_or("")) else {
+                let Ok(ApprovalScope::FileRead(p)) = scope else {
                     return base;
                 };
                 let attached = turn
                     .attachments
                     .iter()
                     .filter_map(|a| std::fs::canonicalize(a).ok())
-                    .any(|a| p == a || (a.is_dir() && p.starts_with(&a)));
+                    .any(|a| p == &a || (a.is_dir() && p.starts_with(&a)));
                 if attached { Risk::Low } else { base }
             }
             "clipboard_read" if turn.settings.privacy.allow_clipboard_read => Risk::Low,
@@ -1226,9 +1252,15 @@ impl Agent {
                     args = Ok(fixed);
                 }
             }
-            let tool = args.as_ref().ok().and_then(|a| self.registry.describe(&call.name, a));
+            let args = args
+                .map_err(|e| AppError::invalid(format!("Аргументы не являются корректным JSON: {e}")))
+                .map(|mut a| {
+                    let scope = ApprovalScope::prepare(&call.name, &mut a);
+                    (a, scope)
+                });
+            let tool = args.as_ref().ok().and_then(|(a, _)| self.registry.describe(&call.name, a));
             let (risk, parallel) = match (&tool, &args) {
-                (Some(t), Ok(a)) => (self.effective_risk(turn, &t.name, t.risk, a), t.parallel_safe),
+                (Some(t), Ok((a, scope))) => (self.effective_risk(turn, scope, &t.name, t.risk, a), t.parallel_safe),
                 _ => (Risk::Low, false),
             };
             prepared.push((call, args, risk, parallel));
@@ -1237,7 +1269,8 @@ impl Agent {
         let all_parallel = prepared.len() > 1 && prepared.iter().all(|(_, a, r, p)| a.is_ok() && *p && *r == Risk::Low);
         if all_parallel {
             let futs = prepared.into_iter().map(|(call, args, risk, _)| async move {
-                let res = self.execute_one(turn, &call, args.unwrap(), risk).await;
+                let (args, scope) = args.unwrap();
+                let res = self.execute_one(turn, &call, args, scope, risk).await;
                 (call, res)
             });
             let out = futures_util::future::join_all(futs).await;
@@ -1250,8 +1283,8 @@ impl Agent {
         let mut out = Vec::new();
         for (call, args, risk, _) in prepared {
             let res = match args {
-                Ok(a) => self.execute_one(turn, &call, a, risk).await,
-                Err(e) => Err(AppError::invalid(format!("Аргументы не являются корректным JSON: {e}"))),
+                Ok((a, scope)) => self.execute_one(turn, &call, a, scope, risk).await,
+                Err(e) => Err(e),
             };
             if matches!(res, Err(AppError::Cancelled)) || turn.cancel.is_cancelled() {
                 return Err(AppError::Cancelled);
@@ -1339,7 +1372,7 @@ impl Agent {
             tool: call.name.clone(),
             title,
             risk: risk.as_str(),
-            details: truncate_chars(&details, 2000),
+            details: if call.name == "file_read" { args["path"].to_string() } else { truncate_chars(&details, 2000) },
         });
         let approved = tokio::select! {
             _ = turn.cancel.cancelled() => return Err(AppError::Cancelled),
@@ -1349,7 +1382,7 @@ impl Agent {
         Ok(approved)
     }
 
-    async fn execute_one(&self, turn: &Turn, call: &ToolCall, args: Value, risk: Risk) -> AppResult<ToolOutput> {
+    async fn execute_one(&self, turn: &Turn, call: &ToolCall, args: Value, scope: AppResult<ApprovalScope>, risk: Risk) -> AppResult<ToolOutput> {
         let Some(tool) = self.registry.describe(&call.name, &args) else {
             return Err(AppError::not_found(format!("Инструмента «{}» нет. Доступные: {}", call.name, self.registry.names().join(", "))));
         };
@@ -1360,7 +1393,7 @@ impl Agent {
         let full = turn.settings.agent.full_control;
         let needs_confirm = match risk {
             Risk::High => !full || still_confirmed(&tool.name, &args),
-            Risk::Moderate => !full && turn.settings.agent.confirm_moderate && !self.inner.lock().approved_tools.contains(tool.name.as_str()),
+            Risk::Moderate => !full && turn.settings.agent.confirm_moderate && !ApprovalScope::is_approved(&scope, &self.inner.lock().approvals),
             Risk::Low => false,
         };
         if needs_confirm {
@@ -1377,10 +1410,12 @@ impl Agent {
                 });
                 return Ok(ToolOutput::fail("Пользователь отклонил это действие — не повторяй его без новой просьбы", json!({ "declined": true })));
             }
-            if risk == Risk::Moderate {
-                self.inner.lock().approved_tools.insert(tool.name.to_string());
-            }
         }
+        let resolution = scope.map(|scope| {
+            if needs_confirm && risk == Risk::Moderate {
+                self.inner.lock().approvals.insert(scope);
+            }
+        });
 
         self.emit(AgentEvent::ToolStarted {
             turn_id: turn.id.clone(),
@@ -1405,7 +1440,10 @@ impl Agent {
             }),
         };
         let started = Instant::now();
-        let res = self.registry.run(&call.name, ctx, args).await;
+        let res = match resolution {
+            Ok(()) => self.registry.run(&call.name, ctx, args).await,
+            Err(e) => Err(e),
+        };
         tracing::info!(tool = %call.name, ms = started.elapsed().as_millis() as u64, ok = res.as_ref().map(|o| o.ok).unwrap_or(false), "tool finished");
 
         let (ok, summary, error) = match &res {
@@ -1424,8 +1462,55 @@ impl Agent {
 
 #[cfg(test)]
 mod tests {
-    use super::{answer_dangling_calls, truncate_chars, NOT_EXECUTED};
+    use super::{answer_dangling_calls, truncate_chars, ApprovalScope, NOT_EXECUTED};
     use crate::ai::types::{ChatMessage, Role, ToolCall};
+
+    #[test]
+    fn file_read_approval_matches_only_the_resolved_path() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let file = root.join("Cargo.toml");
+        let mut args = serde_json::json!({ "path": file });
+        let approved = ApprovalScope::prepare("file_read", &mut args).unwrap();
+        assert_eq!(args["path"], serde_json::json!(file.canonicalize().unwrap()));
+        let approvals = std::collections::HashSet::from([approved]);
+        let scope_for = |path| ApprovalScope::prepare("file_read", &mut serde_json::json!({ "path": path })).unwrap();
+
+        assert!(approvals.contains(&scope_for(root.join("src").join("..").join("Cargo.toml"))));
+        assert!(!approvals.contains(&scope_for(root.join("Cargo.lock"))));
+    }
+
+    #[test]
+    fn unresolved_file_read_does_not_have_cached_approval() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let approved = ApprovalScope::prepare("file_read", &mut serde_json::json!({ "path": root.join("Cargo.toml") })).unwrap();
+        let approvals = std::collections::HashSet::from([approved]);
+        let mut args = serde_json::json!({ "path": root.join("Cargo.toml").join("missing") });
+        let requested = args.clone();
+        let unresolved = ApprovalScope::prepare("file_read", &mut args);
+
+        assert!(unresolved.is_err());
+        assert!(!ApprovalScope::is_approved(&unresolved, &approvals));
+        assert_eq!(args, requested);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_read_dispatch_keeps_the_requested_extension_without_reopening_the_link() {
+        let dir = std::env::temp_dir().join(format!("jarvis-file-read-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let target = dir.join("image");
+        let alias = dir.join("image.PNG");
+        std::fs::write(&target, []).unwrap();
+        std::os::unix::fs::symlink(&target, &alias).unwrap();
+        let mut args = serde_json::json!({ "path": alias, "_requested_extension": "txt" });
+        let prepared = ApprovalScope::prepare("file_read", &mut args);
+        let canonical = target.canonicalize().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(prepared.unwrap(), ApprovalScope::FileRead(canonical.clone()));
+        assert_eq!(args["path"], serde_json::json!(canonical));
+        assert_eq!(args["_requested_extension"], "PNG");
+    }
 
     #[test]
     fn calls_without_results_are_answered_not_executed() {
