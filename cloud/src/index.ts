@@ -4,7 +4,7 @@
 // recognition with per-device and service-wide daily limits.
 
 import {
-  chatCost, day, issueToken, overLimit, secondsToMidnight, sttText, sttUnits, ttsUnits, usageFromSse, verifyToken,
+  chatCost, day, issueToken, overLimit, secondsToMidnight, STT_BYTES_PER_SECOND, sttText, sttUnits, ttsUnits, usageFromSse, verifyToken,
   type Counters, type Kind, type Limits, type Prices, type TokenUsage,
 } from "./core";
 
@@ -13,10 +13,13 @@ const SPEECHKIT_TTS = "https://tts.api.ml.yandexcloud.kz/tts/v3/utteranceSynthes
 const SPEECHKIT_STT = "https://stt.api.ml.yandexcloud.kz/stt/v3";
 const MODELS = ["deepseek-flash"];
 const MAX_OUTPUT = 8192;
+// DeepSeek Flash's advertised 1M-token context, rounded up for reservation.
+const MAX_PROMPT_TOKENS = 1_048_576;
 const MAX_CHAT_BODY = 12 * 1024 * 1024;
+const MAX_TOOL_BODY = 64 * 1024;
 const MAX_TTS_CHARS = 1200;
 /** 30 s of 16 kHz mono LINEAR16. */
-const MAX_STT_BYTES = 30 * 32_000;
+const MAX_STT_BYTES = 30 * STT_BYTES_PER_SECOND;
 
 const num = (v: string, fallback: number) => (Number.isFinite(Number(v)) && v !== "" ? Number(v) : fallback);
 
@@ -54,22 +57,39 @@ function fail(status: number, message: string, code = "jarvis_error", headers: H
   return json({ error: { message, code } }, status, headers);
 }
 
-async function counters(db: D1Database, today: string, subjects: string[]): Promise<Map<string, Counters>> {
+function readCounters(db: D1Database, today: string, subjects: string[]): D1PreparedStatement {
   const marks = subjects.map(() => "?").join(",");
-  const { results } = await db
+  return db
     .prepare(`SELECT subject, kind, amount FROM usage WHERE day = ? AND subject IN (${marks})`)
-    .bind(today, ...subjects)
-    .all<{ subject: string; kind: Kind; amount: number }>();
-  const out = new Map<string, Counters>(subjects.map((s) => [s, {}]));
-  for (const r of results) out.get(r.subject)![r.kind] = r.amount;
-  return out;
+    .bind(today, ...subjects);
 }
 
-async function add(db: D1Database, today: string, items: [string, Kind, number][]): Promise<void> {
-  const stmt = db.prepare(
-    "INSERT INTO usage (day, subject, kind, amount) VALUES (?, ?, ?, ?) ON CONFLICT (day, subject, kind) DO UPDATE SET amount = amount + excluded.amount",
-  );
-  await db.batch(items.filter(([, , n]) => n > 0).map(([s, k, n]) => stmt.bind(today, s, k, n)));
+type UsageRow = { subject: string; kind: Kind; amount: number };
+type Charge = [subject: string, kind: Kind, amount: number];
+type RequestCharges = [[string, "chat" | "tts" | "stt", number], ["global", "usd" | "tenge", number]];
+
+function reserve(db: D1Database, today: string, items: [...Charge, cap: number][]): D1PreparedStatement {
+  const values = items.map(() => "(?, ?, ?, ?, ?)").join(", ");
+  return db.prepare(`
+    WITH requested(day, subject, kind, amount, cap) AS (VALUES ${values})
+    INSERT INTO usage (day, subject, kind, amount)
+    SELECT day, subject, kind, amount FROM requested
+    WHERE NOT EXISTS (
+      SELECT 1 FROM requested r
+      LEFT JOIN usage u ON u.day = r.day AND u.subject = r.subject AND u.kind = r.kind
+      WHERE COALESCE(u.amount, 0) >= r.cap OR
+        CASE WHEN r.kind = 'stt'
+          THEN ROUND((COALESCE(u.amount, 0) + r.amount) * ${STT_BYTES_PER_SECOND}) / ${STT_BYTES_PER_SECOND}
+          ELSE COALESCE(u.amount, 0) + r.amount
+        END > r.cap
+    )
+    ON CONFLICT (day, subject, kind) DO UPDATE SET amount = usage.amount + excluded.amount
+  `).bind(...items.flatMap((item) => [today, ...item]));
+}
+
+async function adjust(db: D1Database, today: string, items: Charge[]): Promise<void> {
+  const stmt = db.prepare("UPDATE usage SET amount = amount + ? WHERE day = ? AND subject = ? AND kind = ?");
+  await db.batch(items.map(([s, k, n]) => stmt.bind(n, today, s, k)));
 }
 
 async function device(req: Request, env: Env): Promise<string | null> {
@@ -82,19 +102,19 @@ async function register(req: Request, env: Env, now: Date): Promise<Response> {
   const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
   const today = day(now);
   const subject = `ip:${ip}`;
-  const c = (await counters(env.DB, today, [subject])).get(subject)!;
-  if ((c.reg ?? 0) >= limits(env).registrations) {
+  const r = await reserve(env.DB, today, [[subject, "reg", 1, limits(env).registrations]]).run();
+  if (!r.meta.changes) {
     return fail(429, "Слишком много новых устройств с этого адреса сегодня.", "jarvis_limit", {
       "retry-after": String(secondsToMidnight(now)),
     });
   }
   const id = crypto.randomUUID();
-  await add(env.DB, today, [[subject, "reg", 1]]);
   return json({ token: await issueToken(env.TOKEN_SECRET, id) });
 }
 
 async function status(id: string, env: Env, now: Date): Promise<Response> {
-  const c = (await counters(env.DB, day(now), [id])).get(id)!;
+  const c: Counters = {};
+  for (const r of (await readCounters(env.DB, day(now), [id]).all<UsageRow>()).results) c[r.kind] = r.amount;
   const l = limits(env);
   return json({
     day: day(now),
@@ -105,11 +125,29 @@ async function status(id: string, env: Env, now: Date): Promise<Response> {
   });
 }
 
-/** Refuses with 429 + Retry-After when the device or the service is out. */
-async function gate(env: Env, id: string, kind: "chat" | "tts" | "stt", now: Date): Promise<Response | null> {
-  const c = await counters(env.DB, day(now), [id, "global"]);
-  const why = overLimit(kind, c.get(id)!, c.get("global")!, limits(env));
-  return why ? fail(429, why, "jarvis_limit", { "retry-after": String(secondsToMidnight(now)) }) : null;
+async function reserveRequest(env: Env, now: Date, charges: RequestCharges): Promise<Response | null> {
+  const [[id, kind, units], [global, currency, cost]] = charges;
+  const l = limits(env);
+  const today = day(now);
+  const [snapshot, reservation] = await env.DB.batch<UsageRow>([
+    readCounters(env.DB, today, [id, global]),
+    reserve(env.DB, today, [
+      [id, kind, units, { chat: l.chat, tts: l.tts, stt: l.sttSeconds }[kind]],
+      [global, currency, cost, currency === "usd" ? l.usd : l.tenge],
+    ]),
+  ]);
+  if (!snapshot || !reservation) throw new Error("Missing quota reservation result.");
+  if (reservation.meta.changes === 2) return null;
+  const own: Counters = {};
+  const shared: Counters = {};
+  for (const r of snapshot.results) (r.subject === id ? own : shared)[r.kind] = r.amount;
+  const why = overLimit(kind, own, shared, l, units, cost);
+  if (!why) throw new Error("Quota reservation failed without a limit being reached.");
+  return fail(429, why, "jarvis_limit", { "retry-after": String(secondsToMidnight(now)) });
+}
+
+function refund(db: D1Database, today: string, charges: Charge[]): Promise<void> {
+  return adjust(db, today, charges.map(([s, k, n]) => [s, k, -n]));
 }
 
 async function chat(req: Request, env: Env, ctx: ExecutionContext, id: string, now: Date): Promise<Response> {
@@ -121,30 +159,41 @@ async function chat(req: Request, env: Env, ctx: ExecutionContext, id: string, n
   } catch {
     return fail(400, "Некорректный JSON.");
   }
-  const blocked = await gate(env, id, "chat", now);
-  if (blocked) return blocked;
   if (!MODELS.includes(String(body.model))) body.model = MODELS[0];
   const asked = Number(body.max_tokens ?? body.max_completion_tokens ?? MAX_OUTPUT);
-  body.max_tokens = Math.min(Number.isFinite(asked) && asked > 0 ? asked : MAX_OUTPUT, MAX_OUTPUT);
+  const maxTokens = Math.min(Number.isFinite(asked) && asked > 0 ? asked : MAX_OUTPUT, MAX_OUTPUT);
+  body.max_tokens = maxTokens;
   delete body.max_completion_tokens;
   delete body.n;
   const stream = body.stream === true;
   if (stream) body.stream_options = { include_usage: true };
 
+  const p = prices(env);
+  const reserved = chatCost({ prompt_tokens: MAX_PROMPT_TOKENS, completion_tokens: Math.ceil(maxTokens) }, {
+    ...p, inMiss: Math.max(p.inHit, p.inMiss, 0), out: Math.max(p.out, 0),
+  });
+  const today = day(now);
+  const charges: RequestCharges = [[id, "chat", 1], ["global", "usd", reserved]];
+  const blocked = await reserveRequest(env, now, charges);
+  if (blocked) return blocked;
   const upstream = await fetch(`${DEEPSEEK}/v1/chat/completions`, {
     method: "POST",
     headers: { authorization: `Bearer ${env.DEEPSEEK_KEY}`, "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  const today = day(now);
   if (!upstream.ok) {
+    await refund(env.DB, today, charges);
     console.log(JSON.stringify({ event: "deepseek_refused", status: upstream.status }));
     const code = upstream.status === 402 ? 503 : upstream.status;
     return fail(code, code === 503 ? "Jarvis Cloud временно недоступен." : `Модель ответила ошибкой ${upstream.status}.`);
   }
-  const p = prices(env);
-  const charge = (u: TokenUsage | null) =>
-    add(env.DB, today, [[id, "chat", 1], ["global", "usd", u ? chatCost(u, p) : 0.002]]);
+  const settle = async (u: TokenUsage | null) => {
+    if (!u || ![u.prompt_tokens, u.completion_tokens].every((n) => typeof n === "number" && Number.isSafeInteger(n) && n >= 0)) return;
+    const actual = chatCost(u, p);
+    if (Number.isFinite(actual) && actual >= 0) {
+      await adjust(env.DB, today, [["global", "usd", actual - reserved]]);
+    }
+  };
   if (!stream || !upstream.body) {
     const text = await upstream.text();
     let u: TokenUsage | null = null;
@@ -153,7 +202,7 @@ async function chat(req: Request, env: Env, ctx: ExecutionContext, id: string, n
     } catch {
       // passed through as is
     }
-    ctx.waitUntil(charge(u));
+    ctx.waitUntil(settle(u));
     return new Response(text, { headers: { "content-type": "application/json" } });
   }
   const [client, meter] = upstream.body.tee();
@@ -167,7 +216,7 @@ async function chat(req: Request, env: Env, ctx: ExecutionContext, id: string, n
         if (done) break;
         tail = (tail + value).slice(-16_384);
       }
-      await charge(usageFromSse(tail));
+      await settle(usageFromSse(tail));
     })(),
   );
   return new Response(client, {
@@ -175,18 +224,39 @@ async function chat(req: Request, env: Env, ctx: ExecutionContext, id: string, n
   });
 }
 
-async function tool(req: Request, env: Env, ctx: ExecutionContext, id: string, name: string, now: Date): Promise<Response> {
+async function toolBody(req: Request): Promise<string | null> {
+  if (Number(req.headers.get("content-length")) > MAX_TOOL_BODY) return null;
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const bytes = new Uint8Array(MAX_TOOL_BODY);
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return new TextDecoder().decode(bytes.subarray(0, size));
+      if (size + value.byteLength > MAX_TOOL_BODY) {
+        void reader.cancel().catch(() => {});
+        return null;
+      }
+      bytes.set(value, size);
+      size += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function tool(req: Request, env: Env, id: string, name: string, now: Date): Promise<Response> {
   if (name !== "search" && name !== "fetch") return fail(404, "Нет такого инструмента.");
-  const blocked = await gate(env, id, "chat", now);
+  const body = await toolBody(req);
+  if (body === null) return fail(413, "Запрос слишком большой.");
+  const blocked = await reserveRequest(env, now, [[id, "chat", 1], ["global", "usd", Math.max(0, prices(env).tool)]]);
   if (blocked) return blocked;
-  const body = await req.text();
-  if (body.length > 64 * 1024) return fail(413, "Запрос слишком большой.");
   const upstream = await fetch(`${DEEPSEEK}/v1/tools/${name}`, {
     method: "POST",
     headers: { authorization: `Bearer ${env.DEEPSEEK_KEY}`, "content-type": "application/json" },
     body,
   });
-  ctx.waitUntil(add(env.DB, day(now), [[id, "chat", 1], ["global", "usd", prices(env).tool]]));
   return new Response(upstream.body, {
     status: upstream.status === 401 || upstream.status === 402 ? 503 : upstream.status,
     headers: { "content-type": upstream.headers.get("content-type") ?? "application/json" },
@@ -195,7 +265,7 @@ async function tool(req: Request, env: Env, ctx: ExecutionContext, id: string, n
 
 interface TtsBody { text?: unknown; [k: string]: unknown }
 
-async function tts(req: Request, env: Env, ctx: ExecutionContext, id: string, now: Date): Promise<Response> {
+async function tts(req: Request, env: Env, id: string, now: Date): Promise<Response> {
   let body: TtsBody;
   try {
     body = await req.json();
@@ -205,7 +275,8 @@ async function tts(req: Request, env: Env, ctx: ExecutionContext, id: string, no
   const text = typeof body.text === "string" ? body.text : "";
   if (!text.trim()) return fail(400, "Пустой текст.");
   if ([...text].length > MAX_TTS_CHARS) return fail(413, "Слишком длинная фраза для озвучки.");
-  const blocked = await gate(env, id, "tts", now);
+  const charges: RequestCharges = [[id, "tts", 1], ["global", "tenge", ttsUnits(text) * Math.max(0, prices(env).tts)]];
+  const blocked = await reserveRequest(env, now, charges);
   if (blocked) return blocked;
   const upstream = await fetch(SPEECHKIT_TTS, {
     method: "POST",
@@ -213,11 +284,10 @@ async function tts(req: Request, env: Env, ctx: ExecutionContext, id: string, no
     body: JSON.stringify({ ...body, unsafeMode: [...text].length > 240 }),
   });
   if (!upstream.ok) {
+    await refund(env.DB, day(now), charges);
     console.log(JSON.stringify({ event: "speechkit_tts_refused", status: upstream.status }));
     return fail(upstream.status === 429 ? 429 : 503, "Голос Яндекса сейчас недоступен.");
   }
-  const units = ttsUnits(text);
-  ctx.waitUntil(add(env.DB, day(now), [[id, "tts", 1], ["global", "tenge", units * prices(env).tts]]));
   return new Response(upstream.body, { headers: { "content-type": "application/json" } });
 }
 
@@ -229,12 +299,14 @@ function b64(bytes: Uint8Array): string {
 
 /** Raw 16 kHz mono LINEAR16 in, `{ text }` out. SpeechKit in Kazakhstan has
  *  no synchronous REST recognition, so this is the async API polled briskly. */
-async function stt(req: Request, env: Env, ctx: ExecutionContext, id: string, now: Date): Promise<Response> {
+async function stt(req: Request, env: Env, id: string, now: Date): Promise<Response> {
   const started = Date.now();
   const audio = new Uint8Array(await req.arrayBuffer());
   if (audio.length < 3200) return fail(400, "Слишком короткая запись.");
   if (audio.length > MAX_STT_BYTES) return fail(413, "Запись длиннее 30 секунд.");
-  const blocked = await gate(env, id, "stt", now);
+  const seconds = audio.length / STT_BYTES_PER_SECOND;
+  const charges: RequestCharges = [[id, "stt", seconds], ["global", "tenge", sttUnits(seconds) * Math.max(0, prices(env).stt15)]];
+  const blocked = await reserveRequest(env, now, charges);
   if (blocked) return blocked;
   const headers = { authorization: `Api-Key ${env.YANDEX_KEY}`, "content-type": "application/json" };
   const op = await fetch(`${SPEECHKIT_STT}/recognizeFileAsync`, {
@@ -251,13 +323,12 @@ async function stt(req: Request, env: Env, ctx: ExecutionContext, id: string, no
     }),
   });
   if (!op.ok) {
+    await refund(env.DB, day(now), charges);
     console.log(JSON.stringify({ event: "speechkit_stt_refused", status: op.status }));
     return fail(op.status === 429 ? 429 : 503, "Распознавание Яндекса сейчас недоступно.");
   }
   const { id: opId } = (await op.json()) as { id?: string };
   if (!opId) return fail(503, "Распознавание Яндекса не приняло запись.");
-  const seconds = audio.length / 32_000;
-  ctx.waitUntil(add(env.DB, day(now), [[id, "stt", seconds], ["global", "tenge", sttUnits(seconds) * prices(env).stt15]]));
   for (let wait = 150; Date.now() - started < 12_000; wait = Math.min(wait + 50, 400)) {
     await new Promise((r) => setTimeout(r, wait));
     const res = await fetch(`${SPEECHKIT_STT}/getRecognition?operationId=${encodeURIComponent(opId)}`, { headers });
@@ -283,9 +354,9 @@ export default {
       if (req.method === "GET" && path === "/v1/models") return json({ object: "list", data: MODELS.map((m) => ({ id: m, object: "model" })) });
       if (req.method !== "POST") return fail(405, "Метод не поддерживается.");
       if (path === "/v1/chat/completions") return chat(req, env, ctx, id, now);
-      if (path.startsWith("/v1/tools/")) return tool(req, env, ctx, id, path.slice("/v1/tools/".length), now);
-      if (path === "/v1/tts") return tts(req, env, ctx, id, now);
-      if (path === "/v1/stt") return stt(req, env, ctx, id, now);
+      if (path.startsWith("/v1/tools/")) return tool(req, env, id, path.slice("/v1/tools/".length), now);
+      if (path === "/v1/tts") return tts(req, env, id, now);
+      if (path === "/v1/stt") return stt(req, env, id, now);
       return fail(404, "Нет такого адреса.");
     } catch (e) {
       console.log(JSON.stringify({ event: "error", path, message: e instanceof Error ? e.message : String(e) }));

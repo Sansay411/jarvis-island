@@ -141,9 +141,17 @@ pub fn image_data_url(bytes: &[u8]) -> AppResult<String> {
     Ok(format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(out.into_inner())))
 }
 
+fn file_read_extension(path: &Path, args: &Value) -> String {
+    match args.get("_requested_extension").and_then(Value::as_str) {
+        Some(ext) => ext.to_lowercase(),
+        None => path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default(),
+    }
+}
+
 async fn file_read(_: ToolCtx, args: Value) -> AppResult<ToolOutput> {
     let path = PathBuf::from(str_arg(&args, "path"));
     let max_chars = args.get("max_chars").and_then(Value::as_u64).unwrap_or(20_000).clamp(500, 100_000) as usize;
+    let ext = file_read_extension(&path, &args);
     platform::blocking(move || {
         let meta = std::fs::metadata(&path)?;
         if meta.is_dir() {
@@ -163,7 +171,6 @@ async fn file_read(_: ToolCtx, args: Value) -> AppResult<ToolOutput> {
             entries.sort_by(|a, b| b["dir"].as_bool().cmp(&a["dir"].as_bool()));
             return Ok(ToolOutput::ok(format!("Папка: {} элементов", entries.len()), json!({ "path": path, "entries": entries })));
         }
-        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
         if IMAGE_EXTS.contains(&ext.as_str()) {
             if meta.len() > 30 * 1024 * 1024 {
                 return Ok(ToolOutput::fail("Изображение слишком большое", json!({ "size": meta.len() })));
@@ -193,6 +200,19 @@ async fn file_read(_: ToolCtx, args: Value) -> AppResult<ToolOutput> {
         ))
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{file_read_extension, IMAGE_EXTS};
+    use serde_json::json;
+    use std::path::Path;
+
+    #[test]
+    fn read_classifies_an_extensionless_target_by_the_original_extension() {
+        let ext = file_read_extension(Path::new("image"), &json!({ "_requested_extension": "PNG" }));
+        assert!(IMAGE_EXTS.contains(&ext.as_str()));
+    }
 }
 
 async fn clipboard_read(_: ToolCtx, _: Value) -> AppResult<ToolOutput> {
