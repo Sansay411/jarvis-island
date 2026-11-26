@@ -217,9 +217,9 @@ impl Store {
         let mut settings: Settings = raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         // Do not rebind the old credential: client_from_settings must reject
         // it until a DeepSeek key is saved explicitly.
-        let old_host = url::Url::parse(&settings.provider.base_url).ok()
-            .is_some_and(|u| u.host_str() == Some("llm.alem.ai"));
-        if settings.provider.preset == "alem" || old_host {
+        // Only the retired «alem» preset is migrated. A custom provider the
+        // user typed in on purpose (even one on llm.alem.ai) must survive.
+        if settings.provider.preset == "alem" {
             if self.kv_get("llm_key_origin").unwrap_or_default().is_empty() {
                 // Older installs had unbound keys. Mark theirs as legacy
                 // before returning migrated settings, never as DeepSeek's.
@@ -508,6 +508,20 @@ mod tests {
         assert_eq!(cfg.persona.user_name, "Павел");
         assert!(cfg.voice.wake_word);
         assert_eq!(s.kv_get("llm_key_origin").as_deref(), Some("https://llm.alem.ai"));
+    }
+
+    #[test]
+    fn custom_provider_on_the_old_alem_host_is_kept() {
+        let s = Store::in_memory().unwrap();
+        let mut cfg = s.settings();
+        cfg.provider.preset = "custom".into();
+        cfg.provider.base_url = "https://llm.alem.ai/v1".into();
+        cfg.provider.model = "qwen3-8".into();
+        s.save_settings(&cfg).unwrap();
+        let loaded = s.settings();
+        assert_eq!(loaded.provider.preset, "custom");
+        assert_eq!(loaded.provider.effective_base_url(), "https://llm.alem.ai/v1");
+        assert_eq!(loaded.provider.model, "qwen3-8");
     }
 
     #[test]
