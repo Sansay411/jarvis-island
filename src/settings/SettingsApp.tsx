@@ -1021,6 +1021,19 @@ export default function SettingsApp({
     }
   };
 
+  // A key was saved or removed: refresh what is stored (key flags), but keep
+  // the unsaved draft. Reloading the draft here used to throw away a freshly
+  // picked provider and put Jarvis Cloud back.
+  const refreshStored = async () => {
+    if (!hasTauri()) return;
+    try {
+      const v = await invoke<SettingsView>("settings_get");
+      setView(normalizeSettingsView(v ?? FALLBACK_SETTINGS_VIEW));
+    } catch {
+      /* keep the current view */
+    }
+  };
+
   const loadVoices = () => {
     if (!hasTauri()) {
       setTtsVoices(CURATED_EDGE_VOICES.map((v) => ({ id: v.id, name: v.name, language: v.lang })));
@@ -1696,7 +1709,7 @@ export default function SettingsApp({
                   kind="llm"
                   has={view.hasLlmKey}
                   baseUrl={baseUrl}
-                  onChanged={() => void load()}
+                  onChanged={() => void refreshStored()}
                   notify={notify}
                 />
               )}
