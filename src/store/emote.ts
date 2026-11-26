@@ -43,7 +43,7 @@ export type Activity =
   | "speak"
   | "work";
 
-const DURATION: Record<Emote, number> = {
+export const DURATION: Record<Emote, number> = {
   wink: 900,
   heart: 1800,
   laugh: 1400,

@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig } from "vite";
@@ -34,6 +35,9 @@ if (existsSync(resolve(root, "qa/cards.html"))) {
 if (existsSync(resolve(root, "qa/games.html"))) {
   input["qa/games"] = resolve(root, "qa/games.html");
 }
+if (existsSync(resolve(root, "qa/specimen.html"))) {
+  input["qa/specimen"] = resolve(root, "qa/specimen.html");
+}
 
 // Tauri expects a fixed dev port and `dist/index.html` as the primary entry.
 export default defineConfig({
@@ -51,4 +55,6 @@ export default defineConfig({
     sourcemap: false,
     rollupOptions: { input },
   },
+  // The specimen tests read tokens.css through `?raw`, which needs real CSS.
+  test: { css: { include: [/tokens\.css/] } },
 });
